@@ -96,6 +96,10 @@ func TestRun(t *testing.T) {
 	}{
 		{"valid", valid, http.StatusCreated},
 		{"unknown field", `{"id":"web","image":"busybox","memory_bytes":1,"cpus":1,"pids":1,"privileged":true}`, http.StatusBadRequest},
+		// Builder mode and host mounts belong to the core's own build
+		// flow; whoever talks to the socket cannot ask for them.
+		{"builder", `{"id":"web","image":"busybox","memory_bytes":1,"cpus":1,"pids":1,"builder":true}`, http.StatusBadRequest},
+		{"mounts", `{"id":"web","image":"busybox","memory_bytes":1,"cpus":1,"pids":1,"mounts":[{"source":"/","target":"/host"}]}`, http.StatusBadRequest},
 		{"no limits", `{"id":"web","image":"busybox"}`, http.StatusBadRequest},
 		{"bad id", `{"id":"../etc","image":"busybox","memory_bytes":1,"cpus":1,"pids":1}`, http.StatusBadRequest},
 		{"trailing data", valid + `{}`, http.StatusBadRequest},

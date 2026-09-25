@@ -287,3 +287,86 @@ func TestRemoveFreesNetwork(t *testing.T) {
 		t.Errorf("IP lease %s still held after remove: %s", ip, b)
 	}
 }
+
+const builderImage = "docker.io/moby/buildkit:v0.33.0"
+
+// TestBuilderBuildsAnImage builds a Dockerfile inside a builder container,
+// imports the result and runs it, which is the path every deploy takes.
+func TestBuilderBuildsAnImage(t *testing.T) {
+	e := connect(t)
+	ctx := context.Background()
+	// Not under /tmp: on tmpfs the build cache would count as the builder's
+	// memory.
+	dir, err := os.MkdirTemp("/var/lib/zelie", "it-build-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	for _, sub := range []string{"src", "cache", "out"} {
+		os.Mkdir(dir+"/"+sub, 0o700)
+		os.Chown(dir+"/"+sub, BuilderHostID, BuilderHostID)
+	}
+	// The step prints its view of processes: in a sandbox it cannot see the
+	// builder.
+	dockerfile := "FROM " + testImage + "\nRUN ps -o comm > /ps && echo built > /built\nCMD cat /ps /built; sleep 60\n"
+	os.WriteFile(dir+"/src/Dockerfile", []byte(dockerfile), 0o644)
+
+	run(t, e, Spec{
+		ID: "it-builder", Image: builderImage, Network: "it-build",
+		Args: []string{"buildctl-daemonless.sh", "build", "--frontend", "dockerfile.v0",
+			"--local", "context=/src", "--local", "dockerfile=/src",
+			"--output", "type=oci,dest=/out/image.tar"},
+		Env:         []string{"BUILDKITD_FLAGS=--root /cache --oci-worker-net=host"},
+		MemoryBytes: 1 << 30, CPUs: 1, Pids: 1024,
+		Mounts: []Mount{
+			{Source: dir + "/src", Target: "/src", ReadOnly: true},
+			{Source: dir + "/cache", Target: "/cache"},
+			{Source: dir + "/out", Target: "/out"},
+		},
+		Builder: true,
+	})
+	waitCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
+	code, err := e.Wait(waitCtx, "it-builder")
+	if err != nil || code != 0 {
+		b, _ := os.ReadFile(LogPathFor(DefaultPaths, "it-builder"))
+		t.Fatalf("build exited %d, %v:\n%s", code, err, b)
+	}
+	if st := status(t, e, "it-builder"); st.Userns != BuilderHostID {
+		t.Errorf("builder got ID block %d, want %d", st.Userns, BuilderHostID)
+	}
+
+	f, err := os.Open(dir + "/out/image.tar")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if err := e.ImportImage(ctx, f, LocalImages+"it-built:1"); err != nil {
+		t.Fatal(err)
+	}
+	run(t, e, Spec{ID: "it-built", Image: LocalImages + "it-built:1", MemoryBytes: 64 << 20, CPUs: 0.5, Pids: 32})
+	out := waitForLog(t, "it-built", "built")
+	if strings.Contains(out, "buildkitd") {
+		t.Errorf("a build step could see the builder:\n%s", out)
+	}
+}
+
+func TestOnlyOneBuilder(t *testing.T) {
+	e := connect(t)
+	s := Spec{ID: "it-builder-a", Image: testImage, Args: []string{"sleep", "60"}, MemoryBytes: 64 << 20, CPUs: 0.5, Pids: 32, Builder: true}
+	run(t, e, s)
+	s.ID = "it-builder-b"
+	if err := e.Run(context.Background(), s); err == nil {
+		e.Remove(context.Background(), s.ID)
+		t.Fatal("a second builder started with the same ID block")
+	}
+}
+
+func TestLocalImagesAreNotPulled(t *testing.T) {
+	e := connect(t)
+	err := e.Run(context.Background(), Spec{ID: "it-nolocal", Image: LocalImages + "does-not-exist:1", MemoryBytes: 64 << 20, CPUs: 0.5, Pids: 32})
+	if err == nil || strings.Contains(err.Error(), "pull") {
+		e.Remove(context.Background(), "it-nolocal")
+		t.Fatalf("missing local image: %v", err)
+	}
+}

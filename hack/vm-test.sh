@@ -20,6 +20,8 @@ for pkg in engine core; do
 	GOOS=linux GOARCH=$goarch CGO_ENABLED=0 go test -c -tags integration -o "$tmp/$pkg.test" "./internal/$pkg"
 done
 
+# /tmp in the VM is cleared on reboot.
+limactl shell "$vm" -- mkdir -p /tmp/zelie-test
 for f in "$tmp"/*; do
 	limactl copy "$f" "$vm:/tmp/zelie-test/$(basename "$f")"
 done
