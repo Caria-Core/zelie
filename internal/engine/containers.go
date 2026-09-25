@@ -122,6 +122,16 @@ func (e *Engine) Run(ctx context.Context, s Spec) error {
 		oci.WithCPUCFS(int64(s.CPUs*100000), 100000),
 		oci.WithPidsLimit(s.Pids),
 		oci.WithCgroup("zelie.slice:zelie:" + s.ID),
+		// A private cgroup namespace lets the container read its own limits
+		// from /sys/fs/cgroup. Runtimes such as the JVM size themselves from
+		// those files and would otherwise assume the whole machine.
+		oci.WithLinuxNamespace(specs.LinuxNamespace{Type: specs.CgroupNamespace}),
+		oci.WithMounts([]specs.Mount{{
+			Destination: "/sys/fs/cgroup",
+			Type:        "cgroup",
+			Source:      "cgroup",
+			Options:     []string{"nosuid", "noexec", "nodev", "relatime", "ro"},
+		}}),
 	}
 	if len(s.Args) > 0 {
 		specOpts = append(specOpts, oci.WithProcessArgs(s.Args...))
