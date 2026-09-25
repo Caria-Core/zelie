@@ -75,6 +75,9 @@ func (s *Server) Serve(ctx context.Context, socket string) error {
 		Handler:           s.Handler(),
 		ConnContext:       withPeer,
 		ReadHeaderTimeout: 10 * time.Second,
+		// Requests end when the core stops, so a client following logs does
+		// not hold up shutdown.
+		BaseContext: func(net.Listener) context.Context { return ctx },
 	}
 	go func() {
 		<-ctx.Done()
@@ -215,7 +218,11 @@ func (s *Server) logs(w http.ResponseWriter, r *http.Request) {
 	}
 	defer f.Close()
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	io.Copy(w, f)
+	if r.URL.Query().Get("follow") != "1" {
+		io.Copy(w, f)
+		return
+	}
+	follow(r.Context(), f, w, 250*time.Millisecond)
 }
 
 // fail maps engine errors to status codes. Internal details go to the log,

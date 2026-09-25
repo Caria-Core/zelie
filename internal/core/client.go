@@ -107,6 +107,12 @@ func (c *Client) List(ctx context.Context) ([]engine.Status, error) {
 	return out, nil
 }
 
-func (c *Client) Logs(ctx context.Context, id string, w io.Writer) error {
-	return c.do(ctx, http.MethodGet, "/v1/containers/"+url.PathEscape(id)+"/logs", nil, w)
+// Logs writes a container's output to w. With follow set it keeps streaming
+// new output until ctx is cancelled.
+func (c *Client) Logs(ctx context.Context, id string, follow bool, w io.Writer) error {
+	path := "/v1/containers/" + url.PathEscape(id) + "/logs"
+	if follow {
+		path += "?follow=1"
+	}
+	return c.do(ctx, http.MethodGet, path, nil, w)
 }

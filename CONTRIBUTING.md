@@ -13,8 +13,12 @@ go test ./...
 go build ./cmd/zelie
 ```
 
-Zelie runs on Linux. On macOS you can build and run the tests, but running containers
-needs a Linux machine or virtual machine.
+Zelie runs on Linux. On macOS you can build and run the unit tests, but running
+containers needs a Linux machine or virtual machine.
+
+The integration tests start real containers, so they need root and are kept behind a
+build tag. `hack/vm-test.sh` builds them and runs them inside a
+[Lima](https://lima-vm.io) VM named `zelie` (Debian or Ubuntu).
 
 ## Code style
 

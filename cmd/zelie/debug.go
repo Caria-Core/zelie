@@ -22,7 +22,7 @@ Commands:
   stop <id>                            Stop a container
   rm <id>                              Stop and delete a container
   ps                                   List containers
-  logs <id>                            Print a container's output
+  logs [-f] <id>                       Print a container's output, -f keeps following
 `
 
 func debug(args []string, stdout, stderr io.Writer) int {
@@ -60,7 +60,17 @@ func debug(args []string, stdout, stderr io.Writer) int {
 		if err == nil {
 			fmt.Fprintf(stdout, "started %s\n", fs.Arg(0))
 		}
-	case "stop", "rm", "logs":
+	case "logs":
+		follow := len(args) == 3 && args[1] == "-f"
+		if len(args) != 2 && !follow {
+			fmt.Fprint(stderr, debugUsage)
+			return 2
+		}
+		err = c.Logs(ctx, args[len(args)-1], follow, stdout)
+		if follow && ctx.Err() != nil {
+			err = nil // stopped with Ctrl-C
+		}
+	case "stop", "rm":
 		if len(args) != 2 {
 			fmt.Fprint(stderr, debugUsage)
 			return 2
@@ -70,8 +80,6 @@ func debug(args []string, stdout, stderr io.Writer) int {
 			err = c.Stop(ctx, args[1], 10)
 		case "rm":
 			err = c.Remove(ctx, args[1])
-		case "logs":
-			err = c.Logs(ctx, args[1], stdout)
 		}
 	case "ps":
 		var list []engine.Status
