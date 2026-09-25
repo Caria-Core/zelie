@@ -13,6 +13,7 @@ import (
 	"strconv"
 
 	"github.com/Caria-Core/zelie/internal/engine"
+	"github.com/Caria-Core/zelie/internal/secret"
 )
 
 // DefaultSocket is where the core listens.
@@ -76,10 +77,26 @@ func (c *Client) do(ctx context.Context, method, path string, body any, out any)
 }
 
 func (c *Client) Run(ctx context.Context, s engine.Spec) error {
+	return c.RunApp(ctx, s, nil)
+}
+
+// RunApp runs a container of s.App with secret variables sealed for it.
+func (c *Client) RunApp(ctx context.Context, s engine.Spec, sealedEnv []string) error {
 	return c.do(ctx, http.MethodPost, "/v1/containers", runRequest{
-		ID: s.ID, Image: s.Image, Args: s.Args, Env: s.Env, Network: s.Network,
+		ID: s.ID, App: s.App, Image: s.Image, Args: s.Args, Env: s.Env, SealedEnv: sealedEnv, Network: s.Network,
 		MemoryBytes: s.MemoryBytes, CPUs: s.CPUs, Pids: s.Pids,
 	}, nil)
+}
+
+// SecretKey returns the key to seal secret variables with.
+func (c *Client) SecretKey(ctx context.Context) (secret.PublicKey, error) {
+	var out struct {
+		Key string `json:"key"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/v1/secrets/key", nil, &out); err != nil {
+		return secret.PublicKey{}, err
+	}
+	return secret.ParsePublicKey(out.Key)
 }
 
 func (c *Client) Stop(ctx context.Context, id string, graceSeconds int) error {
@@ -110,7 +127,7 @@ func (c *Client) List(ctx context.Context) ([]engine.Status, error) {
 	out := make([]engine.Status, 0, len(list))
 	for _, c := range list {
 		ip, _ := netip.ParseAddr(c.IP)
-		out = append(out, engine.Status{ID: c.ID, Image: c.Image, State: c.State, Pid: c.Pid, Userns: c.Userns, Network: c.Network, IP: ip})
+		out = append(out, engine.Status{ID: c.ID, App: c.App, Image: c.Image, State: c.State, Pid: c.Pid, Userns: c.Userns, Network: c.Network, IP: ip})
 	}
 	return out, nil
 }

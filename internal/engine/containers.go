@@ -36,6 +36,7 @@ const (
 	labelNetwork    = "zelie.network"
 	labelNetNS      = "zelie.netns"
 	labelIP         = "zelie.ip"
+	labelApp        = "zelie.app"
 
 	// Each container gets its own block of 65536 host IDs, starting well above
 	// any range a distribution hands out to regular users or /etc/subuid.
@@ -64,6 +65,7 @@ func ValidID(id string) bool { return validID.MatchString(id) }
 // Spec describes a container to run.
 type Spec struct {
 	ID    string
+	App   string // the app the container belongs to, if any
 	Image string
 	Args  []string // replaces the image's command when set
 	Env   []string
@@ -103,6 +105,8 @@ func (s Spec) Validate() error {
 		return fmt.Errorf("container id %q must be lowercase letters, digits and dashes", s.ID)
 	case s.Image == "":
 		return errors.New("image is required")
+	case s.App != "" && !validID.MatchString(s.App):
+		return fmt.Errorf("app id %q must be lowercase letters, digits and dashes", s.App)
 	case s.Network != "" && !validID.MatchString(s.Network):
 		return fmt.Errorf("network name %q must be lowercase letters, digits and dashes", s.Network)
 	case s.MemoryBytes <= 0:
@@ -273,7 +277,7 @@ func (e *Engine) Run(ctx context.Context, s Spec) (err error) {
 			IoUid: base,
 			IoGid: base,
 		}),
-		containerd.WithContainerLabels(map[string]string{labelUsernsBase: strconv.FormatUint(uint64(base), 10)}),
+		containerd.WithContainerLabels(map[string]string{labelUsernsBase: strconv.FormatUint(uint64(base), 10), labelApp: s.App}),
 		containerd.WithNewSpec(specOpts...),
 	)
 	if err != nil {
@@ -548,6 +552,7 @@ func (e *Engine) Wait(ctx context.Context, id string) (uint32, error) {
 // Status is a short summary of a container.
 type Status struct {
 	ID      string
+	App     string
 	Image   string
 	State   string // running, stopped, created, …
 	Pid     uint32
@@ -575,6 +580,7 @@ func (e *Engine) List(ctx context.Context) ([]Status, error) {
 			st.Userns = uint32(v)
 		}
 		st.Network = info.Labels[labelNetwork]
+		st.App = info.Labels[labelApp]
 		st.IP, _ = netip.ParseAddr(info.Labels[labelIP])
 		if task, err := c.Task(ctx, nil); err == nil {
 			if s, err := task.Status(ctx); err == nil {

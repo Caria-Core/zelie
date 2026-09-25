@@ -2,16 +2,19 @@ package core
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/Caria-Core/zelie/internal/engine"
 	"github.com/Caria-Core/zelie/internal/peer"
+	"github.com/Caria-Core/zelie/internal/secret"
 	"github.com/containerd/errdefs"
 )
 
@@ -137,5 +140,36 @@ func TestList(t *testing.T) {
 	rec := request(t, s, &peer.Peer{UID: 0}, "GET", "/v1/containers", "")
 	if !strings.Contains(rec.Body.String(), `"id":"web"`) {
 		t.Errorf("unexpected body %s", rec.Body)
+	}
+}
+
+func TestSealedEnv(t *testing.T) {
+	s, f := newServer()
+	keys, err := secret.LoadOrCreate(filepath.Join(t.TempDir(), "secrets.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Secrets = keys
+	root := &peer.Peer{UID: 0}
+
+	rec := request(t, s, root, "GET", "/v1/secrets/key", "")
+	var out struct{ Key string }
+	json.NewDecoder(rec.Body).Decode(&out)
+	pub, err := secret.ParsePublicKey(out.Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealed, _ := secret.Seal(pub, "web", "TOKEN", "hunter2")
+	body := func(app string) string {
+		return `{"id":"web-1","app":"` + app + `","image":"busybox","memory_bytes":1,"cpus":1,"pids":1,"env":["PORT=3000"],"sealed_env":["` + sealed + `"]}`
+	}
+	if got := request(t, s, root, "POST", "/v1/containers", body("web")).Code; got != http.StatusCreated {
+		t.Fatalf("run: %d", got)
+	}
+	if env := strings.Join(f.ran[0].Env, " "); env != "PORT=3000 TOKEN=hunter2" || f.ran[0].App != "web" {
+		t.Errorf("env %q app %q", env, f.ran[0].App)
+	}
+	if rec := request(t, s, root, "POST", "/v1/containers", body("other")); rec.Code != http.StatusBadRequest || strings.Contains(rec.Body.String(), "hunter2") {
+		t.Fatalf("value sealed for another app: %d %s", rec.Code, rec.Body)
 	}
 }

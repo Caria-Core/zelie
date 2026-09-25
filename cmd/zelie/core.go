@@ -14,6 +14,7 @@ import (
 	"github.com/Caria-Core/zelie/internal/build"
 	"github.com/Caria-Core/zelie/internal/core"
 	"github.com/Caria-Core/zelie/internal/engine"
+	"github.com/Caria-Core/zelie/internal/secret"
 )
 
 // panelUser is the unprivileged account the panel runs as. Until the panel
@@ -38,9 +39,16 @@ func runCore(stderr io.Writer) int {
 	}
 	defer e.Close()
 
+	keys, err := secret.LoadOrCreate("/var/lib/zelie/secrets.key")
+	if err != nil {
+		log.Error("start core", "err", err)
+		return 1
+	}
+
 	s := &core.Server{
 		Engine: e, Paths: engine.DefaultPaths, Log: log, Allowed: policy,
 		Builder: build.New(e, engine.DefaultPaths, "/var/lib/zelie/build"),
+		Secrets: keys,
 	}
 	if err := s.Serve(ctx, core.DefaultSocket); err != nil {
 		log.Error("core stopped", "err", err)

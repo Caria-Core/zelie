@@ -15,11 +15,13 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"time"
 
 	"github.com/Caria-Core/zelie/internal/engine"
 	"github.com/Caria-Core/zelie/internal/peer"
+	"github.com/Caria-Core/zelie/internal/secret"
 	"github.com/containerd/errdefs"
 )
 
@@ -41,6 +43,7 @@ const (
 type Server struct {
 	Engine  Engine
 	Builder Builder
+	Secrets *secret.Keys
 	Paths   engine.Paths
 	Log     *slog.Logger
 	Allowed peer.Policy
@@ -54,6 +57,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /v1/containers/{id}", s.remove)
 	mux.HandleFunc("GET /v1/containers/{id}/logs", s.logs)
 	mux.HandleFunc("POST /v1/builds", s.build)
+	mux.HandleFunc("GET /v1/secrets/key", s.secretKey)
 	return peer.Require(s.Allowed, s.Log, mux)
 }
 
@@ -98,10 +102,14 @@ func (s *Server) Serve(ctx context.Context, socket string) error {
 }
 
 type runRequest struct {
-	ID          string   `json:"id"`
-	Image       string   `json:"image"`
-	Args        []string `json:"args,omitempty"`
-	Env         []string `json:"env,omitempty"`
+	ID    string   `json:"id"`
+	App   string   `json:"app,omitempty"`
+	Image string   `json:"image"`
+	Args  []string `json:"args,omitempty"`
+	Env   []string `json:"env,omitempty"`
+	// SealedEnv holds secret variables sealed for App with the core's key
+	// (see package secret). They are opened here and nowhere else.
+	SealedEnv   []string `json:"sealed_env,omitempty"`
 	Network     string   `json:"network,omitempty"`
 	MemoryBytes int64    `json:"memory_bytes"`
 	CPUs        float64  `json:"cpus"`
@@ -114,6 +122,7 @@ type stopRequest struct {
 
 type containerJSON struct {
 	ID      string `json:"id"`
+	App     string `json:"app,omitempty"`
 	Image   string `json:"image"`
 	State   string `json:"state"`
 	Pid     uint32 `json:"pid,omitempty"`
@@ -129,12 +138,25 @@ func (s *Server) run(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	spec := engine.Spec{
-		ID: req.ID, Image: req.Image, Args: req.Args, Env: req.Env, Network: req.Network,
+		ID: req.ID, App: req.App, Image: req.Image, Args: req.Args, Network: req.Network,
+		Env:         slices.Clone(req.Env),
 		MemoryBytes: req.MemoryBytes, CPUs: req.CPUs, Pids: req.Pids,
 	}
 	if err := spec.Validate(); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
+	}
+	if len(req.SealedEnv) > 0 && (s.Secrets == nil || req.App == "") {
+		writeError(w, http.StatusBadRequest, errors.New("sealed variables need an app and a core with a secret key"))
+		return
+	}
+	for _, sealed := range req.SealedEnv {
+		v, err := s.Secrets.Open(sealed, req.App)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		spec.Env = append(spec.Env, v)
 	}
 	if err := s.Engine.Run(r.Context(), spec); err != nil {
 		s.fail(w, "run", req.ID, err)
@@ -142,6 +164,15 @@ func (s *Server) run(w http.ResponseWriter, r *http.Request) {
 	}
 	s.Log.Info("container started", "id", req.ID, "image", req.Image)
 	w.WriteHeader(http.StatusCreated)
+}
+
+// secretKey hands out the public key that secret variables are sealed with.
+func (s *Server) secretKey(w http.ResponseWriter, r *http.Request) {
+	if s.Secrets == nil {
+		writeError(w, http.StatusServiceUnavailable, errors.New("this core has no secret key"))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"key": s.Secrets.Public().String()})
 }
 
 func (s *Server) stop(w http.ResponseWriter, r *http.Request) {
@@ -192,7 +223,7 @@ func (s *Server) list(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]containerJSON, 0, len(list))
 	for _, c := range list {
-		cj := containerJSON{ID: c.ID, Image: c.Image, State: c.State, Pid: c.Pid, Userns: c.Userns, Network: c.Network}
+		cj := containerJSON{ID: c.ID, App: c.App, Image: c.Image, State: c.State, Pid: c.Pid, Userns: c.Userns, Network: c.Network}
 		if c.IP.IsValid() {
 			cj.IP = c.IP.String()
 		}
