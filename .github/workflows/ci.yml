@@ -24,8 +24,28 @@ jobs:
       - run: go vet -tags integration ./...
       - run: go test -race ./...
 
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+        working-directory: web
+      - run: pnpm run check
+        working-directory: web
+      - run: pnpm run build
+        working-directory: web
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: web
+          path: internal/webui/build/ui
+          if-no-files-found: error
+
   build:
-    needs: test
+    needs: [test, web]
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -35,6 +55,10 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: web
+          path: internal/webui/build/ui
       - name: Build
         env:
           GOOS: linux

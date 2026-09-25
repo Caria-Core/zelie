@@ -22,6 +22,7 @@ import (
 
 	"github.com/Caria-Core/zelie/internal/peer"
 	"github.com/Caria-Core/zelie/internal/store"
+	"github.com/Caria-Core/zelie/internal/webui"
 )
 
 // setupLinkTTL is how long a setup link stays valid.
@@ -65,9 +66,13 @@ func (s *Server) Handler() http.Handler {
 	web.HandleFunc("POST /api/2fa/totp", s.enrolling(s.confirmTOTP))
 	web.HandleFunc("POST /api/2fa/passkey/options", s.enrolling(s.passkeyOptions))
 	web.HandleFunc("POST /api/2fa/passkey", s.enrolling(s.addPasskey))
+	web.HandleFunc("GET /api/", func(w http.ResponseWriter, r *http.Request) {
+		writeError(w, http.StatusNotFound, errors.New("no such API endpoint"))
+	})
+	web.Handle("GET /", webui.Handler())
 	// Browsers say where a request comes from; anything that changes state
 	// must come from the panel's own pages.
-	webSafe := http.NewCrossOriginProtection().Handler(web)
+	webSafe := secureHeaders(http.NewCrossOriginProtection().Handler(web))
 
 	return peer.Require(peer.Policy{UIDs: []uint32{s.ProxyUID}}, s.Log, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p, _ := peer.From(r.Context())
@@ -142,6 +147,19 @@ func (s *Server) setupStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"open": open})
+}
+
+// secureHeaders applies to every web response, the API included.
+func secureHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("Strict-Transport-Security", "max-age=31536000")
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("Referrer-Policy", "same-origin")
+		h.Set("Cross-Origin-Opener-Policy", "same-origin")
+		h.Set("X-Frame-Options", "DENY")
+		next.ServeHTTP(w, r)
+	})
 }
 
 // fail logs an internal error and tells the client only that something went

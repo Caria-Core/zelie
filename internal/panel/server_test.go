@@ -44,7 +44,7 @@ func TestWhoGetsWhat(t *testing.T) {
 		want   int
 	}{
 		{"root asks for a setup link", 0, "POST", "/local/setup-link", http.StatusOK},
-		{"web visitor asks for a setup link", proxyUID, "POST", "/local/setup-link", http.StatusNotFound},
+		{"web visitor asks for a setup link", proxyUID, "POST", "/local/setup-link", http.StatusMethodNotAllowed},
 		{"web visitor reads setup status", proxyUID, "GET", "/api/setup", http.StatusOK},
 		{"other local user", 1000, "GET", "/api/setup", http.StatusForbidden},
 	}

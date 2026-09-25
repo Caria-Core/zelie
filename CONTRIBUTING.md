@@ -6,12 +6,18 @@ question. Please talk to us in an issue before starting on a large change.
 
 ## Building
 
-You need Go (the version is in `go.mod`).
+You need Go (the version is in `go.mod`), and Node.js 22 or later with pnpm for the web
+interface.
 
 ```sh
+pnpm --dir web install
+pnpm --dir web build      # writes the interface into internal/webui/build/ui
 go test ./...
-go build ./cmd/zelie
+go build ./cmd/zelie      # embeds the interface built above
 ```
+
+A binary built without the interface still runs, and says so when the panel is
+opened.
 
 Zelie runs on Linux. On macOS you can build and run the unit tests, but running
 containers needs a Linux machine or virtual machine.

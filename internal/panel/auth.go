@@ -317,10 +317,17 @@ func (s *Server) loginRecovery(w http.ResponseWriter, r *http.Request) {
 func (s *Server) newTOTP(w http.ResponseWriter, r *http.Request) {
 	l := loginFrom(r.Context())
 	secret := auth.NewTOTPSecret()
+	uri := auth.TOTPURI(secret, "Zelie", l.account.Email)
+	qr, err := qrDataURL(uri)
+	if err != nil {
+		s.fail(w, "draw qr code", err)
+		return
+	}
 	s.guards.pending.put(l.session.Hash, "totp", secret, s.now())
 	writeJSON(w, http.StatusOK, map[string]string{
 		"secret": auth.TOTPSecretText(secret),
-		"uri":    auth.TOTPURI(secret, "Zelie", l.account.Email),
+		"uri":    uri,
+		"qr":     qr,
 	})
 }
 
