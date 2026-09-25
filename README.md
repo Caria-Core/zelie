@@ -32,6 +32,9 @@ Website, documentation and support: [zelie.cariacore.com](https://zelie.cariacor
 - **Tests before going live.** When a Node project has a test script, Zelie runs it on
   each new build, in its own container with the app's variables, and keeps the old
   version if it fails. The command can be changed or cleared in the app's settings.
+- **Apps that come back.** If an app stops by itself, or the server restarts, Zelie
+  starts its live version again, waiting longer each time. After five crashes in ten
+  minutes it leaves the app down and shows why. An app you stop stays stopped.
 - **Restart and roll back without building.** The last five versions that went live keep
   their image, so any of them can be put back in a second or two. Older images are
   deleted to free the disk.

@@ -52,6 +52,7 @@ type Server struct {
 	guards  *guards
 	deploys deploys
 	gh      ghCache
+	crashes crashes
 	ctx     context.Context // lives as long as the server
 }
 
@@ -107,6 +108,8 @@ func (s *Server) Handler() http.Handler {
 	web.HandleFunc("PUT /api/apps/{app}/env", s.signedIn(s.setEnv))
 	web.HandleFunc("POST /api/apps/{app}/deployments", s.signedIn(s.newDeployment))
 	web.HandleFunc("POST /api/apps/{app}/restart", s.signedIn(s.restartApp))
+	web.HandleFunc("POST /api/apps/{app}/stop", s.signedIn(s.stopHandler))
+	web.HandleFunc("POST /api/apps/{app}/start", s.signedIn(s.startHandler))
 	web.HandleFunc("POST /api/apps/{app}/deployments/{id}/rollback", s.signedIn(s.rollback))
 	web.HandleFunc("GET /api/apps/{app}/deployments/{id}/log", s.signedIn(s.deploymentLog))
 	web.HandleFunc("GET /api/apps/{app}/logs", s.signedIn(s.appLogs))
@@ -146,6 +149,7 @@ func (s *Server) Serve(ctx context.Context, socket string) error {
 	if err := s.Store.FailUnfinished(ctx, s.now()); err != nil {
 		return err
 	}
+	go s.supervise(ctx)
 	l, err := net.Listen("unix", socket)
 	if err != nil {
 		return err

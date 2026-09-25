@@ -31,7 +31,8 @@
 	const causes: Partial<Record<Deployment['cause'], string>> = {
 		push: t('deploy.push'),
 		restart: t('deploy.restart'),
-		rollback: t('deploy.rollback')
+		rollback: t('deploy.rollback'),
+		recover: t('deploy.recover')
 	};
 
 	function took(d: Deployment): string {

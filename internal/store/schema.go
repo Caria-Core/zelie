@@ -135,5 +135,9 @@ ALTER TABLE deployments ADD COLUMN pruned INTEGER NOT NULL DEFAULT 0;
 -- NULL until it is known: the first build suggests one, and whatever the
 -- user sets after that, an empty string included, is kept.
 ALTER TABLE apps ADD COLUMN test_command TEXT;
+`, `
+-- The user stopped the app. Zelie does not bring a stopped app back up,
+-- after a crash or when the server starts.
+ALTER TABLE apps ADD COLUMN stopped INTEGER NOT NULL DEFAULT 0;
 `,
 }

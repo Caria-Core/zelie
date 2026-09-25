@@ -6,7 +6,7 @@ export type Deployment = {
 	image?: string;
 	state: 'queued' | 'building' | 'testing' | 'starting' | 'live' | 'failed' | 'replaced' | 'skipped';
 	error?: string;
-	cause: 'manual' | 'push' | 'restart' | 'rollback';
+	cause: 'manual' | 'push' | 'restart' | 'rollback' | 'recover';
 	// The image still exists, so it can be rolled back to.
 	kept: boolean;
 	// The first line of the pushed commit's message.
@@ -31,6 +31,10 @@ export type App = {
 	test_command: string;
 	// The live container's state, or none before anything went live.
 	state: string;
+	// The user stopped it; Zelie keeps it down.
+	stopped: boolean;
+	// Why Zelie stopped bringing it back up after crashes.
+	crashing?: string;
 	latest?: Deployment;
 };
 

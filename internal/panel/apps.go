@@ -58,15 +58,20 @@ type appJSON struct {
 	TestCommand string `json:"test_command"`
 	// State is the live container's: running, stopped, or none when
 	// nothing has gone live yet.
-	State  string          `json:"state"`
-	Latest *deploymentJSON `json:"latest,omitempty"`
+	State string `json:"state"`
+	// Stopped is set when the user stopped the app.
+	Stopped bool `json:"stopped"`
+	// Crashing says why Zelie stopped bringing the app back up.
+	Crashing string          `json:"crashing,omitempty"`
+	Latest   *deploymentJSON `json:"latest,omitempty"`
 }
 
 // appOut describes an app for the interface. containers is the core's list,
 // fetched once by the caller.
 func (s *Server) appOut(ctx context.Context, a store.App, containers []engine.Status) (appJSON, error) {
 	out := appJSON{ID: a.ID, Source: a.Source, Image: a.Image, Repo: a.Repo, Branch: a.Branch,
-		Port: a.Port, Domain: a.Domain, MemoryMB: a.MemoryMB, CPUs: a.CPUs, AutoDeploy: a.AutoDeploy, HealthPath: a.HealthPath, TestCommand: a.TestCommand, State: "none"}
+		Port: a.Port, Domain: a.Domain, MemoryMB: a.MemoryMB, CPUs: a.CPUs, AutoDeploy: a.AutoDeploy, HealthPath: a.HealthPath, TestCommand: a.TestCommand, State: "none",
+		Stopped: a.Stopped, Crashing: s.crashes.gaveUp(a.ID)}
 	recent, err := s.Store.Deployments(ctx, a.ID, 1)
 	if err != nil {
 		return out, err
@@ -473,7 +478,7 @@ func (s *Server) setEnv(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) newDeployment(w http.ResponseWriter, r *http.Request) {
 	a, ok := s.appFrom(w, r)
-	if !ok {
+	if !ok || !s.unstop(w, r, a) {
 		return
 	}
 	id, err := s.deploy(r.Context(), a, store.Deployment{})
@@ -489,7 +494,7 @@ func (s *Server) newDeployment(w http.ResponseWriter, r *http.Request) {
 // leaves the running container alone.
 func (s *Server) restartApp(w http.ResponseWriter, r *http.Request) {
 	a, ok := s.appFrom(w, r)
-	if !ok {
+	if !ok || !s.unstop(w, r, a) {
 		return
 	}
 	live, err := s.Store.LiveDeployment(r.Context(), a.ID)
@@ -507,7 +512,7 @@ func (s *Server) restartApp(w http.ResponseWriter, r *http.Request) {
 // rollback puts an earlier deployment's image live again.
 func (s *Server) rollback(w http.ResponseWriter, r *http.Request) {
 	a, ok := s.appFrom(w, r)
-	if !ok {
+	if !ok || !s.unstop(w, r, a) {
 		return
 	}
 	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
@@ -527,6 +532,57 @@ func (s *Server) rollback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.redeploy(w, r, a, d, store.CauseRollback)
+}
+
+// unstop clears the stopped flag: deploying or restarting means the user
+// wants the app running.
+func (s *Server) unstop(w http.ResponseWriter, r *http.Request, a store.App) bool {
+	if !a.Stopped {
+		return true
+	}
+	if err := s.Store.SetStopped(r.Context(), a.ID, false); err != nil {
+		s.fail(w, "start app", err)
+		return false
+	}
+	return true
+}
+
+func (s *Server) stopHandler(w http.ResponseWriter, r *http.Request) {
+	a, ok := s.appFrom(w, r)
+	if !ok {
+		return
+	}
+	if err := s.stopApp(r.Context(), a); err != nil {
+		s.coreFailed(w, "stop app", err)
+		return
+	}
+	s.Log.Info("app stopped", "app", a.ID, "user", loginFrom(r.Context()).account.ID)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// startHandler starts a stopped app: its live version again, or a first
+// deployment if nothing has gone live yet.
+func (s *Server) startHandler(w http.ResponseWriter, r *http.Request) {
+	a, ok := s.appFrom(w, r)
+	if !ok || !s.unstop(w, r, a) {
+		return
+	}
+	s.crashes.reset(a.ID)
+	live, err := s.Store.LiveDeployment(r.Context(), a.ID)
+	if errors.Is(err, store.ErrNotFound) {
+		id, err := s.deploy(r.Context(), a, store.Deployment{})
+		if err != nil {
+			s.fail(w, "deploy", err)
+			return
+		}
+		writeJSON(w, http.StatusCreated, map[string]int64{"id": id})
+		return
+	}
+	if err != nil {
+		s.fail(w, "load deployment", err)
+		return
+	}
+	s.redeploy(w, r, a, live, store.CauseRestart)
 }
 
 func (s *Server) redeploy(w http.ResponseWriter, r *http.Request, a store.App, from store.Deployment, cause string) {

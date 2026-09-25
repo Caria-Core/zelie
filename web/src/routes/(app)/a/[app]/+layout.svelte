@@ -1,9 +1,9 @@
 <script lang="ts">
-	import { ArrowUpRight, RotateCw, Rocket } from '@lucide/svelte';
+	import { ArrowUpRight, Play, RotateCw, Rocket, Square } from '@lucide/svelte';
 	import { untrack } from 'svelte';
 	import { page } from '$app/state';
 	import { t } from '$lib/i18n';
-	import { busy, current, deploy, load, restart } from '$lib/current.svelte';
+	import { busy, current, deploy, load, restart, start, stop } from '$lib/current.svelte';
 	import { messageOf } from '$lib/errors';
 	import AppIcon from '$lib/ui/AppIcon.svelte';
 	import Button from '$lib/ui/Button.svelte';
@@ -79,7 +79,14 @@
 				</div>
 			</div>
 			<div class="flex items-center gap-2">
-				{#if a.state !== 'none'}
+				{#if a.stopped}
+					<Button kind="secondary" onclick={() => run(start)} busy={starting || busy()}>
+						<Play size={16} strokeWidth={1.75} />{t('app.start')}
+					</Button>
+				{:else if a.state !== 'none'}
+					<Button kind="quiet" onclick={() => run(stop)} busy={starting} title={t('app.stopHint')}>
+						<Square size={14} strokeWidth={1.75} />{t('app.stop')}
+					</Button>
 					<Button kind="secondary" onclick={() => run(restart)} busy={starting || busy()} title={t('app.restartHint')}>
 						<RotateCw size={16} strokeWidth={1.75} />{t('app.restart')}
 					</Button>
@@ -90,6 +97,11 @@
 			</div>
 		</header>
 		<ErrorText message={error} />
+		{#if a.crashing}
+			<p class="rounded-xl border border-danger/30 px-4 py-3 text-sm text-danger">{t('app.crashing', { why: a.crashing })}</p>
+		{:else if a.stopped}
+			<p class="text-sm text-muted">{t('app.stoppedNote')}</p>
+		{/if}
 		<!-- The baseline is a shadow, not a border, so the active tab's underline
 		     can sit on it without overflowing and bringing up a scroll bar. -->
 		<nav class="flex gap-1 overflow-x-auto text-[15px] shadow-[inset_0_-1px_0_var(--line)] [scrollbar-width:none]">

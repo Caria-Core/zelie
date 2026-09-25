@@ -436,6 +436,10 @@ func (s *Server) githubPush(w http.ResponseWriter, r *http.Request, body []byte)
 	}
 	var ids []string
 	for _, a := range apps {
+		// A push does not start an app the user stopped.
+		if a.Stopped {
+			continue
+		}
 		if _, err := s.deploy(ctx, a, store.Deployment{Version: p.After, Cause: store.CausePush, Message: message}); err != nil {
 			s.fail(w, "deploy", err)
 			return

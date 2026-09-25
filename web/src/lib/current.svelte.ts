@@ -26,6 +26,16 @@ export async function restart(id: string): Promise<void> {
 	await Promise.all([load(id), reloadList()]);
 }
 
+export async function stop(id: string): Promise<void> {
+	await api('POST', `/apps/${encodeURIComponent(id)}/stop`);
+	await Promise.all([load(id), reloadList()]);
+}
+
+export async function start(id: string): Promise<void> {
+	await api('POST', `/apps/${encodeURIComponent(id)}/start`);
+	await Promise.all([load(id), reloadList()]);
+}
+
 export async function rollback(id: string, deployment: number): Promise<void> {
 	await api('POST', `/apps/${encodeURIComponent(id)}/deployments/${deployment}/rollback`);
 	await Promise.all([load(id), reloadList()]);

@@ -34,19 +34,21 @@ type App struct {
 	// until it has been decided, by a build's suggestion or by the user.
 	TestCommand string
 	TestSet     bool
-	CreatedAt   time.Time
+	// Stopped is set when the user stopped the app.
+	Stopped   bool
+	CreatedAt time.Time
 }
 
 // ErrExists is returned when a name or domain is already taken.
 var ErrExists = errors.New("already exists")
 
-const appColumns = "id, source, image, repo, branch, port, domain, memory_mb, cpus, auto_deploy, health_path, test_command, created_at"
+const appColumns = "id, source, image, repo, branch, port, domain, memory_mb, cpus, auto_deploy, health_path, test_command, stopped, created_at"
 
 func scanApp(row scanner) (App, error) {
 	var a App
 	var created int64
 	var test sql.NullString
-	err := row.Scan(&a.ID, &a.Source, &a.Image, &a.Repo, &a.Branch, &a.Port, &a.Domain, &a.MemoryMB, &a.CPUs, &a.AutoDeploy, &a.HealthPath, &test, &created)
+	err := row.Scan(&a.ID, &a.Source, &a.Image, &a.Repo, &a.Branch, &a.Port, &a.Domain, &a.MemoryMB, &a.CPUs, &a.AutoDeploy, &a.HealthPath, &test, &a.Stopped, &created)
 	a.CreatedAt = time.Unix(created, 0)
 	a.TestCommand, a.TestSet = test.String, test.Valid
 	if errors.Is(err, sql.ErrNoRows) {
@@ -56,8 +58,8 @@ func scanApp(row scanner) (App, error) {
 }
 
 func (s *Store) CreateApp(ctx context.Context, a App) error {
-	_, err := s.db.ExecContext(ctx, "INSERT INTO apps ("+appColumns+") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-		a.ID, a.Source, a.Image, a.Repo, a.Branch, a.Port, a.Domain, a.MemoryMB, a.CPUs, a.AutoDeploy, a.HealthPath, a.testColumn(), a.CreatedAt.Unix())
+	_, err := s.db.ExecContext(ctx, "INSERT INTO apps ("+appColumns+") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		a.ID, a.Source, a.Image, a.Repo, a.Branch, a.Port, a.Domain, a.MemoryMB, a.CPUs, a.AutoDeploy, a.HealthPath, a.testColumn(), a.Stopped, a.CreatedAt.Unix())
 	return uniqueErr(err)
 }
 
@@ -67,6 +69,12 @@ func (s *Store) UpdateApp(ctx context.Context, a App) error {
 	res, err := s.db.ExecContext(ctx, "UPDATE apps SET image = ?, repo = ?, branch = ?, port = ?, domain = ?, memory_mb = ?, cpus = ?, auto_deploy = ?, health_path = ?, test_command = ? WHERE id = ?",
 		a.Image, a.Repo, a.Branch, a.Port, a.Domain, a.MemoryMB, a.CPUs, a.AutoDeploy, a.HealthPath, a.testColumn(), a.ID)
 	return oneRow(res, uniqueErr(err))
+}
+
+// SetStopped records whether the user stopped the app.
+func (s *Store) SetStopped(ctx context.Context, appID string, stopped bool) error {
+	res, err := s.db.ExecContext(ctx, "UPDATE apps SET stopped = ? WHERE id = ?", stopped, appID)
+	return oneRow(res, err)
 }
 
 func (a App) testColumn() any {
@@ -193,6 +201,7 @@ const (
 	CausePush     = "push"
 	CauseRestart  = "restart"  // the live image again, without a build
 	CauseRollback = "rollback" // an earlier deployment's image
+	CauseRecover  = "recover"  // the live image again, after it stopped by itself
 )
 
 // Deployment is one attempt to put a version of an app live.

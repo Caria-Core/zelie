@@ -191,6 +191,9 @@ func (s *Server) runDeployment(ctx context.Context, appID string, id int64) {
 		return
 	}
 
+	if d.Cause == store.CauseRecover {
+		s.lastOutput(ctx, app.ID, out)
+	}
 	switch {
 	case d.Image != "":
 		// A restart or rollback runs an image that already exists.
@@ -247,6 +250,9 @@ func (s *Server) runDeployment(ctx context.Context, appID string, id int64) {
 		return
 	}
 	fmt.Fprintln(out, "The new version is live.")
+	if d.Cause != store.CauseRecover {
+		s.crashes.reset(app.ID)
+	}
 	status.set(ctx, github.StatusSuccess, "Live")
 	s.Log.Info("deployment live", "app", app.ID, "id", id, "image", d.Image)
 	s.removeOldContainers(ctx, app.ID, container, out)
