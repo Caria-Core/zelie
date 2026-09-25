@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
+	"sync"
 	"syscall"
 	"time"
 
@@ -16,6 +18,7 @@ import (
 	"github.com/containerd/containerd/v2/contrib/seccomp"
 	"github.com/containerd/containerd/v2/pkg/cio"
 	"github.com/containerd/containerd/v2/pkg/namespaces"
+	"github.com/containerd/containerd/v2/pkg/netns"
 	"github.com/containerd/containerd/v2/pkg/oci"
 	"github.com/containerd/errdefs"
 	"github.com/opencontainers/runtime-spec/specs-go"
@@ -26,6 +29,9 @@ const Namespace = "zelie"
 
 const (
 	labelUsernsBase = "zelie.userns.base"
+	labelNetwork    = "zelie.network"
+	labelNetNS      = "zelie.netns"
+	labelIP         = "zelie.ip"
 
 	// Each container gets its own block of 65536 host IDs, starting well above
 	// any range a distribution hands out to regular users or /etc/subuid.
@@ -46,6 +52,10 @@ type Spec struct {
 	Args  []string // replaces the image's command when set
 	Env   []string
 
+	// Network is the network to join. Containers on the same network can
+	// reach each other. Without one the container has only loopback.
+	Network string
+
 	MemoryBytes int64   // required
 	CPUs        float64 // required, may be fractional
 	Pids        int64   // required
@@ -58,6 +68,8 @@ func (s Spec) Validate() error {
 		return fmt.Errorf("container id %q must be lowercase letters, digits and dashes", s.ID)
 	case s.Image == "":
 		return errors.New("image is required")
+	case s.Network != "" && !validID.MatchString(s.Network):
+		return fmt.Errorf("network name %q must be lowercase letters, digits and dashes", s.Network)
 	case s.MemoryBytes <= 0:
 		return errors.New("a memory limit is required")
 	case s.CPUs <= 0:
@@ -70,8 +82,14 @@ func (s Spec) Validate() error {
 
 // Engine runs containers through Zelie's containerd.
 type Engine struct {
-	client *containerd.Client
-	paths  Paths
+	client   *containerd.Client
+	paths    Paths
+	networks *networks
+	resolv   string
+
+	// createMu makes creating containers one at a time, so two requests
+	// can never pick the same ID range or race on the same name.
+	createMu sync.Mutex
 }
 
 func Connect(ctx context.Context, p Paths) (*Engine, error) {
@@ -79,7 +97,16 @@ func Connect(ctx context.Context, p Paths) (*Engine, error) {
 	if err != nil {
 		return nil, fmt.Errorf("connect to containerd at %s: %w", p.Socket, err)
 	}
-	return &Engine{client: c, paths: p}, nil
+	resolv, err := resolvConf(p)
+	if err != nil {
+		c.Close()
+		return nil, err
+	}
+	if err := guardHost(); err != nil {
+		c.Close()
+		return nil, err
+	}
+	return &Engine{client: c, paths: p, networks: newNetworks(p), resolv: resolv}, nil
 }
 
 func (e *Engine) Close() error { return e.client.Close() }
@@ -95,7 +122,7 @@ func LogPathFor(p Paths, id string) string {
 }
 
 // Run pulls the image if needed, creates the container and starts it.
-func (e *Engine) Run(ctx context.Context, s Spec) error {
+func (e *Engine) Run(ctx context.Context, s Spec) (err error) {
 	if err := s.Validate(); err != nil {
 		return err
 	}
@@ -106,11 +133,40 @@ func (e *Engine) Run(ctx context.Context, s Spec) error {
 		return fmt.Errorf("pull %s: %w", s.Image, err)
 	}
 
+	e.createMu.Lock()
+	defer e.createMu.Unlock()
+
+	// Check first: the cleanup below must never touch an existing container's
+	// network or files.
+	if _, err := e.client.LoadContainer(ctx, s.ID); err == nil {
+		return fmt.Errorf("container %s: %w", s.ID, errdefs.ErrAlreadyExists)
+	}
+
+	var cleanup []func()
+	defer func() {
+		if err != nil {
+			for i := len(cleanup) - 1; i >= 0; i-- {
+				cleanup[i]()
+			}
+		}
+	}()
+
 	base, err := e.freeUsernsBase(ctx)
 	if err != nil {
 		return err
 	}
 	idmap := []specs.LinuxIDMapping{{ContainerID: 0, HostID: base, Size: usernsSize}}
+
+	// The hosts file is bind-mounted, so it must exist before the task is
+	// created. Its content is filled in once the container has an address.
+	hostsFile := filepath.Join(e.containerDir(s.ID), "hosts")
+	if err := os.MkdirAll(e.containerDir(s.ID), 0o755); err != nil {
+		return err
+	}
+	cleanup = append(cleanup, func() { os.RemoveAll(e.containerDir(s.ID)) })
+	if err := os.WriteFile(hostsFile, nil, 0o644); err != nil {
+		return err
+	}
 
 	specOpts := []oci.SpecOpts{
 		oci.WithImageConfig(image),
@@ -127,12 +183,16 @@ func (e *Engine) Run(ctx context.Context, s Spec) error {
 		// from /sys/fs/cgroup. Runtimes such as the JVM size themselves from
 		// those files and would otherwise assume the whole machine.
 		oci.WithLinuxNamespace(specs.LinuxNamespace{Type: specs.CgroupNamespace}),
-		oci.WithMounts([]specs.Mount{{
-			Destination: "/sys/fs/cgroup",
-			Type:        "cgroup",
-			Source:      "cgroup",
-			Options:     []string{"nosuid", "noexec", "nodev", "relatime", "ro"},
-		}}),
+		oci.WithMounts([]specs.Mount{
+			{
+				Destination: "/sys/fs/cgroup",
+				Type:        "cgroup",
+				Source:      "cgroup",
+				Options:     []string{"nosuid", "noexec", "nodev", "relatime", "ro"},
+			},
+			{Destination: "/etc/resolv.conf", Type: "bind", Source: e.resolv, Options: []string{"rbind", "ro"}},
+			{Destination: "/etc/hosts", Type: "bind", Source: hostsFile, Options: []string{"rbind", "ro"}},
+		}),
 	}
 	if len(s.Args) > 0 {
 		specOpts = append(specOpts, oci.WithProcessArgs(s.Args...))
@@ -156,21 +216,58 @@ func (e *Engine) Run(ctx context.Context, s Spec) error {
 	if err != nil {
 		return fmt.Errorf("create container %s: %w", s.ID, err)
 	}
+	cleanup = append(cleanup, func() { container.Delete(context.WithoutCancel(ctx), containerd.WithSnapshotCleanup) })
 
 	if err := os.MkdirAll(e.paths.Logs, 0o700); err != nil {
 		return err
 	}
+	// Creating the task sets up the namespaces but does not start the
+	// process yet. runc creates the network namespace inside the container's
+	// user namespace, which the kernel requires before the container may
+	// mount its own /sys.
 	task, err := container.NewTask(ctx, cio.LogFile(LogPathFor(e.paths, s.ID)))
 	if err != nil {
-		container.Delete(ctx, containerd.WithSnapshotCleanup)
 		return fmt.Errorf("create task %s: %w", s.ID, err)
 	}
+	cleanup = append(cleanup, func() { task.Delete(context.WithoutCancel(ctx), containerd.WithProcessKill) })
+
+	// Pin the namespace to a file so it outlives this call and can be
+	// detached from the network when the container is removed.
+	ns, err := netns.NewNetNSFromPID(e.paths.NetNS, task.Pid())
+	if err != nil {
+		return fmt.Errorf("pin network namespace of %s: %w", s.ID, err)
+	}
+	cleanup = append(cleanup, func() { ns.Remove() })
+	labels := map[string]string{labelNetNS: ns.GetPath()}
+
+	hosts := "127.0.0.1\tlocalhost\n::1\tlocalhost\n"
+	if s.Network != "" {
+		ip, err := e.networks.attach(ctx, s.Network, s.ID, ns.GetPath())
+		if err != nil {
+			return err
+		}
+		cleanup = append(cleanup, func() { e.networks.detach(context.WithoutCancel(ctx), s.Network, s.ID, ns.GetPath()) })
+		labels[labelNetwork] = s.Network
+		labels[labelIP] = ip.String()
+		hosts += fmt.Sprintf("%s\t%s\n", ip, s.ID)
+	}
+	// Written in place: replacing the file would leave the bind mount
+	// pointing at the old, empty one.
+	if err := os.WriteFile(hostsFile, []byte(hosts), 0o644); err != nil {
+		return err
+	}
+	if _, err := container.SetLabels(ctx, labels); err != nil {
+		return err
+	}
+
 	if err := task.Start(ctx); err != nil {
-		task.Delete(ctx)
-		container.Delete(ctx, containerd.WithSnapshotCleanup)
 		return fmt.Errorf("start %s: %w", s.ID, err)
 	}
 	return nil
+}
+
+func (e *Engine) containerDir(id string) string {
+	return filepath.Join(e.paths.Data, "containers", id)
 }
 
 // freeUsernsBase finds an ID block no other container uses. The block is
@@ -245,16 +342,34 @@ func (e *Engine) Remove(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	return container.Delete(ctx, containerd.WithSnapshotCleanup)
+	labels, err := container.Labels(ctx)
+	if err != nil {
+		return err
+	}
+	if err := container.Delete(ctx, containerd.WithSnapshotCleanup); err != nil {
+		return err
+	}
+	// The container is gone; what follows only frees its network and files.
+	var errs []error
+	if path := labels[labelNetNS]; path != "" {
+		if name := labels[labelNetwork]; name != "" {
+			errs = append(errs, e.networks.detach(ctx, name, id, path))
+		}
+		errs = append(errs, netns.LoadNetNS(path).Remove())
+	}
+	errs = append(errs, os.RemoveAll(e.containerDir(id)))
+	return errors.Join(errs...)
 }
 
 // Status is a short summary of a container.
 type Status struct {
-	ID     string
-	Image  string
-	State  string // running, stopped, created, …
-	Pid    uint32
-	Userns uint32 // first host ID of the container's user namespace
+	ID      string
+	Image   string
+	State   string // running, stopped, created, …
+	Pid     uint32
+	Userns  uint32 // first host ID of the container's user namespace
+	Network string
+	IP      netip.Addr // zero when the container has no network
 }
 
 func (e *Engine) List(ctx context.Context) ([]Status, error) {
@@ -273,6 +388,8 @@ func (e *Engine) List(ctx context.Context) ([]Status, error) {
 		if v, err := strconv.ParseUint(info.Labels[labelUsernsBase], 10, 32); err == nil {
 			st.Userns = uint32(v)
 		}
+		st.Network = info.Labels[labelNetwork]
+		st.IP, _ = netip.ParseAddr(info.Labels[labelIP])
 		if task, err := c.Task(ctx, nil); err == nil {
 			if s, err := task.Status(ctx); err == nil {
 				st.State = string(s.Status)

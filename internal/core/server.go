@@ -109,6 +109,7 @@ type runRequest struct {
 	Image       string   `json:"image"`
 	Args        []string `json:"args,omitempty"`
 	Env         []string `json:"env,omitempty"`
+	Network     string   `json:"network,omitempty"`
 	MemoryBytes int64    `json:"memory_bytes"`
 	CPUs        float64  `json:"cpus"`
 	Pids        int64    `json:"pids"`
@@ -119,11 +120,13 @@ type stopRequest struct {
 }
 
 type containerJSON struct {
-	ID     string `json:"id"`
-	Image  string `json:"image"`
-	State  string `json:"state"`
-	Pid    uint32 `json:"pid,omitempty"`
-	Userns uint32 `json:"userns"`
+	ID      string `json:"id"`
+	Image   string `json:"image"`
+	State   string `json:"state"`
+	Pid     uint32 `json:"pid,omitempty"`
+	Userns  uint32 `json:"userns"`
+	Network string `json:"network,omitempty"`
+	IP      string `json:"ip,omitempty"`
 }
 
 func (s *Server) run(w http.ResponseWriter, r *http.Request) {
@@ -133,7 +136,7 @@ func (s *Server) run(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	spec := engine.Spec{
-		ID: req.ID, Image: req.Image, Args: req.Args, Env: req.Env,
+		ID: req.ID, Image: req.Image, Args: req.Args, Env: req.Env, Network: req.Network,
 		MemoryBytes: req.MemoryBytes, CPUs: req.CPUs, Pids: req.Pids,
 	}
 	if err := spec.Validate(); err != nil {
@@ -196,7 +199,11 @@ func (s *Server) list(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]containerJSON, 0, len(list))
 	for _, c := range list {
-		out = append(out, containerJSON{ID: c.ID, Image: c.Image, State: c.State, Pid: c.Pid, Userns: c.Userns})
+		cj := containerJSON{ID: c.ID, Image: c.Image, State: c.State, Pid: c.Pid, Userns: c.Userns, Network: c.Network}
+		if c.IP.IsValid() {
+			cj.IP = c.IP.String()
+		}
+		out = append(out, cj)
 	}
 	writeJSON(w, http.StatusOK, out)
 }

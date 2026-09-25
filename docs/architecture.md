@@ -30,7 +30,9 @@ By default every container gets:
 - a user namespace, so root inside the container is an unprivileged user on the host
 - the default seccomp profile and a reduced set of capabilities
 - limits on CPU, memory, disk and number of processes
-- its own network, with no access to the host network or to Zelie's own socket
+- a place on its project's network and nowhere else: it can reach the internet and the
+  other containers of the same project, but not other projects or services running on
+  the host
 
 Nothing runs privileged.
 

@@ -11,6 +11,7 @@ package engine
 const (
 	ContainerdVersion = "2.4.1"
 	RuncVersion       = "1.5.1"
+	CNIVersion        = "1.9.1"
 )
 
 type artifact struct {
@@ -39,6 +40,20 @@ var runcArtifacts = map[string]artifact{
 		SHA256: "ca70e7dbd6616ca782a59b5d3ac86909123fdaa9fa3f89dcf29051c70eee7ce9",
 	},
 }
+
+var cniArtifacts = map[string]artifact{
+	"amd64": {
+		URL:    "https://github.com/containernetworking/plugins/releases/download/v1.9.1/cni-plugins-linux-amd64-v1.9.1.tgz",
+		SHA256: "b98f74a0f8522f0a83867178729c1aa70f2158f90c45a2ca8fa791db1c76b303",
+	},
+	"arm64": {
+		URL:    "https://github.com/containernetworking/plugins/releases/download/v1.9.1/cni-plugins-linux-arm64-v1.9.1.tgz",
+		SHA256: "56171987d3947707c3563db2f4001bccaf50fd63468611b9f3cbecb1375ee7ec",
+	},
+}
+
+// cniPlugins are the network plugins Zelie uses. The archive ships many more.
+var cniPlugins = []string{"bridge", "host-local", "loopback", "firewall", "portmap"}
 
 // containerdBinaries are the files we take from the containerd archive. The
 // archive has more, but Zelie only needs the daemon, the runc shim, and ctr

@@ -8,11 +8,16 @@ package engine
 import (
 	"context"
 	"fmt"
+	"net"
+	"net/netip"
 	"os"
 	"os/exec"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/containerd/containerd/v2/pkg/netns"
+	cnins "github.com/containernetworking/plugins/pkg/ns"
 )
 
 const testImage = "docker.io/library/busybox:latest"
@@ -166,5 +171,96 @@ func TestStopEscalatesToKill(t *testing.T) {
 	}
 	if s := status(t, e, "it-stop"); s.State == "running" {
 		t.Errorf("still running after stop: %+v", s)
+	}
+}
+
+// dialFrom opens a TCP connection from inside a container's network
+// namespace.
+func dialFrom(t *testing.T, pid uint32, addr string) error {
+	t.Helper()
+	var dialErr error
+	err := netns.LoadNetNS(fmt.Sprintf("/proc/%d/ns/net", pid)).Do(func(cnins.NetNS) error {
+		c, err := net.DialTimeout("tcp", addr, 2*time.Second)
+		if err == nil {
+			c.Close()
+		}
+		dialErr = err
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dialErr
+}
+
+func TestNetworkIsolation(t *testing.T) {
+	e := connect(t)
+	small := Spec{Image: testImage, MemoryBytes: 32 << 20, CPUs: 0.1, Pids: 16}
+	web, same, other, none := small, small, small, small
+	web.ID, web.Network, web.Args = "it-net-web", "it-a", []string{"httpd", "-f", "-p", "8080"}
+	same.ID, same.Network, same.Args = "it-net-same", "it-a", []string{"sleep", "120"}
+	other.ID, other.Network, other.Args = "it-net-other", "it-b", []string{"sleep", "120"}
+	none.ID, none.Args = "it-net-none", []string{"sleep", "120"}
+	for _, s := range []Spec{web, same, other, none} {
+		run(t, e, s)
+	}
+	webIP := status(t, e, web.ID).IP
+	if !webIP.IsValid() {
+		t.Fatal("web container has no address")
+	}
+	target := net.JoinHostPort(webIP.String(), "8080")
+
+	if err := dialFrom(t, status(t, e, same.ID).Pid, target); err != nil {
+		t.Errorf("same network should connect: %v", err)
+	}
+	if err := dialFrom(t, status(t, e, other.ID).Pid, target); err == nil {
+		t.Error("a container on another network reached the web container")
+	}
+	if err := dialFrom(t, status(t, e, none.ID).Pid, target); err == nil {
+		t.Error("a container without a network reached the web container")
+	}
+
+	// The host reaches containers, which the proxy relies on.
+	if c, err := net.DialTimeout("tcp", target, 2*time.Second); err != nil {
+		t.Errorf("host cannot reach the container: %v", err)
+	} else {
+		c.Close()
+	}
+
+	// Containers must not reach services on the host.
+	l, err := net.Listen("tcp", "0.0.0.0:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			c.Close()
+		}
+	}()
+	gateway := webIP.As4()
+	gateway[3] = 1
+	port := l.Addr().(*net.TCPAddr).Port
+	hostAddr := net.JoinHostPort(netip.AddrFrom4(gateway).String(), fmt.Sprint(port))
+	if err := dialFrom(t, status(t, e, same.ID).Pid, hostAddr); err == nil {
+		t.Errorf("a container reached a service on the host at %s", hostAddr)
+	}
+}
+
+func TestRemoveFreesNetwork(t *testing.T) {
+	e := connect(t)
+	run(t, e, Spec{ID: "it-net-free", Network: "it-a", Image: testImage, Args: []string{"sleep", "120"},
+		MemoryBytes: 32 << 20, CPUs: 0.1, Pids: 8})
+	ip := status(t, e, "it-net-free").IP.String()
+	if err := e.Remove(context.Background(), "it-net-free"); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := exec.Command("sh", "-c", "grep -rlx it-net-free "+DefaultPaths.Data+"/ipam || true").Output()
+	if strings.TrimSpace(string(b)) != "" {
+		t.Errorf("IP lease %s still held after remove: %s", ip, b)
 	}
 }

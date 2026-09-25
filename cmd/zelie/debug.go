@@ -42,6 +42,7 @@ func debug(args []string, stdout, stderr io.Writer) int {
 		mem := fs.Int64("memory", 256, "memory limit in MiB")
 		cpus := fs.Float64("cpus", 1, "CPU limit, may be fractional")
 		pids := fs.Int64("pids", 256, "process limit")
+		network := fs.String("network", "", "network to join")
 		if err := fs.Parse(args[1:]); err != nil {
 			return 2
 		}
@@ -53,6 +54,7 @@ func debug(args []string, stdout, stderr io.Writer) int {
 			ID:          fs.Arg(0),
 			Image:       fs.Arg(1),
 			Args:        fs.Args()[2:],
+			Network:     *network,
 			MemoryBytes: *mem << 20,
 			CPUs:        *cpus,
 			Pids:        *pids,
@@ -86,9 +88,17 @@ func debug(args []string, stdout, stderr io.Writer) int {
 		list, err = c.List(ctx)
 		if err == nil {
 			tw := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
-			fmt.Fprintln(tw, "ID\tSTATE\tPID\tUSERNS\tIMAGE")
+			fmt.Fprintln(tw, "ID\tSTATE\tPID\tNETWORK\tIP\tIMAGE")
 			for _, s := range list {
-				fmt.Fprintf(tw, "%s\t%s\t%d\t%d\t%s\n", s.ID, s.State, s.Pid, s.Userns, s.Image)
+				ip := "-"
+				if s.IP.IsValid() {
+					ip = s.IP.String()
+				}
+				network := s.Network
+				if network == "" {
+					network = "-"
+				}
+				fmt.Fprintf(tw, "%s\t%s\t%d\t%s\t%s\t%s\n", s.ID, s.State, s.Pid, network, ip, s.Image)
 			}
 			tw.Flush()
 		}

@@ -42,6 +42,10 @@ func (in *Installer) Install(ctx context.Context) error {
 	if !ok {
 		return fmt.Errorf("no runc build for architecture %q", in.Arch)
 	}
+	cn, ok := cniArtifacts[in.Arch]
+	if !ok {
+		return fmt.Errorf("no CNI plugin build for architecture %q", in.Arch)
+	}
 
 	changed := false
 
@@ -49,7 +53,7 @@ func (in *Installer) Install(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("containerd: %w", err)
 	}
-	bins, err := extract(archive, containerdBinaries)
+	bins, err := extract(archive, "bin", containerdBinaries)
 	if err != nil {
 		return fmt.Errorf("containerd: %w", err)
 	}
@@ -71,6 +75,22 @@ func (in *Installer) Install(ctx context.Context) error {
 	}
 	changed = changed || c
 
+	// Plugins run once per network change, not as a daemon, so replacing
+	// them never needs a restart.
+	archive, err = in.download(ctx, cn)
+	if err != nil {
+		return fmt.Errorf("CNI plugins: %w", err)
+	}
+	plugins, err := extract(archive, ".", cniPlugins)
+	if err != nil {
+		return fmt.Errorf("CNI plugins: %w", err)
+	}
+	for _, name := range cniPlugins {
+		if _, err := writeIfChanged(filepath.Join(in.Paths.CNI, name), plugins[name], 0o755); err != nil {
+			return err
+		}
+	}
+
 	for file, content := range map[string]string{
 		in.Paths.Config: ConfigFile(in.Paths),
 		in.Paths.Unit:   UnitFile(in.Paths),
@@ -82,7 +102,7 @@ func (in *Installer) Install(ctx context.Context) error {
 		changed = changed || c
 	}
 
-	in.logf("containerd %s and runc %s are in %s", ContainerdVersion, RuncVersion, in.Paths.Bin)
+	in.logf("containerd %s, runc %s and CNI plugins %s are installed", ContainerdVersion, RuncVersion, CNIVersion)
 
 	systemctl := in.systemctl
 	if systemctl == nil {
@@ -137,8 +157,8 @@ func (in *Installer) download(ctx context.Context, a artifact) ([]byte, error) {
 	return data, nil
 }
 
-// extract returns the named files from the bin/ directory of a .tar.gz.
-func extract(archive []byte, names []string) (map[string][]byte, error) {
+// extract returns the named files from one directory of a .tar.gz.
+func extract(archive []byte, dir string, names []string) (map[string][]byte, error) {
 	gz, err := gzip.NewReader(bytes.NewReader(archive))
 	if err != nil {
 		return nil, err
@@ -153,7 +173,7 @@ func extract(archive []byte, names []string) (map[string][]byte, error) {
 		if err != nil {
 			return nil, err
 		}
-		if h.Typeflag != tar.TypeReg || path.Dir(path.Clean(h.Name)) != "bin" {
+		if h.Typeflag != tar.TypeReg || path.Dir(path.Clean(h.Name)) != dir {
 			continue
 		}
 		name := path.Base(h.Name)
@@ -168,7 +188,7 @@ func extract(archive []byte, names []string) (map[string][]byte, error) {
 	}
 	for _, n := range names {
 		if _, ok := out[n]; !ok {
-			return nil, fmt.Errorf("archive has no bin/%s", n)
+			return nil, fmt.Errorf("archive has no %s", path.Join(dir, n))
 		}
 	}
 	return out, nil

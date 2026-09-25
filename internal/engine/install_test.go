@@ -46,6 +46,9 @@ func sum(b []byte) string {
 // fakeRelease serves a containerd archive and a runc binary and registers them
 // under the architecture name "test".
 func fakeRelease(t *testing.T, archive, runc []byte, runcSum string) *httptest.Server {
+	cni := tarGz(t, map[string]string{
+		"./bridge": "b", "./host-local": "h", "./loopback": "l", "./firewall": "f", "./portmap": "p", "./vlan": "not wanted",
+	})
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -53,6 +56,8 @@ func fakeRelease(t *testing.T, archive, runc []byte, runcSum string) *httptest.S
 			w.Write(archive)
 		case "/runc":
 			w.Write(runc)
+		case "/cni.tgz":
+			w.Write(cni)
 		default:
 			http.NotFound(w, r)
 		}
@@ -60,9 +65,11 @@ func fakeRelease(t *testing.T, archive, runc []byte, runcSum string) *httptest.S
 	t.Cleanup(srv.Close)
 	containerdArtifacts["test"] = artifact{URL: srv.URL + "/containerd.tar.gz", SHA256: sum(archive)}
 	runcArtifacts["test"] = artifact{URL: srv.URL + "/runc", SHA256: runcSum}
+	cniArtifacts["test"] = artifact{URL: srv.URL + "/cni.tgz", SHA256: sum(cni)}
 	t.Cleanup(func() {
 		delete(containerdArtifacts, "test")
 		delete(runcArtifacts, "test")
+		delete(cniArtifacts, "test")
 	})
 	return srv
 }
@@ -70,6 +77,7 @@ func fakeRelease(t *testing.T, archive, runc []byte, runcSum string) *httptest.S
 func testPaths(dir string) Paths {
 	return Paths{
 		Bin:    filepath.Join(dir, "bin"),
+		CNI:    filepath.Join(dir, "cni"),
 		Config: filepath.Join(dir, "etc/containerd.toml"),
 		Root:   filepath.Join(dir, "lib"),
 		State:  filepath.Join(dir, "run"),
@@ -117,6 +125,12 @@ func TestInstallIsIdempotent(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, "bin", "containerd-stress")); !os.IsNotExist(err) {
 		t.Errorf("containerd-stress should not be installed")
 	}
+	if _, err := os.Stat(filepath.Join(dir, "cni", "bridge")); err != nil {
+		t.Errorf("bridge plugin missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "cni", "vlan")); !os.IsNotExist(err) {
+		t.Errorf("vlan plugin should not be installed")
+	}
 
 	calls = nil
 	if err := in.Install(context.Background()); err != nil {
@@ -152,7 +166,7 @@ func TestInstallRejectsBadChecksum(t *testing.T) {
 
 func TestExtractMissingBinary(t *testing.T) {
 	archive := tarGz(t, map[string]string{"bin/containerd": "daemon"})
-	if _, err := extract(archive, []string{"containerd", "ctr"}); err == nil {
+	if _, err := extract(archive, "bin", []string{"containerd", "ctr"}); err == nil {
 		t.Fatal("want an error for a missing binary")
 	}
 }
@@ -168,7 +182,7 @@ func TestUnitKeepsContainersOnRestart(t *testing.T) {
 
 func TestArtifactsCoverSupportedArchitectures(t *testing.T) {
 	for _, arch := range []string{"amd64", "arm64"} {
-		for name, set := range map[string]map[string]artifact{"containerd": containerdArtifacts, "runc": runcArtifacts} {
+		for name, set := range map[string]map[string]artifact{"containerd": containerdArtifacts, "runc": runcArtifacts, "cni": cniArtifacts} {
 			a, ok := set[arch]
 			if !ok {
 				t.Errorf("no %s artifact for %s", name, arch)

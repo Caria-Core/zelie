@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 
 	"github.com/Caria-Core/zelie/internal/engine"
@@ -82,7 +83,7 @@ func (c *Client) do(ctx context.Context, method, path string, body any, out any)
 
 func (c *Client) Run(ctx context.Context, s engine.Spec) error {
 	return c.do(ctx, http.MethodPost, "/v1/containers", runRequest{
-		ID: s.ID, Image: s.Image, Args: s.Args, Env: s.Env,
+		ID: s.ID, Image: s.Image, Args: s.Args, Env: s.Env, Network: s.Network,
 		MemoryBytes: s.MemoryBytes, CPUs: s.CPUs, Pids: s.Pids,
 	}, nil)
 }
@@ -102,7 +103,8 @@ func (c *Client) List(ctx context.Context) ([]engine.Status, error) {
 	}
 	out := make([]engine.Status, 0, len(list))
 	for _, c := range list {
-		out = append(out, engine.Status{ID: c.ID, Image: c.Image, State: c.State, Pid: c.Pid, Userns: c.Userns})
+		ip, _ := netip.ParseAddr(c.IP)
+		out = append(out, engine.Status{ID: c.ID, Image: c.Image, State: c.State, Pid: c.Pid, Userns: c.Userns, Network: c.Network, IP: ip})
 	}
 	return out, nil
 }
