@@ -4,7 +4,7 @@
 	import { api, type Me } from '$lib/api';
 	import { messageOf } from '$lib/errors';
 	import { t } from '$lib/i18n';
-	import { loginWithPasskey, passkeysAvailable } from '$lib/passkey';
+	import { passkeysAvailable, usePasskey } from '$lib/passkey';
 	import { refresh } from '$lib/session.svelte';
 	import Button from '$lib/ui/Button.svelte';
 	import ErrorText from '$lib/ui/ErrorText.svelte';
@@ -59,9 +59,9 @@
 		});
 	};
 
-	const usePasskey = () =>
+	const passkey = () =>
 		run(async () => {
-			await loginWithPasskey();
+			await usePasskey('/login/passkey');
 			await goto('/');
 		});
 
@@ -83,7 +83,7 @@
 {:else if step === 'second' || step === 'recovery'}
 	<Lead title={t('login.second.title')} text={me?.email ? ' ' + me.email : ''} />
 	{#if step === 'second' && showPasskey}
-		<Button onclick={usePasskey} {busy} class="self-start">{t('login.second.passkey')}</Button>
+		<Button onclick={passkey} {busy} class="self-start">{t('login.second.passkey')}</Button>
 	{/if}
 	{#if step === 'recovery' || me?.methods?.includes('totp')}
 		<form class="flex flex-col gap-4" onsubmit={submitCode}>

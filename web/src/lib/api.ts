@@ -1,7 +1,9 @@
 export class ApiError extends Error {
 	constructor(
 		readonly status: number,
-		message: string
+		message: string,
+		// The server wants the user to confirm it is them, then try again.
+		readonly confirm = false
 	) {
 		super(message);
 	}
@@ -17,7 +19,7 @@ export async function api<T = unknown>(method: string, path: string, body?: unkn
 	});
 	if (res.status === 204) return undefined as T;
 	const data = await res.json().catch(() => ({}));
-	if (!res.ok) throw new ApiError(res.status, data.error ?? res.statusText);
+	if (!res.ok) throw new ApiError(res.status, data.error ?? res.statusText, data.confirm === true);
 	return data as T;
 }
 

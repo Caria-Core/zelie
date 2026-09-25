@@ -140,10 +140,20 @@ func (s *Server) addPasskey(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) loginPasskeyOptions(w http.ResponseWriter, r *http.Request) {
-	l, ok := s.halfLogin(w, r)
-	if !ok {
-		return
+	if l, ok := s.halfLogin(w, r); ok {
+		s.beginPasskeyCheck(w, r, l, "passkey-login")
 	}
+}
+
+func (s *Server) loginPasskey(w http.ResponseWriter, r *http.Request) {
+	if l, ok := s.halfLogin(w, r); ok && s.finishPasskeyCheck(w, r, l, "passkey-login") {
+		s.verified(w, r, l, "passkey")
+	}
+}
+
+// beginPasskeyCheck asks the browser to have one of the account's passkeys
+// sign a challenge. kind keeps a login and a confirmation apart.
+func (s *Server) beginPasskeyCheck(w http.ResponseWriter, r *http.Request, l login, kind string) {
 	rp, err := relyingParty(r)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -160,48 +170,46 @@ func (s *Server) loginPasskeyOptions(w http.ResponseWriter, r *http.Request) {
 	}
 	opts, data, err := rp.BeginLogin(u)
 	if err != nil {
-		s.fail(w, "begin passkey login", err)
+		s.fail(w, "begin passkey check", err)
 		return
 	}
-	s.guards.pending.put(l.session.Hash, "passkey-login", data, s.now())
+	s.guards.pending.put(l.session.Hash, kind, data, s.now())
 	writeJSON(w, http.StatusOK, opts)
 }
 
-func (s *Server) loginPasskey(w http.ResponseWriter, r *http.Request) {
-	l, ok := s.halfLogin(w, r)
-	if !ok {
-		return
-	}
-	v, ok := s.guards.pending.take(l.session.Hash, "passkey-login", s.now())
+// finishPasskeyCheck checks the signed challenge. When it reports false it
+// has written the response.
+func (s *Server) finishPasskeyCheck(w http.ResponseWriter, r *http.Request, l login, kind string) bool {
+	v, ok := s.guards.pending.take(l.session.Hash, kind, s.now())
 	if !ok {
 		writeError(w, http.StatusBadRequest, errNoCeremony)
-		return
+		return false
 	}
 	rp, err := relyingParty(r)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
-		return
+		return false
 	}
 	u, err := s.passkeyUser(r, l.account)
 	if err != nil {
 		s.fail(w, "load passkeys", err)
-		return
+		return false
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
 	cred, err := rp.FinishLogin(u, *v.(*webauthn.SessionData), r)
 	if err != nil {
-		s.Log.Warn("passkey login failed", "user", l.account.ID, "err", err)
+		s.Log.Warn("passkey check failed", "user", l.account.ID, "err", err)
 		s.secondFailed(w, l)
-		return
+		return false
 	}
 	b, err := json.Marshal(cred)
 	if err != nil {
 		s.fail(w, "encode passkey", err)
-		return
+		return false
 	}
 	if err := s.Store.UpdatePasskey(r.Context(), cred.ID, b, s.now()); err != nil {
 		s.fail(w, "update passkey", err)
-		return
+		return false
 	}
-	s.verified(w, r, l, "passkey")
+	return true
 }

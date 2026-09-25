@@ -10,6 +10,7 @@
 	import ErrorText from '$lib/ui/ErrorText.svelte';
 	import Field from '$lib/ui/Field.svelte';
 	import Lead from '$lib/ui/Lead.svelte';
+	import RecoveryCodes from '$lib/ui/RecoveryCodes.svelte';
 
 	type Totp = { secret: string; qr: string };
 
@@ -17,7 +18,6 @@
 	let totp = $state<Totp | null>(null);
 	let code = $state('');
 	let codes = $state<string[]>([]);
-	let copied = $state(false);
 	let error = $state('');
 	let busy = $state(false);
 	const passkeys = passkeysAvailable() && onDomain();
@@ -60,11 +60,6 @@
 		e.preventDefault();
 		run(async () => finished(await api('POST', '/2fa/totp', { code: code.trim() })));
 	};
-
-	async function copy() {
-		await navigator.clipboard.writeText(codes.join('\n'));
-		copied = true;
-	}
 </script>
 
 {#if step === 'choose'}
@@ -112,11 +107,7 @@
 	</form>
 {:else if step === 'codes'}
 	<Lead title={t('enroll.recovery.title')} text={' ' + t('enroll.recovery.lead')} />
-	<ul class="grid grid-cols-2 gap-x-6 gap-y-1.5 rounded-2xl bg-panel p-5 font-mono text-[15px]">
-		{#each codes as c (c)}<li>{c}</li>{/each}
-	</ul>
-	<div class="flex gap-3">
+	<RecoveryCodes {codes}>
 		<Button onclick={() => goto('/')}>{t('enroll.recovery.saved')}</Button>
-		<Button kind="secondary" onclick={copy}>{copied ? t('enroll.recovery.copied') : t('enroll.recovery.copy')}</Button>
-	</div>
+	</RecoveryCodes>
 {/if}

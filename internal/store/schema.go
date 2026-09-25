@@ -49,4 +49,9 @@ CREATE TABLE setup_token (
 	expires_at INTEGER NOT NULL
 ) STRICT;
 `,
+	`
+-- When the person behind the session last proved it was them, by logging
+-- in or confirming. Changing how the account logs in needs a recent one.
+ALTER TABLE sessions ADD COLUMN confirmed_at INTEGER NOT NULL DEFAULT 0;
+`,
 }

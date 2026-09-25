@@ -65,3 +65,38 @@ func TestSetup(t *testing.T) {
 		t.Fatalf("SetupOpen = %v, %v", open, err)
 	}
 }
+
+func TestLastFactorCannotBeRemoved(t *testing.T) {
+	ctx := context.Background()
+	s := open(t)
+	now := time.Now()
+	s.SetSetupToken(ctx, []byte("t"), now.Add(time.Hour))
+	u, err := s.CreateFirstAdmin(ctx, []byte("t"), "a@example.com", "hash", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"k1", "k2"} {
+		if err := s.AddPasskey(ctx, Passkey{ID: []byte(id), UserID: u.ID, Name: id, Credential: []byte("{}"), CreatedAt: now}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.DeletePasskey(ctx, u.ID, []byte("k1")); err != nil {
+		t.Fatalf("delete one of two: %v", err)
+	}
+	if err := s.DeletePasskey(ctx, u.ID, []byte("k1")); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("delete it again: %v", err)
+	}
+	if err := s.DeletePasskey(ctx, u.ID, []byte("k2")); !errors.Is(err, ErrLastFactor) {
+		t.Fatalf("delete the last one: %v", err)
+	}
+	if err := s.RemoveTOTP(ctx, u.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("remove an app that was never added: %v", err)
+	}
+	s.SetTOTP(ctx, u.ID, []byte("sealed"), 1)
+	if err := s.DeletePasskey(ctx, u.ID, []byte("k2")); err != nil {
+		t.Fatalf("delete the passkey once the app is there: %v", err)
+	}
+	if err := s.RemoveTOTP(ctx, u.ID); !errors.Is(err, ErrLastFactor) {
+		t.Fatalf("remove the app when it is the last: %v", err)
+	}
+}

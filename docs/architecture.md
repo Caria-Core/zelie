@@ -35,6 +35,12 @@ change something are refused when a browser says they come from another site, an
 interface runs under a Content-Security-Policy that allows no inline code except its
 own, by hash.
 
+Changing how an account logs in (its password, passkeys, authenticator app or recovery
+codes) needs a second step from the last 15 minutes. Logging in counts. After that the
+panel asks again, so a browser left open or a stolen cookie is not enough to take the
+account over. A password alone does not count, and the last second step on an account
+cannot be removed. Changing the password logs out every other browser.
+
 ## Containers
 
 Every app and game server runs in its own container. Zelie talks to containerd directly

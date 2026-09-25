@@ -7,8 +7,12 @@ import (
 	"time"
 )
 
-// ErrNotFound means the thing asked for does not exist.
-var ErrNotFound = errors.New("not found")
+var (
+	// ErrNotFound means the thing asked for does not exist.
+	ErrNotFound = errors.New("not found")
+	// ErrLastFactor stops an account from removing its only second factor.
+	ErrLastFactor = errors.New("this is the only second step left on the account; add another before removing it")
+)
 
 // Account is a user with what is needed to log them in.
 type Account struct {
@@ -63,6 +67,64 @@ func (s *Store) UseTOTPStep(ctx context.Context, userID, step int64) (bool, erro
 	return n == 1, err
 }
 
+// SetPassword replaces the account's password hash.
+func (s *Store) SetPassword(ctx context.Context, userID int64, hash string) error {
+	res, err := s.db.ExecContext(ctx, "UPDATE users SET password = ? WHERE id = ?", hash, userID)
+	return oneRow(res, err)
+}
+
+// The conditions below keep at least one second factor on every account that
+// has one. They are part of the statement, so two requests at once cannot
+// each remove the other's last factor.
+const (
+	otherPasskeys = "(SELECT count(*) FROM passkeys WHERE user_id = ?) > 1"
+	hasPasskey    = "(SELECT count(*) FROM passkeys WHERE user_id = ?) > 0"
+	hasTOTP       = "(SELECT totp_secret FROM users WHERE id = ?) IS NOT NULL"
+)
+
+// RemoveTOTP turns off the authenticator app, unless the account has no
+// passkey to fall back on.
+func (s *Store) RemoveTOTP(ctx context.Context, userID int64) error {
+	res, err := s.db.ExecContext(ctx,
+		"UPDATE users SET totp_secret = NULL WHERE id = ? AND totp_secret IS NOT NULL AND "+hasPasskey, userID, userID)
+	if err := oneRow(res, err); !errors.Is(err, ErrNotFound) {
+		return err
+	}
+	a, err := s.AccountByID(ctx, userID)
+	if err != nil {
+		return err
+	}
+	if a.TOTPSecret == nil {
+		return ErrNotFound
+	}
+	return ErrLastFactor
+}
+
+// DeletePasskey removes a passkey, unless it is the account's last second
+// factor.
+func (s *Store) DeletePasskey(ctx context.Context, userID int64, id []byte) error {
+	res, err := s.db.ExecContext(ctx,
+		"DELETE FROM passkeys WHERE user_id = ? AND id = ? AND ("+hasTOTP+" OR "+otherPasskeys+")", userID, id, userID, userID)
+	if err := oneRow(res, err); !errors.Is(err, ErrNotFound) {
+		return err
+	}
+	var n int
+	if err := s.db.QueryRowContext(ctx, "SELECT count(*) FROM passkeys WHERE user_id = ? AND id = ?", userID, id).Scan(&n); err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return ErrLastFactor
+}
+
+// RecoveryCodesLeft counts the account's unused recovery codes.
+func (s *Store) RecoveryCodesLeft(ctx context.Context, userID int64) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, "SELECT count(*) FROM recovery_codes WHERE user_id = ?", userID).Scan(&n)
+	return n, err
+}
+
 // SetRecoveryCodes replaces the account's recovery codes.
 func (s *Store) SetRecoveryCodes(ctx context.Context, userID int64, hashes [][]byte) error {
 	return s.tx(ctx, func(tx *sql.Tx) error {
@@ -96,6 +158,7 @@ type Passkey struct {
 	Name       string
 	Credential []byte // JSON, owned by the WebAuthn code
 	CreatedAt  time.Time
+	UsedAt     time.Time // zero if never used to log in
 }
 
 func (s *Store) AddPasskey(ctx context.Context, p Passkey) error {
@@ -107,7 +170,7 @@ func (s *Store) AddPasskey(ctx context.Context, p Passkey) error {
 
 func (s *Store) Passkeys(ctx context.Context, userID int64) ([]Passkey, error) {
 	rows, err := s.db.QueryContext(ctx,
-		"SELECT id, name, credential, created_at FROM passkeys WHERE user_id = ? ORDER BY created_at", userID)
+		"SELECT id, name, credential, created_at, coalesce(used_at, 0) FROM passkeys WHERE user_id = ? ORDER BY created_at", userID)
 	if err != nil {
 		return nil, err
 	}
@@ -115,11 +178,14 @@ func (s *Store) Passkeys(ctx context.Context, userID int64) ([]Passkey, error) {
 	var out []Passkey
 	for rows.Next() {
 		p := Passkey{UserID: userID}
-		var created int64
-		if err := rows.Scan(&p.ID, &p.Name, &p.Credential, &created); err != nil {
+		var created, used int64
+		if err := rows.Scan(&p.ID, &p.Name, &p.Credential, &created, &used); err != nil {
 			return nil, err
 		}
 		p.CreatedAt = time.Unix(created, 0)
+		if used != 0 {
+			p.UsedAt = time.Unix(used, 0)
+		}
 		out = append(out, p)
 	}
 	return out, rows.Err()

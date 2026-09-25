@@ -25,6 +25,10 @@ const (
 	halfLoginTTL = 10 * time.Minute
 	sessionIdle  = 7 * 24 * time.Hour
 	sessionMax   = 30 * 24 * time.Hour
+	// confirmWindow is how long proving it is you again lasts. Changing how
+	// the account logs in needs it, so a browser left open or a stolen
+	// cookie is not enough to take the account over.
+	confirmWindow = 15 * time.Minute
 )
 
 // login is the session and account behind a request.
@@ -132,11 +136,40 @@ func (s *Server) signedIn(next http.HandlerFunc) http.HandlerFunc {
 	return s.withLogin(false, next)
 }
 
-// enrolling also lets through a half-finished login whose account has no
-// second factor yet, so it can set one up. Nothing else is reachable until
-// it does.
+// confirmed lets a request through only if the user also proved it was them
+// within confirmWindow.
+func (s *Server) confirmed(next http.HandlerFunc) http.HandlerFunc {
+	return s.withLogin(false, func(w http.ResponseWriter, r *http.Request) {
+		if !s.recentlyConfirmed(loginFrom(r.Context())) {
+			writeConfirmFirst(w)
+			return
+		}
+		next(w, r)
+	})
+}
+
+// enrolling is for adding a second factor. It also lets through a
+// half-finished login whose account has none yet, so it can set one up;
+// nothing else is reachable until it does. An account that already has one
+// must have confirmed recently.
 func (s *Server) enrolling(next http.HandlerFunc) http.HandlerFunc {
-	return s.withLogin(true, next)
+	return s.withLogin(true, func(w http.ResponseWriter, r *http.Request) {
+		if l := loginFrom(r.Context()); l.account.HasSecondFactor() && !s.recentlyConfirmed(l) {
+			writeConfirmFirst(w)
+			return
+		}
+		next(w, r)
+	})
+}
+
+func (s *Server) recentlyConfirmed(l login) bool {
+	return l.session.Verified && s.now().Sub(l.session.ConfirmedAt) <= confirmWindow
+}
+
+// writeConfirmFirst tells the interface to ask the user to confirm and then
+// try again.
+func writeConfirmFirst(w http.ResponseWriter) {
+	writeJSON(w, http.StatusForbidden, map[string]any{"error": "confirm it is you first", "confirm": true})
 }
 
 func (s *Server) withLogin(allowEnrolling bool, next http.HandlerFunc) http.HandlerFunc {

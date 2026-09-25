@@ -242,7 +242,7 @@ func (s *Server) halfLogin(w http.ResponseWriter, r *http.Request) (login, bool)
 func (s *Server) verified(w http.ResponseWriter, r *http.Request, l login, how string) {
 	s.guards.second.Reset(fmt.Sprint(l.account.ID))
 	now := s.now()
-	if err := s.Store.VerifySession(r.Context(), l.session.Hash, sessionExpiry(l.session.CreatedAt, now)); err != nil {
+	if err := s.Store.VerifySession(r.Context(), l.session.Hash, now, sessionExpiry(l.session.CreatedAt, now)); err != nil {
 		s.fail(w, "verify session", err)
 		return
 	}
@@ -270,23 +270,30 @@ func (s *Server) loginTOTP(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, errNoFactor)
 		return
 	}
-	secret, err := s.Sealer.Open(l.account.TOTPSecret, sealTOTP)
+	ok, err := s.useTOTPCode(r, l.account, req.Code)
 	if err != nil {
-		s.fail(w, "open totp secret", err)
+		s.fail(w, "check totp", err)
 		return
-	}
-	step, ok := auth.CheckTOTP(secret, req.Code, s.now())
-	if ok {
-		if ok, err = s.Store.UseTOTPStep(r.Context(), l.account.ID, step); err != nil {
-			s.fail(w, "use totp", err)
-			return
-		}
 	}
 	if !ok {
 		s.secondFailed(w, l)
 		return
 	}
 	s.verified(w, r, l, "authenticator app")
+}
+
+// useTOTPCode checks a code from the account's authenticator app. A correct
+// code is used up.
+func (s *Server) useTOTPCode(r *http.Request, a store.Account, code string) (bool, error) {
+	secret, err := s.Sealer.Open(a.TOTPSecret, sealTOTP)
+	if err != nil {
+		return false, err
+	}
+	step, ok := auth.CheckTOTP(secret, code, s.now())
+	if !ok {
+		return false, nil
+	}
+	return s.Store.UseTOTPStep(r.Context(), a.ID, step)
 }
 
 func (s *Server) loginRecovery(w http.ResponseWriter, r *http.Request) {
@@ -375,7 +382,7 @@ func (s *Server) factorAdded(w http.ResponseWriter, r *http.Request, l login) {
 	}
 	if !l.session.Verified {
 		now := s.now()
-		if err := s.Store.VerifySession(r.Context(), l.session.Hash, sessionExpiry(l.session.CreatedAt, now)); err != nil {
+		if err := s.Store.VerifySession(r.Context(), l.session.Hash, now, sessionExpiry(l.session.CreatedAt, now)); err != nil {
 			s.fail(w, "verify session", err)
 			return
 		}

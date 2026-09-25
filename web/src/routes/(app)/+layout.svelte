@@ -6,6 +6,7 @@
 	import { containers, reload } from '$lib/containers.svelte';
 	import { t } from '$lib/i18n';
 	import { refresh, session } from '$lib/session.svelte';
+	import ConfirmDialog from '$lib/ui/ConfirmDialog.svelte';
 	import Logo from '$lib/ui/Logo.svelte';
 	import StateDot from '$lib/ui/StateDot.svelte';
 	import ThemeSwitch from '$lib/ui/ThemeSwitch.svelte';
@@ -82,7 +83,13 @@
 			</nav>
 			<div class="flex flex-col gap-0.5 text-sm">
 				<div class="px-1 pb-2"><ThemeSwitch /></div>
-				<p class="truncate px-2 text-muted">{session.me?.email}</p>
+				<a
+					href="/account"
+					class="truncate rounded-lg px-2 py-1.5 text-muted hover:bg-hover hover:text-fg {page.url.pathname === '/account'
+						? 'bg-selected text-fg'
+						: ''}"
+					title={t('nav.account')}>{session.me?.email}</a
+				>
 				<button class="rounded-lg px-2 py-1.5 text-left text-muted hover:bg-hover hover:text-fg" onclick={logout}
 					>{t('nav.logout')}</button
 				>
@@ -92,4 +99,5 @@
 			{@render children()}
 		</main>
 	</div>
+	<ConfirmDialog />
 {/if}
