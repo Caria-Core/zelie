@@ -32,13 +32,15 @@ import (
 // Proxy serves the configured routes. Apply swaps in a new configuration
 // without dropping open connections.
 type Proxy struct {
-	StateDir string
-	Log      *slog.Logger
+	StateDir    string
+	PanelSocket string // Unix socket the panel listens on
+	Log         *slog.Logger
 
-	mu     sync.Mutex // serialises Apply
-	cfg    Config
-	routes atomic.Pointer[map[string]http.Handler]
-	tls    atomic.Pointer[certSource]
+	mu      sync.Mutex // serialises Apply
+	cfg     Config
+	panelRT *http.Transport
+	routes  atomic.Pointer[map[string]http.Handler]
+	tls     atomic.Pointer[certSource]
 }
 
 // certSource answers TLS handshakes for one TLS mode.
@@ -98,11 +100,21 @@ func (p *Proxy) Apply(ctx context.Context, cfg Config) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	routes := make(map[string]http.Handler, len(cfg.Routes))
-	hosts := make(map[string]bool, len(cfg.Routes))
+	routes := make(map[string]http.Handler, len(cfg.Routes)+1)
+	hosts := make(map[string]bool, len(cfg.Routes)+1)
 	for _, r := range cfg.Routes {
-		routes[r.Host] = newReverseProxy(r.Upstream, p.Log)
+		routes[r.Host] = newReverseProxy(&url.URL{Scheme: "http", Host: r.Upstream}, transport, p.Log)
 		hosts[r.Host] = true
+	}
+	if cfg.Panel != "" {
+		if p.PanelSocket == "" {
+			return errors.New("no panel socket configured")
+		}
+		if p.panelRT == nil {
+			p.panelRT = unixTransport(p.PanelSocket)
+		}
+		routes[cfg.Panel] = newReverseProxy(&url.URL{Scheme: "http", Host: "panel"}, p.panelRT, p.Log)
+		hosts[cfg.Panel] = true
 	}
 
 	src, err := p.certSourceFor(ctx, cfg, hosts)
@@ -195,8 +207,21 @@ func (p *Proxy) certSourceFor(ctx context.Context, cfg Config, hosts map[string]
 	return src, nil
 }
 
-func newReverseProxy(upstream string, log *slog.Logger) http.Handler {
-	target := &url.URL{Scheme: "http", Host: upstream}
+// unixTransport reaches the panel. It lives on the host and never listens on
+// the network, so this is the only way in from outside.
+func unixTransport(socket string) *http.Transport {
+	return &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			var d net.Dialer
+			return d.DialContext(ctx, "unix", socket)
+		},
+		MaxIdleConnsPerHost:   32,
+		IdleConnTimeout:       90 * time.Second,
+		ResponseHeaderTimeout: 5 * time.Minute,
+	}
+}
+
+func newReverseProxy(target *url.URL, rt http.RoundTripper, log *slog.Logger) http.Handler {
 	return &httputil.ReverseProxy{
 		Rewrite: func(r *httputil.ProxyRequest) {
 			r.SetURL(target)
@@ -204,10 +229,10 @@ func newReverseProxy(upstream string, log *slog.Logger) http.Handler {
 			// Apps expect the name the visitor used, not the container address.
 			r.Out.Host = r.In.Host
 		},
-		Transport:     transport,
+		Transport:     rt,
 		FlushInterval: -1, // pass streamed responses through as they arrive
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
-			log.Warn("upstream unreachable", "host", r.Host, "upstream", upstream, "err", err)
+			log.Warn("upstream unreachable", "host", r.Host, "upstream", target.Host, "err", err)
 			http.Error(w, "The app behind this address is not responding.", http.StatusBadGateway)
 		},
 	}

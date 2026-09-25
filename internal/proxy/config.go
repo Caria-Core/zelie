@@ -30,6 +30,7 @@ type Route struct {
 type Config struct {
 	TLS    string  `json:"tls"`
 	Email  string  `json:"email,omitempty"` // for the certificate authority
+	Panel  string  `json:"panel,omitempty"` // host name the panel answers on
 	Routes []Route `json:"routes"`
 }
 
@@ -39,8 +40,8 @@ var upstreams = engine.NetworkRange
 var hostname = regexp.MustCompile(`^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$`)
 
 // Validate rejects anything the proxy should not serve. Upstreams must be
-// container addresses: the proxy is never a way to reach the host or the
-// wider network.
+// container addresses: apart from the panel's own socket, the proxy is never a
+// way to reach the host or the wider network.
 func (c *Config) Validate() error {
 	switch c.TLS {
 	case "":
@@ -49,26 +50,25 @@ func (c *Config) Validate() error {
 	default:
 		return fmt.Errorf("unknown tls mode %q", c.TLS)
 	}
-	seen := make(map[string]bool, len(c.Routes))
+	seen := make(map[string]bool, len(c.Routes)+1)
+	if c.Panel != "" {
+		host, err := c.checkHost(c.Panel)
+		if err != nil {
+			return err
+		}
+		c.Panel = host
+		seen[host] = true
+	}
 	for i, r := range c.Routes {
-		host := strings.ToLower(strings.TrimSuffix(r.Host, "."))
+		host, err := c.checkHost(r.Host)
+		if err != nil {
+			return err
+		}
 		c.Routes[i].Host = host
 		if seen[host] {
 			return fmt.Errorf("%s is routed twice", host)
 		}
 		seen[host] = true
-
-		ip, err := netip.ParseAddr(host)
-		switch {
-		case err == nil && c.TLS == TLSACME:
-			// Let's Encrypt issues IP certificates only through a separate
-			// short-lived profile, which is not wired up yet.
-			return fmt.Errorf("%s: IP addresses need tls mode %q for now", host, TLSSelfSigned)
-		case err == nil && !ip.IsGlobalUnicast():
-			return fmt.Errorf("%s is not a usable address", host)
-		case err != nil && !hostname.MatchString(host):
-			return fmt.Errorf("%q is not a valid domain name", r.Host)
-		}
 
 		up, err := netip.ParseAddrPort(r.Upstream)
 		if err != nil {
@@ -78,8 +78,26 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("upstream of %s must be a container address in %s", host, upstreams)
 		}
 	}
-	if c.TLS == TLSACME && len(c.Routes) > 0 && c.Email == "" {
+	if c.TLS == TLSACME && len(seen) > 0 && c.Email == "" {
 		return errors.New("an email address is needed for certificates")
 	}
 	return nil
+}
+
+// checkHost normalises a host name or IP address and checks that the proxy
+// can serve it in the configured TLS mode.
+func (c *Config) checkHost(h string) (string, error) {
+	host := strings.ToLower(strings.TrimSuffix(h, "."))
+	ip, err := netip.ParseAddr(host)
+	switch {
+	case err == nil && c.TLS == TLSACME:
+		// Let's Encrypt issues IP certificates only through a separate
+		// short-lived profile, which is not wired up yet.
+		return "", fmt.Errorf("%s: IP addresses need tls mode %q for now", host, TLSSelfSigned)
+	case err == nil && !ip.IsGlobalUnicast():
+		return "", fmt.Errorf("%s is not a usable address", host)
+	case err != nil && !hostname.MatchString(host):
+		return "", fmt.Errorf("%q is not a valid domain name", h)
+	}
+	return host, nil
 }

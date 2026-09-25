@@ -24,6 +24,9 @@ func debugProxy(ctx context.Context, c *core.Client, args []string, stdout io.Wr
 	switch {
 	case len(args) == 2 && args[0] == "route" && args[1] == "ls":
 		fmt.Fprintf(stdout, "tls: %s %s\n", cfg.TLS, cfg.Email)
+		if cfg.Panel != "" {
+			fmt.Fprintf(stdout, "%s -> panel\n", cfg.Panel)
+		}
 		for _, r := range cfg.Routes {
 			fmt.Fprintf(stdout, "%s -> %s\n", r.Host, r.Upstream)
 		}
@@ -52,6 +55,8 @@ func debugProxy(ctx context.Context, c *core.Client, args []string, stdout io.Wr
 		cfg.Routes = slices.DeleteFunc(cfg.Routes, func(r proxy.Route) bool { return r.Host == args[2] })
 	case len(args) == 3 && args[0] == "tls" && args[1] == proxy.TLSACME:
 		cfg.TLS, cfg.Email = proxy.TLSACME, args[2]
+	case len(args) == 2 && args[0] == "panel":
+		cfg.Panel = args[1]
 	case len(args) == 2 && args[0] == "tls" && args[1] == proxy.TLSSelfSigned:
 		cfg.TLS = proxy.TLSSelfSigned
 	default:

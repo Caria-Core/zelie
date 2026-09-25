@@ -26,6 +26,7 @@ Commands:
   route add <host> <id> <port>         Send a domain to a container's port
   route rm <host>                      Stop routing a domain
   route ls                             List routes
+  panel <host>                         Serve the panel on a domain or IP address
   tls acme <email> | tls self-signed   Choose how the proxy gets certificates
 `
 
@@ -87,7 +88,7 @@ func debug(args []string, stdout, stderr io.Writer) int {
 		case "rm":
 			err = c.Remove(ctx, args[1])
 		}
-	case "route", "tls":
+	case "route", "tls", "panel":
 		err = debugProxy(ctx, c, args, stdout)
 		if err == errUsage {
 			fmt.Fprint(stderr, debugUsage)

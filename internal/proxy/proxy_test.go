@@ -5,9 +5,11 @@ import (
 	"crypto/tls"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -29,6 +31,10 @@ func TestValidate(t *testing.T) {
 		{"ip with acme", Config{Email: "a@b.co", Routes: []Route{{"203.0.113.9", "10.210.0.4:80"}}}, false},
 		{"ip self-signed", Config{TLS: TLSSelfSigned, Routes: []Route{{"203.0.113.9", "10.210.0.4:80"}}}, true},
 		{"unknown mode", Config{TLS: "none"}, false},
+		{"panel", Config{Email: "a@b.co", Panel: "panel.example.com"}, true},
+		{"panel needs email", Config{Panel: "panel.example.com"}, false},
+		{"panel host also routed", Config{TLS: TLSSelfSigned, Panel: "a.example.com", Routes: []Route{{"a.example.com", "10.210.0.4:80"}}}, false},
+		{"panel on an ip", Config{TLS: TLSSelfSigned, Panel: "203.0.113.9"}, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -103,5 +109,34 @@ func TestConfigSurvivesRestart(t *testing.T) {
 	}
 	if got := q.Config().Routes; len(got) != 1 || got[0].Host != "app.example.com" {
 		t.Errorf("loaded routes %+v", got)
+	}
+}
+
+func TestPanelOverUnixSocket(t *testing.T) {
+	sock := filepath.Join(t.TempDir(), "panel.sock")
+	l, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	panel := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, "panel host="+r.Host+" xff="+r.Header.Get("X-Forwarded-For"))
+	})}
+	go panel.Serve(l)
+	t.Cleanup(func() { panel.Close() })
+
+	p := &Proxy{StateDir: t.TempDir(), PanelSocket: sock, Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	if err := p.Apply(context.Background(), Config{TLS: TLSSelfSigned, Panel: "Panel.Example.com"}); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest("GET", "https://panel.example.com/", nil)
+	req.RemoteAddr = "198.51.100.7:5555"
+	req.Header.Set("X-Forwarded-For", "10.0.0.1") // a visitor must not be able to pick their own address
+	rec := httptest.NewRecorder()
+	p.serveHTTPS(rec, req)
+	if got := rec.Body.String(); got != "panel host=panel.example.com xff=198.51.100.7" {
+		t.Errorf("panel saw %q", got)
+	}
+	if _, err := p.getCertificate(&tls.ClientHelloInfo{ServerName: "panel.example.com"}); err != nil {
+		t.Errorf("panel host: %v", err)
 	}
 }

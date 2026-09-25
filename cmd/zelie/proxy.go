@@ -17,6 +17,7 @@ import (
 const (
 	proxySocket = "/run/zelie-proxy/proxy.sock"
 	proxyState  = "/var/lib/zelie-proxy"
+	panelSocket = "/run/zelie-panel/panel.sock"
 )
 
 func runProxy(args []string, stderr io.Writer) int {
@@ -37,7 +38,7 @@ func runProxy(args []string, stderr io.Writer) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	p := &proxy.Proxy{StateDir: proxyState, Log: log}
+	p := &proxy.Proxy{StateDir: proxyState, PanelSocket: panelSocket, Log: log}
 	addrs := proxy.Addrs{HTTP: *httpAddr, HTTPS: *httpsAddr, Socket: proxySocket}
 	if err := p.Serve(ctx, addrs, panelPolicy(log)); err != nil {
 		log.Error("proxy stopped", "err", err)
