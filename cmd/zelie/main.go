@@ -1,5 +1,6 @@
-// Command zelie is the Zelie server panel. The same binary will run the
-// privileged core and the unprivileged web panel as two separate processes.
+// Command zelie is the Zelie server panel. The same binary runs the
+// privileged core, the web proxy and the unprivileged panel as separate
+// processes.
 package main
 
 import (
@@ -19,6 +20,8 @@ const usage = `Usage: zelie <command>
 Commands:
   core             Run the privileged core (needs root)
   proxy            Run the web proxy (must not run as root)
+  panel            Run the web panel (must not run as root)
+  setup-link       Print a one-time link to create the first administrator
   engine install   Install or update Zelie's containerd and runc (needs root)
   debug            Send requests to the core by hand while developing
   version          Print the version and exit
@@ -48,6 +51,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runCore(stderr)
 	case "proxy":
 		return runProxy(args[1:], stderr)
+	case "panel":
+		return runPanel(stderr)
+	case "setup-link":
+		return setupLink(stdout, stderr)
 	case "debug":
 		return debug(args[1:], stdout, stderr)
 	case "help", "--help", "-h":
