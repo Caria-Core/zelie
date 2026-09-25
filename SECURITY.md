@@ -6,7 +6,8 @@ reports seriously and treat them before anything else.
 ## Reporting a vulnerability
 
 Please don't open a public issue. Report it privately through GitHub instead: go to the
-**Security** tab of this repository and choose **Report a vulnerability**.
+**Security** tab of this repository and choose **Report a vulnerability**. If you cannot
+use GitHub, write to support@cariacore.com with "Security" in the subject.
 
 Include what you found, how to reproduce it, and which version you tested. We will
 confirm that we received your report within three working days and keep you updated
