@@ -46,6 +46,8 @@ type Server struct {
 	GitHubAPI  string
 	GitHubWeb  string
 	GitHubHTTP *http.Client
+	// HealthCheck replaces the HTTP request of the health check in tests.
+	HealthCheck func(ctx context.Context, url, host string) (int, error)
 
 	guards  *guards
 	deploys deploys
@@ -104,6 +106,8 @@ func (s *Server) Handler() http.Handler {
 	web.HandleFunc("DELETE /api/apps/{app}", s.signedIn(s.deleteApp))
 	web.HandleFunc("PUT /api/apps/{app}/env", s.signedIn(s.setEnv))
 	web.HandleFunc("POST /api/apps/{app}/deployments", s.signedIn(s.newDeployment))
+	web.HandleFunc("POST /api/apps/{app}/restart", s.signedIn(s.restartApp))
+	web.HandleFunc("POST /api/apps/{app}/deployments/{id}/rollback", s.signedIn(s.rollback))
 	web.HandleFunc("GET /api/apps/{app}/deployments/{id}/log", s.signedIn(s.deploymentLog))
 	web.HandleFunc("GET /api/apps/{app}/logs", s.signedIn(s.appLogs))
 	web.HandleFunc("GET /api/github", s.signedIn(s.githubStatus))

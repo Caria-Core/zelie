@@ -11,7 +11,7 @@
 	import Field from '$lib/ui/Field.svelte';
 
 	const app = $derived(current.app!);
-	let form = $state({ repo: '', branch: '', image: '', port: '', domain: '', memory: '', cpus: '', autoDeploy: true });
+	let form = $state({ repo: '', branch: '', image: '', port: '', domain: '', memory: '', cpus: '', autoDeploy: true, health: '/' });
 	let error = $state('');
 	let saved = $state(false);
 	let busy = $state(false);
@@ -28,7 +28,8 @@
 			domain: app.domain ?? '',
 			memory: String(app.memory_mb),
 			cpus: String(app.cpus),
-			autoDeploy: app.auto_deploy
+			autoDeploy: app.auto_deploy,
+			health: app.health_path
 		};
 	});
 
@@ -42,7 +43,8 @@
 				port: Number(form.port),
 				domain: form.domain,
 				memory_mb: Number(form.memory),
-				cpus: Number(form.cpus)
+				cpus: Number(form.cpus),
+				health_path: form.health
 			};
 			if (app.source === 'github') Object.assign(body, { repo: form.repo, branch: form.branch, auto_deploy: form.autoDeploy });
 			else body.image = form.image;
@@ -86,6 +88,7 @@
 			<Field label={t('new.port')} type="number" min="1" max="65535" required bind:value={form.port} />
 			<Field label={t('new.domain')} placeholder="app.example.com" autocomplete="off" bind:value={form.domain} />
 		</div>
+		<Field label={t('settings.health')} hint={t('settings.healthHint')} required autocomplete="off" bind:value={form.health} />
 		<div class="grid grid-cols-2 gap-4">
 			<Field label={t('new.memory')} type="number" min="16" step="16" required bind:value={form.memory} />
 			<Field label={t('new.cpus')} type="number" min="0.1" step="0.1" required bind:value={form.cpus} />

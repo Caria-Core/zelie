@@ -20,6 +20,8 @@ import (
 )
 
 type deploymentJSON struct {
+	// Kept is true while the image exists, so it can be rolled back to.
+	Kept       bool       `json:"kept"`
 	ID         int64      `json:"id"`
 	Version    string     `json:"version"`
 	Image      string     `json:"image,omitempty"`
@@ -32,7 +34,8 @@ type deploymentJSON struct {
 }
 
 func deploymentOut(d store.Deployment) deploymentJSON {
-	out := deploymentJSON{ID: d.ID, Version: d.Version, Image: d.Image, State: d.State, Error: d.Error, Cause: d.Cause, Message: d.Message, CreatedAt: d.CreatedAt}
+	out := deploymentJSON{ID: d.ID, Version: d.Version, Image: d.Image, State: d.State, Error: d.Error, Cause: d.Cause, Message: d.Message, CreatedAt: d.CreatedAt,
+		Kept: d.Image != "" && !d.Pruned}
 	if !d.FinishedAt.IsZero() {
 		out.FinishedAt = &d.FinishedAt
 	}
@@ -50,7 +53,8 @@ type appJSON struct {
 	MemoryMB int64   `json:"memory_mb"`
 	CPUs     float64 `json:"cpus"`
 	// AutoDeploy deploys every push to the branch.
-	AutoDeploy bool `json:"auto_deploy"`
+	AutoDeploy bool   `json:"auto_deploy"`
+	HealthPath string `json:"health_path"`
 	// State is the live container's: running, stopped, or none when
 	// nothing has gone live yet.
 	State  string          `json:"state"`
@@ -61,7 +65,7 @@ type appJSON struct {
 // fetched once by the caller.
 func (s *Server) appOut(ctx context.Context, a store.App, containers []engine.Status) (appJSON, error) {
 	out := appJSON{ID: a.ID, Source: a.Source, Image: a.Image, Repo: a.Repo, Branch: a.Branch,
-		Port: a.Port, Domain: a.Domain, MemoryMB: a.MemoryMB, CPUs: a.CPUs, AutoDeploy: a.AutoDeploy, State: "none"}
+		Port: a.Port, Domain: a.Domain, MemoryMB: a.MemoryMB, CPUs: a.CPUs, AutoDeploy: a.AutoDeploy, HealthPath: a.HealthPath, State: "none"}
 	recent, err := s.Store.Deployments(ctx, a.ID, 1)
 	if err != nil {
 		return out, err
@@ -122,7 +126,8 @@ type appRequest struct {
 	MemoryMB *int64   `json:"memory_mb"`
 	CPUs     *float64 `json:"cpus"`
 	// AutoDeploy is only for apps built from GitHub.
-	AutoDeploy *bool `json:"auto_deploy"`
+	AutoDeploy *bool   `json:"auto_deploy"`
+	HealthPath *string `json:"health_path"`
 }
 
 // apply copies the fields that were sent onto a and checks the result.
@@ -136,6 +141,7 @@ func (req appRequest) apply(a *store.App) error {
 	set(&a.Repo, req.Repo)
 	set(&a.Branch, req.Branch)
 	set(&a.Domain, req.Domain)
+	set(&a.HealthPath, req.HealthPath)
 	a.Domain = strings.ToLower(strings.TrimSuffix(a.Domain, "."))
 	if req.Port != nil {
 		a.Port = *req.Port
@@ -173,8 +179,22 @@ func (req appRequest) apply(a *store.App) error {
 		return errors.New("the memory limit must be at least 16 MB")
 	case a.CPUs <= 0 || a.CPUs > 1024:
 		return errors.New("the CPU limit is out of range")
+	case !validHealthPath(a.HealthPath):
+		return errors.New("the health check path must start with / and hold no spaces")
 	}
 	return nil
+}
+
+func validHealthPath(p string) bool {
+	if !strings.HasPrefix(p, "/") || strings.HasPrefix(p, "//") || len(p) > 200 {
+		return false
+	}
+	for _, r := range p {
+		if r <= ' ' || r == 0x7f || r == '#' {
+			return false
+		}
+	}
+	return true
 }
 
 func validImage(ref string) bool {
@@ -200,7 +220,7 @@ func (s *Server) createApp(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	a := store.App{ID: req.ID, Source: req.Source, MemoryMB: defaultMemoryMB, CPUs: defaultCPUs, CreatedAt: s.now()}
+	a := store.App{ID: req.ID, Source: req.Source, MemoryMB: defaultMemoryMB, CPUs: defaultCPUs, HealthPath: "/", CreatedAt: s.now()}
 	switch a.Source {
 	case store.SourceGitHub:
 		a.Branch, a.Port, a.AutoDeploy = "main", 3000, true
@@ -443,6 +463,60 @@ func (s *Server) newDeployment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id, err := s.deploy(r.Context(), a, store.Deployment{})
+	if err != nil {
+		s.fail(w, "deploy", err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]int64{"id": id})
+}
+
+// restartApp starts the live version again in a new container, without
+// building. It goes through the same health check, so a restart that fails
+// leaves the running container alone.
+func (s *Server) restartApp(w http.ResponseWriter, r *http.Request) {
+	a, ok := s.appFrom(w, r)
+	if !ok {
+		return
+	}
+	live, err := s.Store.LiveDeployment(r.Context(), a.ID)
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusConflict, errors.New("nothing is live yet; deploy first"))
+		return
+	}
+	if err != nil {
+		s.fail(w, "load deployment", err)
+		return
+	}
+	s.redeploy(w, r, a, live, store.CauseRestart)
+}
+
+// rollback puts an earlier deployment's image live again.
+func (s *Server) rollback(w http.ResponseWriter, r *http.Request) {
+	a, ok := s.appFrom(w, r)
+	if !ok {
+		return
+	}
+	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	d, err := s.Store.Deployment(r.Context(), a.ID, id)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		writeError(w, http.StatusNotFound, errors.New("no such deployment"))
+		return
+	case err != nil:
+		s.fail(w, "load deployment", err)
+		return
+	case d.State != store.DeployReplaced && d.State != store.DeployLive:
+		writeError(w, http.StatusConflict, errors.New("only a version that was live can be rolled back to"))
+		return
+	case d.Pruned:
+		writeError(w, http.StatusConflict, errors.New("that version's image was deleted to free space"))
+		return
+	}
+	s.redeploy(w, r, a, d, store.CauseRollback)
+}
+
+func (s *Server) redeploy(w http.ResponseWriter, r *http.Request, a store.App, from store.Deployment, cause string) {
+	id, err := s.deploy(r.Context(), a, store.Deployment{Version: from.Version, Image: from.Image, Cause: cause, Message: from.Message})
 	if err != nil {
 		s.fail(w, "deploy", err)
 		return

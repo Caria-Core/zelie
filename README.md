@@ -24,10 +24,14 @@ Website, documentation and support: [zelie.cariacore.com](https://zelie.cariacor
   several pushes arrive during a build, only the newest is deployed next. So far this has
   been tested against a stand-in for GitHub's API, not yet against GitHub itself.
 - **Apps from an image.** Run any public image, such as `nginx:alpine`.
-- **Deployments that fail safely.** A new version starts next to the old one and must
-  stay up before the domain moves over. If the build fails or the app crashes on start,
-  the old version keeps serving and the deployment's log shows why, including the app's
-  last output. Build logs stream to the browser while they run.
+- **Deployments that fail safely.** A new version starts next to the old one. An app
+  with a domain must answer HTTP on its health check path before the domain moves over;
+  one without, such as a bot, must stay up. If the build fails or the app does not come
+  up, the old version keeps serving and the deployment's log shows why, including the
+  app's last output. Build logs stream to the browser while they run.
+- **Restart and roll back without building.** The last five versions that went live keep
+  their image, so any of them can be put back in a second or two. Older images are
+  deleted to free the disk.
 - **Domains and HTTPS.** Give an app a domain and the proxy routes it and gets its
   certificate from Let's Encrypt. So far this has been tried with self-signed
   certificates only, not yet against Let's Encrypt itself.
@@ -45,8 +49,8 @@ Website, documentation and support: [zelie.cariacore.com](https://zelie.cariacor
 
 ## What is coming
 
-- **Safer deployments.** Run the project's tests before a version goes live, check its
-  health over HTTP, and roll back to an earlier version with one click.
+- **Tests before going live.** Run the project's tests on the new build and keep the old
+  version if they fail.
 - **Game servers.** Import existing Pterodactyl and Pelican eggs, with a live console,
   SFTP, a file manager, startup settings, schedules and port management.
 - **Databases.** MariaDB, PostgreSQL and Redis with one click, never exposed to the

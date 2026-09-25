@@ -21,6 +21,8 @@ import (
 type fakeEngine struct {
 	ran     []engine.Spec
 	stopped map[string]time.Duration
+
+	removedImages []string
 }
 
 func (f *fakeEngine) Run(_ context.Context, s engine.Spec) error {
@@ -43,6 +45,11 @@ func (f *fakeEngine) Stop(_ context.Context, id string, grace time.Duration) err
 }
 
 func (f *fakeEngine) Remove(context.Context, string) error { return nil }
+
+func (f *fakeEngine) RemoveImage(_ context.Context, name string) error {
+	f.removedImages = append(f.removedImages, name)
+	return nil
+}
 
 func (f *fakeEngine) List(context.Context) ([]engine.Status, error) {
 	return []engine.Status{{ID: "web", Image: "busybox", State: "running", Pid: 42, Userns: 1 << 30}}, nil
@@ -171,5 +178,21 @@ func TestSealedEnv(t *testing.T) {
 	}
 	if rec := request(t, s, root, "POST", "/v1/containers", body("other")); rec.Code != http.StatusBadRequest || strings.Contains(rec.Body.String(), "hunter2") {
 		t.Fatalf("value sealed for another app: %d %s", rec.Code, rec.Body)
+	}
+}
+
+func TestRemoveImage(t *testing.T) {
+	s, f := newServer()
+	panel := &peer.Peer{UID: 999}
+	for _, name := range []string{"", "nginx:alpine", "docker.io/zelie.local/x:1"} {
+		if rec := request(t, s, panel, "DELETE", "/v1/images?name="+name, ""); rec.Code != http.StatusBadRequest {
+			t.Errorf("%q: %d", name, rec.Code)
+		}
+	}
+	if rec := request(t, s, panel, "DELETE", "/v1/images?name=zelie.local/web:abc", ""); rec.Code != http.StatusNoContent {
+		t.Fatalf("remove: %d %s", rec.Code, rec.Body)
+	}
+	if len(f.removedImages) != 1 || f.removedImages[0] != "zelie.local/web:abc" {
+		t.Errorf("removed %v", f.removedImages)
 	}
 }

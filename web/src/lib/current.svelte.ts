@@ -19,6 +19,18 @@ export async function deploy(id: string): Promise<void> {
 	await Promise.all([load(id), reloadList()]);
 }
 
+// restart runs the live version again, and rollback an earlier one, both
+// without building.
+export async function restart(id: string): Promise<void> {
+	await api('POST', `/apps/${encodeURIComponent(id)}/restart`);
+	await Promise.all([load(id), reloadList()]);
+}
+
+export async function rollback(id: string, deployment: number): Promise<void> {
+	await api('POST', `/apps/${encodeURIComponent(id)}/deployments/${deployment}/rollback`);
+	await Promise.all([load(id), reloadList()]);
+}
+
 export function busy(): boolean {
 	return inProgress(current.app?.deployments[0]);
 }

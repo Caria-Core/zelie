@@ -5,10 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"net/netip"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -28,13 +30,25 @@ type Proxy interface {
 // disk.
 const maxDeployLog = 8 << 20
 
-// A new container must stay up for startupGrace to count as started. Tests
-// shorten these.
+// A new version counts as healthy when it answers HTTP within startupLimit
+// or, for an app without a domain, stays up for startupGrace. Tests shorten
+// these.
 var (
-	startupGrace = 3 * time.Second
+	startupGrace = 10 * time.Second
 	startupLimit = 60 * time.Second
 	startupPoll  = 500 * time.Millisecond
 )
+
+// healthClient talks straight to the container: no proxy from the
+// environment, no kept connections, no following redirects.
+var healthClient = &http.Client{
+	Transport:     &http.Transport{DisableKeepAlives: true},
+	CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+}
+
+// keepImages is how many of an app's most recent live versions keep their
+// image, so they can be rolled back to.
+const keepImages = 5
 
 // deploys runs deployments in the background, one at a time per app.
 type deploys struct {
@@ -170,7 +184,11 @@ func (s *Server) runDeployment(ctx context.Context, appID string, id int64) {
 		return
 	}
 
-	if app.Source == store.SourceGitHub {
+	switch {
+	case d.Image != "":
+		// A restart or rollback runs an image that already exists.
+		fmt.Fprintf(out, "Using %s, built before.\n", d.Image)
+	case app.Source == store.SourceGitHub:
 		set(store.DeployBuilding)
 		var src Source
 		src, status = s.sourceFor(ctx, app.Repo, out)
@@ -185,7 +203,7 @@ func (s *Server) runDeployment(ctx context.Context, appID string, id int64) {
 			return
 		}
 		d.Image = image
-	} else {
+	default:
 		d.Image = app.Image
 	}
 
@@ -209,6 +227,37 @@ func (s *Server) runDeployment(ctx context.Context, appID string, id int64) {
 	status.set(ctx, github.StatusSuccess, "Live")
 	s.Log.Info("deployment live", "app", app.ID, "id", id, "image", d.Image)
 	s.removeOldContainers(ctx, app.ID, container, out)
+	s.pruneImages(ctx, app.ID)
+}
+
+// pruneImages deletes the images Zelie built for an app, except the newest
+// keepImages that went live. Failed builds' images go too.
+func (s *Server) pruneImages(ctx context.Context, app string) {
+	list, err := s.Store.Unpruned(ctx, app)
+	if err != nil {
+		s.Log.Error("list images", "app", app, "err", err)
+		return
+	}
+	keep := map[string]bool{}
+	for _, d := range list {
+		if len(keep) < keepImages && (d.State == store.DeployLive || d.State == store.DeployReplaced) {
+			keep[d.Image] = true
+		}
+	}
+	done := map[string]bool{}
+	for _, d := range list {
+		if keep[d.Image] || done[d.Image] || !strings.HasPrefix(d.Image, engine.LocalImages) {
+			continue
+		}
+		done[d.Image] = true
+		if err := s.Core.RemoveImage(ctx, d.Image); err != nil {
+			s.Log.Error("remove image", "image", d.Image, "err", err)
+			continue
+		}
+		if err := s.Store.SetPruned(ctx, app, d.Image); err != nil {
+			s.Log.Error("record removed image", "image", d.Image, "err", err)
+		}
+	}
 }
 
 // build fetches the app's code and has the core build it. Without a
@@ -234,8 +283,9 @@ func (s *Server) build(ctx context.Context, app store.App, src Source, commit st
 	return image, commit, err
 }
 
-// start runs the new container and waits until it has stayed up for a
-// moment.
+// start runs the new container and waits until it is healthy: answering
+// HTTP if the app has a domain, since that is what the proxy will send it,
+// or staying up for a while otherwise, like a bot with no web side.
 func (s *Server) start(ctx context.Context, app store.App, image, container string, out io.Writer) error {
 	vars, err := s.Store.Env(ctx, app.ID)
 	if err != nil {
@@ -260,14 +310,30 @@ func (s *Server) start(ctx context.Context, app store.App, image, container stri
 		return err
 	}
 
+	if app.Domain != "" {
+		fmt.Fprintf(out, "Waiting for it to answer at %s on port %d.\n", app.HealthPath, app.Port)
+	}
 	deadline := time.Now().Add(startupLimit)
 	var upSince time.Time
+	lastAnswer := ""
 	for {
 		st, err := s.containerStatus(ctx, container)
 		if err != nil {
 			return err
 		}
 		switch {
+		case st.State == "running" && app.Domain != "":
+			addr := netip.AddrPortFrom(st.IP, uint16(app.Port)).String()
+			code, err := s.healthCheck(ctx, "http://"+addr+app.HealthPath, app.Domain)
+			if err == nil && code < 500 {
+				fmt.Fprintf(out, "It answered with %d.\n", code)
+				return nil
+			}
+			if err != nil {
+				lastAnswer = "no answer yet"
+			} else {
+				lastAnswer = fmt.Sprintf("it answered %d", code)
+			}
 		case st.State == "running" && upSince.IsZero():
 			upSince = time.Now()
 		case st.State == "running" && time.Since(upSince) >= startupGrace:
@@ -278,6 +344,11 @@ func (s *Server) start(ctx context.Context, app store.App, image, container stri
 			return errors.New("the app stopped right after starting")
 		}
 		if time.Now().After(deadline) {
+			if lastAnswer != "" {
+				fmt.Fprintln(out, "\nThe app's last output:")
+				s.Core.Logs(ctx, container, false, 4<<10, out)
+				return fmt.Errorf("the app did not answer at %s on port %d within %s (%s)", app.HealthPath, app.Port, startupLimit, lastAnswer)
+			}
 			return errors.New("the app did not start in time")
 		}
 		select {
@@ -286,6 +357,29 @@ func (s *Server) start(ctx context.Context, app store.App, image, container stri
 		case <-time.After(startupPoll):
 		}
 	}
+}
+
+// healthCheck asks the new version for a page, the way the proxy will, and
+// returns the status code. Redirects are answers too; they are not followed.
+func (s *Server) healthCheck(ctx context.Context, url, host string) (int, error) {
+	if s.HealthCheck != nil {
+		return s.HealthCheck(ctx, url, host)
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return 0, err
+	}
+	req.Host = host
+	req.Header.Set("User-Agent", "Zelie health check")
+	resp, err := healthClient.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
+	resp.Body.Close()
+	return resp.StatusCode, nil
 }
 
 func (s *Server) containerStatus(ctx context.Context, id string) (engine.Status, error) {

@@ -33,6 +33,7 @@ type appCore struct {
 	containers map[string]engine.Status
 	env        map[string][]string
 	builds     []string
+	removed    []string // images
 	failBuild  bool
 	crash      bool // new containers stop right away
 	next       byte
@@ -105,6 +106,13 @@ func (c *appCore) Build(_ context.Context, app, version string, src io.Reader, o
 	return engine.LocalImages + app + ":" + version, nil
 }
 
+func (c *appCore) RemoveImage(_ context.Context, name string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.removed = append(c.removed, name)
+	return nil
+}
+
 func (c *appCore) SecretKey(context.Context) (secret.PublicKey, error) { return c.keys.Public(), nil }
 
 type fakeProxy struct {
@@ -154,13 +162,23 @@ type appEnv struct {
 	core   *appCore
 	proxy  *fakeProxy
 	source *fakeSource
+
+	mu      sync.Mutex
+	health  int      // what the health check gets
+	checked []string // what it asked
 }
 
 func newAppEnv(t *testing.T) *appEnv {
 	t.Helper()
 	s, h, now := newAuthServer(t)
-	e := &appEnv{s: s, core: newAppCore(t), proxy: &fakeProxy{cfg: proxy.Config{Panel: "panel.example.com"}}, source: &fakeSource{commit: strings.Repeat("a", 40)}}
+	e := &appEnv{s: s, core: newAppCore(t), proxy: &fakeProxy{cfg: proxy.Config{Panel: "panel.example.com"}}, source: &fakeSource{commit: strings.Repeat("a", 40)}, health: 200}
 	s.Core, s.Proxy, s.Source, s.DataDir = e.core, e.proxy, e.source, t.TempDir()
+	s.HealthCheck = func(_ context.Context, url, host string) (int, error) {
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		e.checked = append(e.checked, host+" "+url)
+		return e.health, nil
+	}
 	e.b = &browser{t: t, h: h, ip: "198.51.100.7"}
 	e.b.do("POST", "/api/setup", map[string]string{"token": setupToken(t, h), "email": "a@example.com", "password": "long enough pw"})
 	_, out := e.b.do("POST", "/api/2fa/totp/new", nil)

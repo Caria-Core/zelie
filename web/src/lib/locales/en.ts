@@ -71,6 +71,8 @@ export default {
 	'deploy.replaced': 'Replaced',
 	'deploy.skipped': 'Skipped',
 	'deploy.push': 'push',
+	'deploy.restart': 'restart',
+	'deploy.rollback': 'rollback',
 
 	'source.github': 'GitHub repository',
 	'source.githubLead': 'Built from your code on every deploy. A Dockerfile is used if there is one.',
@@ -99,6 +101,10 @@ export default {
 
 	'app.deploy': 'Deploy',
 	'app.deploying': 'Deploying…',
+	'app.restart': 'Restart',
+	'app.restartHint': 'Start the live version again, without building. It must pass the health check before it takes over.',
+	'app.rollback': 'Roll back',
+	'app.rollbackConfirm': 'Put {version} live again? It must pass the health check before it takes over.',
 	'app.open': 'Open',
 	'app.tab.deployments': 'Deployments',
 	'app.tab.logs': 'Logs',
@@ -126,6 +132,8 @@ export default {
 
 	'settings.autoDeploy': 'Deploy every push to this branch',
 	'settings.autoDeployHint': 'Needs the GitHub connection and access to the repository.',
+	'settings.health': 'Health check path',
+	'settings.healthHint': 'With a domain, a new version must answer here, with any status below 500, before traffic moves to it. Without one it only has to stay up.',
 	'settings.save': 'Save',
 	'settings.saved': 'Saved. The domain changes now; the rest with the next deployment.',
 	'settings.danger': 'Delete this app',

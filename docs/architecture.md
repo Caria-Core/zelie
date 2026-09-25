@@ -68,8 +68,11 @@ access only to the repositories you choose. On a push:
    is used. Otherwise [Railpack](https://github.com/railwayapp/railpack) works out how
    to build it.
 2. The project's tests run, if it has any.
-3. The new version starts next to the old one and must pass a health check.
-4. Traffic moves to the new version. The old one is kept for a quick rollback.
+3. The new version starts next to the old one and must pass a health check: an app
+   with a domain must answer HTTP with a status below 500, an app without one must stay
+   up.
+4. Traffic moves to the new version. The images of the last five live versions are
+   kept, so restarting or rolling back needs no build.
 
 If any step fails, the old version keeps serving traffic and the panel shows what went
 wrong. The commit on GitHub is marked as building, live or failed.

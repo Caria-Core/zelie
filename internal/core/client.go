@@ -107,6 +107,11 @@ func (c *Client) Remove(ctx context.Context, id string) error {
 	return c.do(ctx, http.MethodDelete, "/v1/containers/"+url.PathEscape(id), nil, nil)
 }
 
+// RemoveImage deletes an image Zelie built.
+func (c *Client) RemoveImage(ctx context.Context, name string) error {
+	return c.do(ctx, http.MethodDelete, "/v1/images?"+url.Values{"name": {name}}.Encode(), nil, nil)
+}
+
 // readError turns an error response into an *Error.
 func readError(resp *http.Response) error {
 	var e struct {

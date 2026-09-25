@@ -1,9 +1,9 @@
 <script lang="ts">
-	import { ArrowUpRight, Rocket } from '@lucide/svelte';
+	import { ArrowUpRight, RotateCw, Rocket } from '@lucide/svelte';
 	import { untrack } from 'svelte';
 	import { page } from '$app/state';
 	import { t } from '$lib/i18n';
-	import { busy, current, deploy, load } from '$lib/current.svelte';
+	import { busy, current, deploy, load, restart } from '$lib/current.svelte';
 	import { messageOf } from '$lib/errors';
 	import AppIcon from '$lib/ui/AppIcon.svelte';
 	import Button from '$lib/ui/Button.svelte';
@@ -35,11 +35,11 @@
 		return () => clearTimeout(timer);
 	});
 
-	async function startDeploy() {
+	async function run(fn: (id: string) => Promise<void>) {
 		starting = true;
 		error = '';
 		try {
-			await deploy(id);
+			await fn(id);
 		} catch (err) {
 			error = messageOf(err);
 		} finally {
@@ -78,9 +78,16 @@
 					</p>
 				</div>
 			</div>
-			<Button onclick={startDeploy} busy={starting || busy()}>
-				<Rocket size={16} strokeWidth={1.75} />{busy() ? t('app.deploying') : t('app.deploy')}
-			</Button>
+			<div class="flex items-center gap-2">
+				{#if a.state !== 'none'}
+					<Button kind="secondary" onclick={() => run(restart)} busy={starting || busy()} title={t('app.restartHint')}>
+						<RotateCw size={16} strokeWidth={1.75} />{t('app.restart')}
+					</Button>
+				{/if}
+				<Button onclick={() => run(deploy)} busy={starting || busy()}>
+					<Rocket size={16} strokeWidth={1.75} />{busy() ? t('app.deploying') : t('app.deploy')}
+				</Button>
+			</div>
 		</header>
 		<ErrorText message={error} />
 		<!-- The baseline is a shadow, not a border, so the active tab's underline

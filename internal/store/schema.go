@@ -123,5 +123,12 @@ UPDATE apps SET auto_deploy = 0 WHERE source != 'github';
 -- line of its commit message.
 ALTER TABLE deployments ADD COLUMN cause TEXT NOT NULL DEFAULT 'manual';
 ALTER TABLE deployments ADD COLUMN message TEXT NOT NULL DEFAULT '';
+`, `
+-- The path the health check asks for, once the app has a domain.
+ALTER TABLE apps ADD COLUMN health_path TEXT NOT NULL DEFAULT '/';
+
+-- Set once a deployment's image has been deleted to free disk space; it
+-- can no longer be rolled back to.
+ALTER TABLE deployments ADD COLUMN pruned INTEGER NOT NULL DEFAULT 0;
 `,
 }

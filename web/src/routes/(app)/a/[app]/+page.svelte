@@ -1,6 +1,8 @@
 <script lang="ts">
 	import { inProgress, shortVersion, type Deployment } from '$lib/apps.svelte';
-	import { current, load } from '$lib/current.svelte';
+	import { current, load, rollback } from '$lib/current.svelte';
+	import { messageOf } from '$lib/errors';
+	import ErrorText from '$lib/ui/ErrorText.svelte';
 	import { ago } from '$lib/format';
 	import { t } from '$lib/i18n';
 	import DeployState from '$lib/ui/DeployState.svelte';
@@ -15,6 +17,23 @@
 		if (inProgress(latest) && opened === null) opened = latest.id;
 	});
 
+	let error = $state('');
+	async function back(d: Deployment) {
+		if (!confirm(t('app.rollbackConfirm', { version: shortVersion(d.version) }))) return;
+		error = '';
+		try {
+			await rollback(app.id, d.id);
+		} catch (err) {
+			error = messageOf(err);
+		}
+	}
+
+	const causes: Partial<Record<Deployment['cause'], string>> = {
+		push: t('deploy.push'),
+		restart: t('deploy.restart'),
+		rollback: t('deploy.rollback')
+	};
+
 	function took(d: Deployment): string {
 		if (!d.finished_at) return '';
 		const s = Math.max(1, Math.round((new Date(d.finished_at).getTime() - new Date(d.created_at).getTime()) / 1000));
@@ -22,6 +41,7 @@
 	}
 </script>
 
+<ErrorText message={error} />
 {#if app.deployments.length === 0}
 	<p class="text-muted">{t('app.noDeployments')}</p>
 {:else}
@@ -34,12 +54,17 @@
 						<span class="shrink-0 font-mono text-sm">{shortVersion(d.version)}</span>
 						{#if d.message}<span class="min-w-0 truncate text-sm" title={d.message}>{d.message}</span>{/if}
 						<span class="shrink-0 text-sm text-muted"
-							>{ago(d.created_at)}{d.cause === 'push' ? ' · ' + t('deploy.push') : ''}{d.finished_at ? ' · ' + took(d) : ''}</span
+							>{ago(d.created_at)}{causes[d.cause] ? ' · ' + causes[d.cause] : ''}{d.finished_at ? ' · ' + took(d) : ''}</span
 						>
 					</div>
-					<button class="text-sm text-muted hover:text-fg" onclick={() => (opened = opened === d.id ? -1 : d.id)}
-						>{opened === d.id ? t('app.hideLog') : t('app.buildLog')}</button
-					>
+					<div class="flex items-center gap-4">
+						{#if d.state === 'replaced' && d.kept && !inProgress(app.deployments[0])}
+							<button class="text-sm text-muted hover:text-fg" onclick={() => back(d)}>{t('app.rollback')}</button>
+						{/if}
+						<button class="text-sm text-muted hover:text-fg" onclick={() => (opened = opened === d.id ? -1 : d.id)}
+							>{opened === d.id ? t('app.hideLog') : t('app.buildLog')}</button
+						>
+					</div>
 				</div>
 				{#if d.error}<p class="text-sm text-danger">{d.error}</p>{/if}
 				{#if opened === d.id}

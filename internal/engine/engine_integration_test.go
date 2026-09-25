@@ -350,6 +350,25 @@ func TestBuilderBuildsAnImage(t *testing.T) {
 	if strings.Contains(out, "buildkitd") {
 		t.Errorf("a build step could see the builder:\n%s", out)
 	}
+
+	// Removing the image leaves the container that runs it alone, and a
+	// new container can no longer be made from it.
+	if err := e.RemoveImage(ctx, LocalImages+"it-built:1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.RemoveImage(ctx, LocalImages+"it-built:1"); err != nil {
+		t.Errorf("removing it twice: %v", err)
+	}
+	if st := status(t, e, "it-built"); st.State != "running" && st.State != "stopped" {
+		t.Errorf("container after its image was removed: %s", st.State)
+	}
+	if err := e.Run(ctx, Spec{ID: "it-built-2", Image: LocalImages + "it-built:1", MemoryBytes: 64 << 20, CPUs: 0.5, Pids: 32}); err == nil {
+		e.Remove(ctx, "it-built-2")
+		t.Error("a container was made from a removed image")
+	}
+	if err := e.RemoveImage(ctx, "docker.io/library/busybox:latest"); err == nil {
+		t.Error("removed a pulled image")
+	}
 }
 
 func TestOnlyOneBuilder(t *testing.T) {

@@ -381,6 +381,21 @@ func (e *Engine) ImportImage(ctx context.Context, r io.Reader, name string) erro
 	return err
 }
 
+// RemoveImage deletes one of the images Zelie built. Containers already
+// made from it keep running: they hold their own snapshot. containerd's
+// garbage collector frees the layers no other image uses.
+func (e *Engine) RemoveImage(ctx context.Context, name string) error {
+	if !strings.HasPrefix(name, LocalImages) {
+		return fmt.Errorf("only images Zelie built can be removed, not %s", name)
+	}
+	ctx = e.ctx(ctx)
+	err := e.client.ImageService().Delete(ctx, name)
+	if errdefs.IsNotFound(err) {
+		return nil
+	}
+	return err
+}
+
 // nestingOpts gives a builder what it needs to run build steps as containers
 // of its own. Everything added is confined to the container's user
 // namespace; none of it is a privilege on the host. With these BuildKit runs

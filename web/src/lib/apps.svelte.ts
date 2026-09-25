@@ -6,7 +6,9 @@ export type Deployment = {
 	image?: string;
 	state: 'queued' | 'building' | 'starting' | 'live' | 'failed' | 'replaced' | 'skipped';
 	error?: string;
-	cause: 'manual' | 'push';
+	cause: 'manual' | 'push' | 'restart' | 'rollback';
+	// The image still exists, so it can be rolled back to.
+	kept: boolean;
 	// The first line of the pushed commit's message.
 	message?: string;
 	created_at: string;
@@ -24,6 +26,7 @@ export type App = {
 	memory_mb: number;
 	cpus: number;
 	auto_deploy: boolean;
+	health_path: string;
 	// The live container's state, or none before anything went live.
 	state: string;
 	latest?: Deployment;

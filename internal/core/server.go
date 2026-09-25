@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/Caria-Core/zelie/internal/engine"
@@ -31,6 +32,7 @@ type Engine interface {
 	Stop(ctx context.Context, id string, grace time.Duration) error
 	Remove(ctx context.Context, id string) error
 	List(ctx context.Context) ([]engine.Status, error)
+	RemoveImage(ctx context.Context, name string) error
 }
 
 // Limits a single request may ask for. They keep a confused or compromised
@@ -57,6 +59,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /v1/containers/{id}", s.remove)
 	mux.HandleFunc("GET /v1/containers/{id}/logs", s.logs)
 	mux.HandleFunc("POST /v1/builds", s.build)
+	mux.HandleFunc("DELETE /v1/images", s.removeImage)
 	mux.HandleFunc("GET /v1/secrets/key", s.secretKey)
 	return peer.Require(s.Allowed, s.Log, mux)
 }
@@ -212,6 +215,22 @@ func (s *Server) remove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.Log.Info("container removed", "id", id)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// removeImage deletes an image Zelie built. Images pulled from a registry
+// are not the panel's to remove.
+func (s *Server) removeImage(w http.ResponseWriter, r *http.Request) {
+	name := r.URL.Query().Get("name")
+	if !strings.HasPrefix(name, engine.LocalImages) || len(name) > 255 {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("only images named %s… can be removed", engine.LocalImages))
+		return
+	}
+	if err := s.Engine.RemoveImage(r.Context(), name); err != nil {
+		s.fail(w, "remove image", name, err)
+		return
+	}
+	s.Log.Info("image removed", "image", name)
 	w.WriteHeader(http.StatusNoContent)
 }
 

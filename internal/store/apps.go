@@ -27,18 +27,21 @@ type App struct {
 	CPUs     float64
 	// AutoDeploy deploys each push to the branch, for SourceGitHub.
 	AutoDeploy bool
+	// HealthPath is what the health check asks for, when the app has a
+	// domain.
+	HealthPath string
 	CreatedAt  time.Time
 }
 
 // ErrExists is returned when a name or domain is already taken.
 var ErrExists = errors.New("already exists")
 
-const appColumns = "id, source, image, repo, branch, port, domain, memory_mb, cpus, auto_deploy, created_at"
+const appColumns = "id, source, image, repo, branch, port, domain, memory_mb, cpus, auto_deploy, health_path, created_at"
 
 func scanApp(row scanner) (App, error) {
 	var a App
 	var created int64
-	err := row.Scan(&a.ID, &a.Source, &a.Image, &a.Repo, &a.Branch, &a.Port, &a.Domain, &a.MemoryMB, &a.CPUs, &a.AutoDeploy, &created)
+	err := row.Scan(&a.ID, &a.Source, &a.Image, &a.Repo, &a.Branch, &a.Port, &a.Domain, &a.MemoryMB, &a.CPUs, &a.AutoDeploy, &a.HealthPath, &created)
 	a.CreatedAt = time.Unix(created, 0)
 	if errors.Is(err, sql.ErrNoRows) {
 		return a, ErrNotFound
@@ -47,16 +50,16 @@ func scanApp(row scanner) (App, error) {
 }
 
 func (s *Store) CreateApp(ctx context.Context, a App) error {
-	_, err := s.db.ExecContext(ctx, "INSERT INTO apps ("+appColumns+") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-		a.ID, a.Source, a.Image, a.Repo, a.Branch, a.Port, a.Domain, a.MemoryMB, a.CPUs, a.AutoDeploy, a.CreatedAt.Unix())
+	_, err := s.db.ExecContext(ctx, "INSERT INTO apps ("+appColumns+") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		a.ID, a.Source, a.Image, a.Repo, a.Branch, a.Port, a.Domain, a.MemoryMB, a.CPUs, a.AutoDeploy, a.HealthPath, a.CreatedAt.Unix())
 	return uniqueErr(err)
 }
 
 // UpdateApp saves everything about an app except its id, source and
 // creation time.
 func (s *Store) UpdateApp(ctx context.Context, a App) error {
-	res, err := s.db.ExecContext(ctx, "UPDATE apps SET image = ?, repo = ?, branch = ?, port = ?, domain = ?, memory_mb = ?, cpus = ?, auto_deploy = ? WHERE id = ?",
-		a.Image, a.Repo, a.Branch, a.Port, a.Domain, a.MemoryMB, a.CPUs, a.AutoDeploy, a.ID)
+	res, err := s.db.ExecContext(ctx, "UPDATE apps SET image = ?, repo = ?, branch = ?, port = ?, domain = ?, memory_mb = ?, cpus = ?, auto_deploy = ?, health_path = ? WHERE id = ?",
+		a.Image, a.Repo, a.Branch, a.Port, a.Domain, a.MemoryMB, a.CPUs, a.AutoDeploy, a.HealthPath, a.ID)
 	return oneRow(res, uniqueErr(err))
 }
 
@@ -161,8 +164,10 @@ const (
 
 // What started a deployment.
 const (
-	CauseManual = "manual"
-	CausePush   = "push"
+	CauseManual   = "manual"
+	CausePush     = "push"
+	CauseRestart  = "restart"  // the live image again, without a build
+	CauseRollback = "rollback" // an earlier deployment's image
 )
 
 // Deployment is one attempt to put a version of an app live.
@@ -173,18 +178,19 @@ type Deployment struct {
 	Image      string
 	Cause      string
 	Message    string // first line of the pushed commit's message
+	Pruned     bool   // its image was deleted
 	State      string
 	Error      string
 	CreatedAt  time.Time
 	FinishedAt time.Time // zero while in progress
 }
 
-const deploymentColumns = "id, app_id, version, image, state, error, cause, message, created_at, coalesce(finished_at, 0)"
+const deploymentColumns = "id, app_id, version, image, state, error, cause, message, pruned, created_at, coalesce(finished_at, 0)"
 
 func scanDeployment(row scanner) (Deployment, error) {
 	var d Deployment
 	var created, finished int64
-	err := row.Scan(&d.ID, &d.AppID, &d.Version, &d.Image, &d.State, &d.Error, &d.Cause, &d.Message, &created, &finished)
+	err := row.Scan(&d.ID, &d.AppID, &d.Version, &d.Image, &d.State, &d.Error, &d.Cause, &d.Message, &d.Pruned, &created, &finished)
 	d.CreatedAt = time.Unix(created, 0)
 	if finished != 0 {
 		d.FinishedAt = time.Unix(finished, 0)
@@ -200,8 +206,8 @@ func (s *Store) CreateDeployment(ctx context.Context, d Deployment, now time.Tim
 	if d.Cause == "" {
 		d.Cause = CauseManual
 	}
-	res, err := s.db.ExecContext(ctx, "INSERT INTO deployments (app_id, version, cause, message, state, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-		d.AppID, d.Version, d.Cause, d.Message, DeployQueued, now.Unix())
+	res, err := s.db.ExecContext(ctx, "INSERT INTO deployments (app_id, version, image, cause, message, state, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+		d.AppID, d.Version, d.Image, d.Cause, d.Message, DeployQueued, now.Unix())
 	if err != nil {
 		return 0, err
 	}
@@ -235,6 +241,32 @@ func (s *Store) HasNewer(ctx context.Context, d Deployment) (bool, error) {
 	var n int
 	err := s.db.QueryRowContext(ctx, "SELECT count(*) FROM deployments WHERE app_id = ? AND id > ?", d.AppID, d.ID).Scan(&n)
 	return n > 0, err
+}
+
+// Unpruned lists the app's deployments that still have an image, newest
+// first.
+func (s *Store) Unpruned(ctx context.Context, appID string) ([]Deployment, error) {
+	rows, err := s.db.QueryContext(ctx, "SELECT "+deploymentColumns+" FROM deployments WHERE app_id = ? AND image != '' AND NOT pruned ORDER BY id DESC", appID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Deployment
+	for rows.Next() {
+		d, err := scanDeployment(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
+// SetPruned records that an image was deleted, for every deployment that
+// used it.
+func (s *Store) SetPruned(ctx context.Context, appID, image string) error {
+	_, err := s.db.ExecContext(ctx, "UPDATE deployments SET pruned = 1 WHERE app_id = ? AND image = ?", appID, image)
+	return err
 }
 
 // LiveDeployment returns the deployment serving an app, if any.
