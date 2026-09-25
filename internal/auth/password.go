@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"runtime/debug"
 	"strings"
 	"sync"
 
@@ -88,8 +89,15 @@ var dummyHash = sync.OnceValue(func() string { return HashPassword("not a real p
 
 func derive(pw, salt []byte, t, m uint32, p uint8) []byte {
 	hashSlots <- struct{}{}
-	defer func() { <-hashSlots }()
-	return argon2.IDKey(pw, salt, t, m, p, argonKeyLen)
+	key := argon2.IDKey(pw, salt, t, m, p, argonKeyLen)
+	<-hashSlots
+	// The memory argon2id just used would otherwise stay with the process
+	// until the next garbage collection, which an idle panel rarely needs.
+	// Logins are rare enough that handing it back at once costs nothing.
+	if len(hashSlots) == 0 {
+		debug.FreeOSMemory()
+	}
+	return key
 }
 
 var b64 = base64.RawStdEncoding
