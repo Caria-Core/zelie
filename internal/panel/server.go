@@ -32,13 +32,28 @@ type Server struct {
 	Store  *store.Store
 	Sealer *Sealer
 	Core   Core
+	Proxy  Proxy
+	Source Source
 	Log    *slog.Logger
+	// DataDir holds files that do not belong in the database, such as
+	// deployment logs.
+	DataDir string
 	// ProxyUID is the user the proxy runs as. Requests from it are web
 	// traffic; requests from root come from the zelie command on the server.
 	ProxyUID uint32
 	Now      func() time.Time
 
-	guards *guards
+	guards  *guards
+	deploys deploys
+	ctx     context.Context // lives as long as the server
+}
+
+// baseContext is for work that outlives the request that started it.
+func (s *Server) baseContext() context.Context {
+	if s.ctx != nil {
+		return s.ctx
+	}
+	return context.Background()
 }
 
 func (s *Server) now() time.Time {
@@ -77,6 +92,15 @@ func (s *Server) Handler() http.Handler {
 	web.HandleFunc("POST /api/confirm/passkey", s.signedIn(s.confirmPasskey))
 	web.HandleFunc("DELETE /api/sessions/{id}", s.signedIn(s.endSession))
 	web.HandleFunc("POST /api/sessions/end-others", s.signedIn(s.endOtherSessions))
+	web.HandleFunc("GET /api/apps", s.signedIn(s.listApps))
+	web.HandleFunc("POST /api/apps", s.signedIn(s.createApp))
+	web.HandleFunc("GET /api/apps/{app}", s.signedIn(s.getApp))
+	web.HandleFunc("PATCH /api/apps/{app}", s.signedIn(s.updateApp))
+	web.HandleFunc("DELETE /api/apps/{app}", s.signedIn(s.deleteApp))
+	web.HandleFunc("PUT /api/apps/{app}/env", s.signedIn(s.setEnv))
+	web.HandleFunc("POST /api/apps/{app}/deployments", s.signedIn(s.newDeployment))
+	web.HandleFunc("GET /api/apps/{app}/deployments/{id}/log", s.signedIn(s.deploymentLog))
+	web.HandleFunc("GET /api/apps/{app}/logs", s.signedIn(s.appLogs))
 	web.HandleFunc("GET /api/containers", s.signedIn(s.listContainers))
 	web.HandleFunc("POST /api/containers", s.signedIn(s.runContainer))
 	web.HandleFunc("POST /api/containers/{id}/stop", s.signedIn(s.stopContainer))
@@ -108,6 +132,10 @@ func (s *Server) Serve(ctx context.Context, socket string) error {
 	if err := os.Remove(socket); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
+	s.ctx = ctx
+	if err := s.Store.FailUnfinished(ctx, s.now()); err != nil {
+		return err
+	}
 	l, err := net.Listen("unix", socket)
 	if err != nil {
 		return err
@@ -134,6 +162,9 @@ func (s *Server) Serve(ctx context.Context, socket string) error {
 	if err := srv.Serve(l); !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
+	// Deployments stop with ctx; wait so none is cut off halfway through
+	// writing its state.
+	s.deploys.wg.Wait()
 	return nil
 }
 

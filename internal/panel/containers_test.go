@@ -11,6 +11,7 @@ import (
 
 	"github.com/Caria-Core/zelie/internal/core"
 	"github.com/Caria-Core/zelie/internal/engine"
+	"github.com/Caria-Core/zelie/internal/secret"
 )
 
 type fakeCore struct {
@@ -26,6 +27,11 @@ func (f *fakeCore) Stop(context.Context, string, int) error {
 	return &core.Error{Status: http.StatusNotFound, Message: "container not found"}
 }
 func (f *fakeCore) Remove(context.Context, string) error { return io.ErrUnexpectedEOF }
+func (f *fakeCore) RunApp(ctx context.Context, s engine.Spec, _ []string) error { return f.Run(ctx, s) }
+func (f *fakeCore) Build(context.Context, string, string, io.Reader, io.Writer) (string, error) {
+	return "", io.ErrUnexpectedEOF
+}
+func (f *fakeCore) SecretKey(context.Context) (secret.PublicKey, error) { return secret.PublicKey{}, nil }
 func (f *fakeCore) Logs(_ context.Context, _ string, _ bool, _ int64, w io.Writer) error {
 	_, err := io.WriteString(w, f.logs)
 	return err

@@ -51,7 +51,11 @@ func runPanel(stderr io.Writer) int {
 		return 1
 	}
 
-	s := &panel.Server{Store: db, Sealer: sealer, Core: core.NewClient(core.DefaultSocket), Log: log, ProxyUID: proxyUID}
+	s := &panel.Server{
+		Store: db, Sealer: sealer, Core: core.NewClient(core.DefaultSocket),
+		Proxy: proxy.NewClient(proxySocket), Source: panel.NewPublicGitHub(),
+		Log: log, ProxyUID: proxyUID, DataDir: panelState,
+	}
 	if err := s.Serve(ctx, panelSocket); err != nil {
 		log.Error("panel stopped", "err", err)
 		return 1

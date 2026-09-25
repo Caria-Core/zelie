@@ -53,5 +53,45 @@ CREATE TABLE setup_token (
 -- When the person behind the session last proved it was them, by logging
 -- in or confirming. Changing how the account logs in needs a recent one.
 ALTER TABLE sessions ADD COLUMN confirmed_at INTEGER NOT NULL DEFAULT 0;
+`, `
+-- An app is something Zelie keeps running: built from a GitHub repository
+-- or run from an image. Its id also names its containers, images and
+-- network.
+CREATE TABLE apps (
+	id         TEXT PRIMARY KEY,
+	source     TEXT NOT NULL CHECK (source IN ('image', 'github')),
+	image      TEXT NOT NULL DEFAULT '', -- for source image
+	repo       TEXT NOT NULL DEFAULT '', -- owner/name, for source github
+	branch     TEXT NOT NULL DEFAULT '',
+	port       INTEGER NOT NULL,         -- the port the app listens on
+	domain     TEXT NOT NULL DEFAULT '' COLLATE NOCASE,
+	memory_mb  INTEGER NOT NULL,
+	cpus       REAL NOT NULL,
+	created_at INTEGER NOT NULL
+) STRICT;
+CREATE UNIQUE INDEX apps_domain ON apps(domain) WHERE domain != '';
+
+-- A secret value is sealed for the core (package secret); the panel cannot
+-- read it back.
+CREATE TABLE app_env (
+	app_id TEXT NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
+	name   TEXT NOT NULL,
+	value  TEXT NOT NULL,
+	secret INTEGER NOT NULL,
+	PRIMARY KEY (app_id, name)
+) STRICT;
+
+-- Each attempt to put a new version of an app live.
+CREATE TABLE deployments (
+	id          INTEGER PRIMARY KEY,
+	app_id      TEXT NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
+	version     TEXT NOT NULL,           -- commit for github, image otherwise
+	image       TEXT NOT NULL DEFAULT '', -- what runs, once known
+	state       TEXT NOT NULL,           -- see store.Deploy* constants
+	error       TEXT NOT NULL DEFAULT '',
+	created_at  INTEGER NOT NULL,
+	finished_at INTEGER
+) STRICT;
+CREATE INDEX deployments_app ON deployments(app_id, id);
 `,
 }

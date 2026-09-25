@@ -39,6 +39,10 @@ var upstreams = engine.NetworkRange
 
 var hostname = regexp.MustCompile(`^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$`)
 
+// ValidDomain reports whether h, in lower case, is a domain name the proxy
+// can route.
+func ValidDomain(h string) bool { return hostname.MatchString(h) }
+
 // Validate rejects anything the proxy should not serve. Upstreams must be
 // container addresses: apart from the panel's own socket, the proxy is never a
 // way to reach the host or the wider network.

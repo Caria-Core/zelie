@@ -12,6 +12,7 @@ import (
 
 	"github.com/Caria-Core/zelie/internal/core"
 	"github.com/Caria-Core/zelie/internal/engine"
+	"github.com/Caria-Core/zelie/internal/secret"
 )
 
 // Core is what the panel asks the privileged core to do. *core.Client
@@ -19,6 +20,9 @@ import (
 type Core interface {
 	List(ctx context.Context) ([]engine.Status, error)
 	Run(ctx context.Context, s engine.Spec) error
+	RunApp(ctx context.Context, s engine.Spec, sealedEnv []string) error
+	Build(ctx context.Context, app, version string, source io.Reader, out io.Writer) (string, error)
+	SecretKey(ctx context.Context) (secret.PublicKey, error)
 	Stop(ctx context.Context, id string, graceSeconds int) error
 	Remove(ctx context.Context, id string) error
 	Logs(ctx context.Context, id string, follow bool, tail int64, w io.Writer) error
@@ -124,6 +128,14 @@ func (s *Server) containerLogs(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, errors.New("invalid container id"))
 		return
 	}
+	s.streamLogs(w, r, id)
+}
+
+// streamLogs streams a container's output as server-sent events. Each
+// "output" event carries a chunk of text as a JSON string; a "notice" says
+// why the stream ended early. ("error" would clash with the browser's own
+// connection error event.)
+func (s *Server) streamLogs(w http.ResponseWriter, r *http.Request, id string) {
 	ev := newEventStream(w)
 	defer ev.close()
 	err := s.Core.Logs(r.Context(), id, true, logTail, ev)
