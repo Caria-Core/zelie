@@ -22,7 +22,11 @@ func TestVolumes(t *testing.T) {
 	if first.State != store.DeployLive {
 		t.Fatalf("first deployment %+v", first)
 	}
-	want := []engine.VolumeMount{{Name: "vol-1", Target: "/data"}}
+	vols := volumesOf(t, e, "mc")
+	if !strings.HasPrefix(vols[0].Name, "vol-") || len(vols[0].Name) != 20 {
+		t.Errorf("volume name %q", vols[0].Name)
+	}
+	want := []engine.VolumeMount{{Name: vols[0].Name, Target: "/data"}}
 	if got := e.core.mounts[fmt.Sprintf("mc-%d", first.ID)]; fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Errorf("mounts %v, want %v", got, want)
 	}
@@ -56,6 +60,7 @@ func TestVolumes(t *testing.T) {
 	}
 
 	// Deleting needs the app stopped.
+	second := volumesOf(t, e, "mc")[1]
 	if code, _ := e.b.do("DELETE", "/api/apps/mc/volumes/2", nil); code != http.StatusConflict {
 		t.Errorf("delete while running: %d", code)
 	}
@@ -63,7 +68,7 @@ func TestVolumes(t *testing.T) {
 	if code, out := e.b.do("DELETE", "/api/apps/mc/volumes/2", nil); code != http.StatusNoContent {
 		t.Fatalf("delete while stopped: %d %v", code, out)
 	}
-	if e.core.volumes["vol-2"] {
+	if e.core.volumes[second.Name] {
 		t.Error("the core still has the deleted volume")
 	}
 
@@ -82,7 +87,7 @@ func TestVolumeOverItsLimitStopsTheApp(t *testing.T) {
 		"volumes": []map[string]any{{"path": "/data", "limit_mb": 100}}})
 	e.settle(t, "mc")
 
-	e.core.sizes = map[string]int64{"vol-1": 101 << 20}
+	e.core.sizes = map[string]int64{volumesOf(t, e, "mc")[0].Name: 101 << 20}
 	e.s.checkVolumes(context.Background())
 	a, _ := e.s.Store.App(context.Background(), "mc")
 	if !a.Stopped {
@@ -93,9 +98,22 @@ func TestVolumeOverItsLimitStopsTheApp(t *testing.T) {
 		t.Errorf("volume_full %q", full)
 	}
 
-	e.b.do("POST", "/api/apps/mc/start", nil)
-	if d := e.settle(t, "mc"); d.State != store.DeployFailed || !strings.Contains(d.Error, "over its") {
-		t.Fatalf("start over the limit: %+v", d)
+	for _, path := range []string{"start", "restart", "deployments"} {
+		if code, out := e.b.do("POST", "/api/apps/mc/"+path, nil); code != http.StatusConflict || !strings.Contains(fmt.Sprint(out["error"]), "over its") {
+			t.Errorf("%s over the limit: %d %v", path, code, out)
+		}
+	}
+
+	// A push or a recovery that starts anyway leaves the app stopped, so it
+	// is not retried over and over.
+	e.s.Store.SetStopped(context.Background(), "mc", false)
+	live, _ := e.s.Store.LiveDeployment(context.Background(), "mc")
+	e.s.deploy(context.Background(), a, store.Deployment{Version: live.Version, Image: live.Image, Cause: store.CauseRecover})
+	if d := e.settle(t, "mc"); d.State != store.DeployFailed {
+		t.Fatalf("recovery over the limit: %+v", d)
+	}
+	if a, _ := e.s.Store.App(context.Background(), "mc"); !a.Stopped {
+		t.Error("the app is not marked stopped after failing over its limit")
 	}
 
 	if code, _ := e.b.do("PATCH", "/api/apps/mc/volumes/1", map[string]any{"limit_mb": 200}); code != http.StatusOK {
@@ -126,4 +144,13 @@ func TestFailedVersionWithVolumesBringsTheOldOneBack(t *testing.T) {
 	if e.core.overlapping {
 		t.Error("two versions ran with the same volume")
 	}
+}
+
+func volumesOf(t *testing.T, e *appEnv, app string) []store.Volume {
+	t.Helper()
+	vols, err := e.s.Store.Volumes(context.Background(), app)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return vols
 }

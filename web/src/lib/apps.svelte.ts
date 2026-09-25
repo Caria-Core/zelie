@@ -40,6 +40,8 @@ export type App = {
 	stopped: boolean;
 	// Why Zelie stopped bringing it back up after crashes.
 	crashing?: string;
+	// Which volume has grown past its limit, keeping the app down.
+	volume_full?: string;
 	latest?: Deployment;
 };
 

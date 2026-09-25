@@ -245,6 +245,10 @@ func (s *Server) runDeployment(ctx context.Context, appID string, id int64) {
 		return
 	}
 	if reason := s.overLimit(vols); reason != "" {
+		// Stopped, or Zelie would keep trying to bring it back.
+		if err := s.Store.SetStopped(ctx, app.ID, true); err != nil {
+			s.Log.Error("stop app", "app", app.ID, "err", err)
+		}
 		fail(errors.New(reason))
 		return
 	}

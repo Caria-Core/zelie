@@ -2,36 +2,39 @@ package store
 
 import (
 	"context"
-	"strconv"
+	"crypto/rand"
+	"encoding/hex"
 	"time"
 )
 
 // Volume is a directory an app keeps between deployments.
 type Volume struct {
 	ID        int64
+	Name      string // the core's name for it, set when it is created
 	AppID     string
 	Path      string // where the app sees it
 	LimitMB   int64
 	CreatedAt time.Time
 }
 
-// Name is what the core calls the volume.
-func (v Volume) Name() string { return "vol-" + strconv.FormatInt(v.ID, 10) }
-
-// CreateVolume saves a new volume and returns its id.
-func (s *Store) CreateVolume(ctx context.Context, v Volume) (int64, error) {
-	res, err := s.db.ExecContext(ctx, "INSERT INTO volumes (app_id, path, limit_mb, created_at) VALUES (?, ?, ?, ?)",
-		v.AppID, v.Path, v.LimitMB, v.CreatedAt.Unix())
+// CreateVolume saves a new volume under a new name for the core.
+func (s *Store) CreateVolume(ctx context.Context, v Volume) (Volume, error) {
+	b := make([]byte, 8)
+	rand.Read(b)
+	v.Name = "vol-" + hex.EncodeToString(b)
+	res, err := s.db.ExecContext(ctx, "INSERT INTO volumes (name, app_id, path, limit_mb, created_at) VALUES (?, ?, ?, ?, ?)",
+		v.Name, v.AppID, v.Path, v.LimitMB, v.CreatedAt.Unix())
 	if err != nil {
-		return 0, uniqueErr(err)
+		return v, uniqueErr(err)
 	}
-	return res.LastInsertId()
+	v.ID, err = res.LastInsertId()
+	return v, err
 }
 
 // Volumes returns an app's volumes, oldest first. An empty appID returns
 // every app's.
 func (s *Store) Volumes(ctx context.Context, appID string) ([]Volume, error) {
-	rows, err := s.db.QueryContext(ctx, "SELECT id, app_id, path, limit_mb, created_at FROM volumes WHERE ? = '' OR app_id = ? ORDER BY id", appID, appID)
+	rows, err := s.db.QueryContext(ctx, "SELECT id, name, app_id, path, limit_mb, created_at FROM volumes WHERE ? = '' OR app_id = ? ORDER BY id", appID, appID)
 	if err != nil {
 		return nil, err
 	}
@@ -40,7 +43,7 @@ func (s *Store) Volumes(ctx context.Context, appID string) ([]Volume, error) {
 	for rows.Next() {
 		var v Volume
 		var created int64
-		if err := rows.Scan(&v.ID, &v.AppID, &v.Path, &v.LimitMB, &created); err != nil {
+		if err := rows.Scan(&v.ID, &v.Name, &v.AppID, &v.Path, &v.LimitMB, &created); err != nil {
 			return nil, err
 		}
 		v.CreatedAt = time.Unix(created, 0)

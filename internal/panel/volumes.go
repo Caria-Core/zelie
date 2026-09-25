@@ -64,7 +64,7 @@ type volumeRequest struct {
 
 func (s *Server) volumeOut(v store.Volume) volumeJSON {
 	out := volumeJSON{ID: v.ID, Path: v.Path, LimitMB: v.LimitMB, CreatedAt: v.CreatedAt}
-	if n, ok := s.sizes.get(v.Name()); ok {
+	if n, ok := s.sizes.get(v.Name); ok {
 		out.UsedBytes = &n
 	}
 	return out
@@ -74,7 +74,7 @@ func (s *Server) volumeOut(v store.Volume) volumeJSON {
 // its limit. Empty means none has.
 func (s *Server) overLimit(vols []store.Volume) string {
 	for _, v := range vols {
-		if n, ok := s.sizes.get(v.Name()); ok && n > v.LimitMB<<20 {
+		if n, ok := s.sizes.get(v.Name); ok && n > v.LimitMB<<20 {
 			return fmt.Sprintf("the volume at %s holds %s, over its %s limit; raise the limit to start the app", v.Path, formatMB(n>>20), formatMB(v.LimitMB))
 		}
 	}
@@ -178,16 +178,15 @@ func (s *Server) createVolume(ctx context.Context, a store.App, req volumeReques
 			return v, http.StatusConflict, fmt.Errorf("%s overlaps the volume at %s", v.Path, e.Path)
 		}
 	}
-	id, err := s.Store.CreateVolume(ctx, v)
+	v, err = s.Store.CreateVolume(ctx, v)
 	if errors.Is(err, store.ErrExists) {
 		return v, http.StatusConflict, fmt.Errorf("there is already a volume at %s", v.Path)
 	}
 	if err != nil {
 		return v, http.StatusInternalServerError, err
 	}
-	v.ID = id
-	if err := s.Core.CreateVolume(ctx, v.Name()); err != nil {
-		s.Store.DeleteVolume(context.WithoutCancel(ctx), a.ID, id)
+	if err := s.Core.CreateVolume(ctx, v.Name); err != nil {
+		s.Store.DeleteVolume(context.WithoutCancel(ctx), a.ID, v.ID)
 		return v, http.StatusBadGateway, err
 	}
 	return v, 0, nil
@@ -239,7 +238,8 @@ func (s *Server) deleteVolume(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	ctx := r.Context()
+	// Finish once started, like deleting an app.
+	ctx := context.WithoutCancel(r.Context())
 	unlock := s.deploys.lock(a.ID)
 	defer unlock()
 	list, err := s.Core.List(ctx)
@@ -263,7 +263,7 @@ func (s *Server) deleteVolume(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	if err := s.Core.RemoveVolume(ctx, v.Name()); err != nil && !isNotFound(err) {
+	if err := s.Core.RemoveVolume(ctx, v.Name); err != nil && !isNotFound(err) {
 		s.coreFailed(w, "remove volume", err)
 		return
 	}
@@ -283,7 +283,7 @@ func (s *Server) removeAppVolumes(ctx context.Context, appID string) error {
 		return err
 	}
 	for _, v := range vols {
-		if err := s.Core.RemoveVolume(ctx, v.Name()); err != nil && !isNotFound(err) {
+		if err := s.Core.RemoveVolume(ctx, v.Name); err != nil && !isNotFound(err) {
 			return err
 		}
 	}
@@ -313,7 +313,7 @@ func (s *Server) volumeFrom(w http.ResponseWriter, r *http.Request) (store.App, 
 func volumeMounts(vols []store.Volume) []engine.VolumeMount {
 	out := make([]engine.VolumeMount, len(vols))
 	for i, v := range vols {
-		out[i] = engine.VolumeMount{Name: v.Name(), Target: v.Path}
+		out[i] = engine.VolumeMount{Name: v.Name, Target: v.Path}
 	}
 	return out
 }

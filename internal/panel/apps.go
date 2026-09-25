@@ -609,8 +609,17 @@ func (s *Server) rollback(w http.ResponseWriter, r *http.Request) {
 }
 
 // unstop clears the stopped flag: deploying or restarting means the user
-// wants the app running.
+// wants the app running. An app with a volume over its limit may not run.
 func (s *Server) unstop(w http.ResponseWriter, r *http.Request, a store.App) bool {
+	vols, err := s.Store.Volumes(r.Context(), a.ID)
+	if err != nil {
+		s.fail(w, "list volumes", err)
+		return false
+	}
+	if reason := s.overLimit(vols); reason != "" {
+		writeError(w, http.StatusConflict, errors.New(reason))
+		return false
+	}
 	if !a.Stopped {
 		return true
 	}
@@ -748,7 +757,9 @@ func (s *Server) deleteApp(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	ctx := r.Context()
+	// Once started, the removal finishes even if the browser goes away:
+	// half of it would leave containers and volumes nothing refers to.
+	ctx := context.WithoutCancel(r.Context())
 	// A deployment in progress would start a container for an app that no
 	// longer exists.
 	s.deploys.cancel(a.ID)

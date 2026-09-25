@@ -151,10 +151,12 @@ ALTER TABLE apps ADD COLUMN detected TEXT NOT NULL DEFAULT '{}';
 -- the live image again, the way Pelican's auto update does.
 ALTER TABLE apps ADD COLUMN restart_pulls INTEGER NOT NULL DEFAULT 0;
 `, `
--- Directories an app keeps between deployments. The core knows each one
--- as "vol-<id>".
+-- Directories an app keeps between deployments. name is the core's, and
+-- random: a database restored from an older copy must not find a directory
+-- made later for another app under a reused id.
 CREATE TABLE volumes (
 	id         INTEGER PRIMARY KEY,
+	name       TEXT NOT NULL UNIQUE,
 	app_id     TEXT NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
 	path       TEXT NOT NULL, -- where the app sees it
 	limit_mb   INTEGER NOT NULL,

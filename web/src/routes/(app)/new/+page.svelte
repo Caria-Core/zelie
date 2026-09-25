@@ -6,7 +6,9 @@
 	import { messageOf } from '$lib/errors';
 	import { repositories, status, type Repository } from '$lib/github';
 	import { t } from '$lib/i18n';
-	import { Plus } from '@lucide/svelte';
+	import { Plus, X } from '@lucide/svelte';
+	import { host, loadHost, megabytes } from '$lib/host.svelte';
+	import { defaultSize, sizeSteps } from '$lib/volumes';
 	import AppIcon from '$lib/ui/AppIcon.svelte';
 	import Button from '$lib/ui/Button.svelte';
 	import ErrorText from '$lib/ui/ErrorText.svelte';
@@ -34,6 +36,11 @@
 	let startCommand = $state('');
 	let testCommand = $state('');
 	let healthPath = $state('/');
+	let volumes = $state<{ path: string; size: number }[]>([]);
+	const diskMB = $derived(host.info ? host.info.disk_bytes / 2 ** 20 : 102400);
+	$effect(() => {
+		loadHost();
+	});
 	let error = $state('');
 	let busy = $state(false);
 
@@ -87,7 +94,8 @@
 				memory_mb: memory,
 				cpus,
 				health_path: healthPath,
-				start_command: startCommand
+				start_command: startCommand,
+				volumes: volumes.filter((v) => v.path.trim()).map((v) => ({ path: v.path.trim(), limit_mb: v.size }))
 			};
 			if (github) {
 				Object.assign(body, { repo: cleanRepo, branch, auto_deploy: autoDeploy, restart_pulls: restartPulls, build_command: buildCommand });
@@ -185,6 +193,30 @@
 						<Field label={t('settings.tests')} placeholder={t('new.testAuto')} autocomplete="off" bind:value={testCommand} />
 					{/if}
 					<Field label={t('settings.health')} hint={t('settings.healthHint')} required autocomplete="off" bind:value={healthPath} />
+					<div class="flex flex-col gap-2">
+						<span class="text-sm font-medium">{t('new.volumes')}</span>
+						{#each volumes as v, i (i)}
+							<div class="flex items-center gap-2">
+								<input
+									class="h-10 min-w-0 flex-1 rounded-xl border border-line bg-bg px-3.5 font-mono text-[15px] outline-none focus:border-muted"
+									aria-label={t('storage.path')}
+									placeholder="/data"
+									autocomplete="off"
+									bind:value={v.path}
+								/>
+								<select class="h-10 rounded-xl border border-line bg-bg px-2 text-[15px]" aria-label={t('storage.limit')} bind:value={v.size}>
+									{#each sizeSteps(diskMB) as mb (mb)}<option value={mb}>{megabytes(mb)}</option>{/each}
+								</select>
+								<Button kind="quiet" type="button" class="!px-2" aria-label={t('new.removeVolume')} onclick={() => volumes.splice(i, 1)}
+									><X size={16} /></Button
+								>
+							</div>
+						{/each}
+						<p class="text-sm text-muted">{t('new.volumesHint')}</p>
+						<Button kind="secondary" type="button" class="!h-8 self-start !px-3.5 text-sm" onclick={() => volumes.push({ path: '', size: defaultSize })}
+							><Plus size={14} />{t('new.addVolume')}</Button
+						>
+					</div>
 				</div>
 			</details>
 			<ErrorText message={error} />

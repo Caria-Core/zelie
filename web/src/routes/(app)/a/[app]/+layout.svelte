@@ -51,6 +51,7 @@
 		{ href: `/a/${id}`, label: t('app.tab.deployments') },
 		{ href: `/a/${id}/logs`, label: t('app.tab.logs') },
 		{ href: `/a/${id}/env`, label: t('app.tab.env') },
+		{ href: `/a/${id}/storage`, label: t('app.tab.storage') },
 		{ href: `/a/${id}/settings`, label: t('app.tab.settings') }
 	]);
 </script>
@@ -66,7 +67,8 @@
 				<div class="min-w-0">
 					<h1 class="truncate text-[22px] tracking-tight">{a.id}</h1>
 					<p class="flex flex-wrap items-center gap-x-2 text-sm text-muted">
-						<StateDot state={a.state} label />
+						<!-- Stopping waits for the app to exit, up to half a minute. -->
+						<StateDot state={a.stopped && a.state === 'running' ? 'stopping' : a.state} label />
 						<span>·</span>
 						<span class="font-mono">{a.source === 'github' ? `${a.repo}@${a.branch}` : a.image}</span>
 						{#if a.domain}
@@ -80,24 +82,29 @@
 			</div>
 			<div class="flex items-center gap-2">
 				{#if a.stopped}
-					<Button kind="secondary" onclick={() => run(start)} busy={starting || busy()}>
+					<Button kind="secondary" onclick={() => run(start)} busy={starting || busy()} disabled={!!a.volume_full} title={a.volume_full}>
 						<Play size={16} strokeWidth={1.75} />{t('app.start')}
 					</Button>
 				{:else if a.state !== 'none'}
 					<Button kind="quiet" onclick={() => run(stop)} busy={starting} title={t('app.stopHint')}>
 						<Square size={14} strokeWidth={1.75} />{t('app.stop')}
 					</Button>
-					<Button kind="secondary" onclick={() => run(restart)} busy={starting || busy()} title={t('app.restartHint')}>
+					<Button kind="secondary" onclick={() => run(restart)} busy={starting || busy()} disabled={!!a.volume_full} title={a.volume_full || t('app.restartHint')}>
 						<RotateCw size={16} strokeWidth={1.75} />{t('app.restart')}
 					</Button>
 				{/if}
-				<Button onclick={() => run(deploy)} busy={starting || busy()}>
+				<Button onclick={() => run(deploy)} busy={starting || busy()} disabled={!!a.volume_full} title={a.volume_full}>
 					<Rocket size={16} strokeWidth={1.75} />{busy() ? t('app.deploying') : t('app.deploy')}
 				</Button>
 			</div>
 		</header>
 		<ErrorText message={error} />
-		{#if a.crashing}
+		{#if a.volume_full}
+			<p class="rounded-xl border border-danger/30 px-4 py-3 text-sm text-danger">
+				{t('app.volumeFull', { why: a.volume_full })}
+				<a href="/a/{a.id}/storage" class="underline underline-offset-2">{t('app.tab.storage')}</a>
+			</p>
+		{:else if a.crashing}
 			<p class="rounded-xl border border-danger/30 px-4 py-3 text-sm text-danger">{t('app.crashing', { why: a.crashing })}</p>
 		{:else if a.stopped}
 			<p class="text-sm text-muted">{t('app.stoppedNote')}</p>
