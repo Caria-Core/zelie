@@ -40,6 +40,9 @@
 		status()
 			.then(async (s) => {
 				connected = s.connected;
+				// Without the connection, GitHub's page explains the setup first.
+				// A public repository can still be deployed without it.
+				if (!s.connected && !page.url.searchParams.has('public')) return goto('/github?from=new', { replaceState: true });
 				if (s.connected) repos = await repositories();
 			})
 			.catch(() => {});
