@@ -28,14 +28,7 @@ func runCore(stderr io.Writer) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	var policy core.PeerPolicy
-	if u, err := user.Lookup(panelUser); err == nil {
-		if uid, err := strconv.ParseUint(u.Uid, 10, 32); err == nil {
-			policy.UIDs = append(policy.UIDs, uint32(uid))
-		}
-	} else {
-		log.Warn("panel user not found, only root may use the core", "user", panelUser)
-	}
+	policy := panelPolicy(log)
 
 	e, err := engine.Connect(ctx, engine.DefaultPaths)
 	if err != nil {
@@ -50,4 +43,13 @@ func runCore(stderr io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+func lookupUID(name string) (uint32, bool) {
+	u, err := user.Lookup(name)
+	if err != nil {
+		return 0, false
+	}
+	uid, err := strconv.ParseUint(u.Uid, 10, 32)
+	return uint32(uid), err == nil
 }

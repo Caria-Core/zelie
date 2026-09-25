@@ -23,6 +23,10 @@ Commands:
   rm <id>                              Stop and delete a container
   ps                                   List containers
   logs [-f] <id>                       Print a container's output, -f keeps following
+  route add <host> <id> <port>         Send a domain to a container's port
+  route rm <host>                      Stop routing a domain
+  route ls                             List routes
+  tls acme <email> | tls self-signed   Choose how the proxy gets certificates
 `
 
 func debug(args []string, stdout, stderr io.Writer) int {
@@ -82,6 +86,12 @@ func debug(args []string, stdout, stderr io.Writer) int {
 			err = c.Stop(ctx, args[1], 10)
 		case "rm":
 			err = c.Remove(ctx, args[1])
+		}
+	case "route", "tls":
+		err = debugProxy(ctx, c, args, stdout)
+		if err == errUsage {
+			fmt.Fprint(stderr, debugUsage)
+			return 2
 		}
 	case "ps":
 		var list []engine.Status

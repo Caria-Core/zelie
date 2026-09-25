@@ -16,10 +16,10 @@ import (
 	types100 "github.com/containernetworking/cni/pkg/types/100"
 )
 
-// Every network gets a /24 out of this range. It is rarely used by hosting
+// NetworkRange holds every container network. Each network gets a /24 out of it. It is rarely used by hosting
 // providers or home routers, which keeps clashes with the host's own
 // networks unlikely.
-var networkRange = netip.MustParsePrefix("10.210.0.0/16")
+var NetworkRange = netip.MustParsePrefix("10.210.0.0/16")
 
 const maxNetworks = 256
 
@@ -87,7 +87,7 @@ func (n *networks) ensure(name string) (network, error) {
 		if used[i] {
 			continue
 		}
-		base := networkRange.Addr().As4()
+		base := NetworkRange.Addr().As4()
 		base[2] = byte(i)
 		nw := network{Name: name, Index: i, Subnet: netip.PrefixFrom(netip.AddrFrom4(base), 24).String()}
 		m[name] = nw

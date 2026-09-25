@@ -18,6 +18,7 @@ const usage = `Usage: zelie <command>
 
 Commands:
   core             Run the privileged core (needs root)
+  proxy            Run the web proxy (must not run as root)
   engine install   Install or update Zelie's containerd and runc (needs root)
   debug            Send requests to the core by hand while developing
   version          Print the version and exit
@@ -45,6 +46,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 2
 	case "core":
 		return runCore(stderr)
+	case "proxy":
+		return runProxy(args[1:], stderr)
 	case "debug":
 		return debug(args[1:], stdout, stderr)
 	case "help", "--help", "-h":

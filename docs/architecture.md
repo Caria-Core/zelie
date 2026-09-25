@@ -3,20 +3,23 @@
 This document describes how Zelie is put together and why. It is written ahead of the
 code and will change as the code catches up.
 
-## One binary, two processes
+## One binary, three processes
 
-Zelie ships as a single `zelie` binary. On a server it runs as two processes:
+Zelie ships as a single `zelie` binary. On a server it runs as three processes:
 
 - **The core** runs as root. It talks to containerd, sets up networks and firewall
   rules, and manages disks. It does not listen on the network. It accepts a small set of
-  typed commands, such as "start this container", over a Unix socket that only the panel
-  can reach.
+  typed requests, such as "start this container", over a Unix socket. The kernel tells it
+  which user is on the other end, and only root and the panel get an answer.
 - **The panel** runs as an unprivileged user. It serves the web interface and the API,
-  handles logins, and receives webhooks from GitHub. Everything that faces the internet
-  lives here.
+  handles logins, and receives webhooks from GitHub.
+- **The proxy** runs as its own unprivileged user and may only bind ports 80 and 443. It
+  terminates HTTPS and forwards each domain to the container that serves it.
 
 Keeping these apart means a bug in the web interface gives an attacker an unprivileged
-account and a short list of allowed commands, not root on the server.
+account and a short list of allowed requests, not root on the server. It also means the
+panel can restart or update while every site keeps serving: the proxy rarely restarts,
+and when its routes change it swaps them in without dropping connections.
 
 ## Containers
 
@@ -53,8 +56,11 @@ wrong.
 
 ## Web traffic
 
-Zelie embeds [Caddy](https://caddyserver.com) to route traffic to apps and to get HTTPS
-certificates automatically. A panel can be reached through a domain, through a bare IP
+The proxy gets certificates from Let's Encrypt with
+[CertMagic](https://github.com/caddyserver/certmagic), the library behind Caddy's
+automatic HTTPS, and forwards requests with Go's standard reverse proxy. It only
+requests certificates for domains that are routed, and it only forwards to container
+addresses, never to the host. A panel can be reached through a domain, through a bare IP
 address, or through a Cloudflare Tunnel with no open web ports at all.
 
 ## Databases

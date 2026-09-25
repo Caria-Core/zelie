@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Caria-Core/zelie/internal/engine"
+	"github.com/Caria-Core/zelie/internal/peer"
 	"github.com/containerd/errdefs"
 )
 
@@ -44,11 +45,11 @@ func (f *fakeEngine) List(context.Context) ([]engine.Status, error) {
 	return []engine.Status{{ID: "web", Image: "busybox", State: "running", Pid: 42, Userns: 1 << 30}}, nil
 }
 
-func request(t *testing.T, s *Server, peer *Peer, method, path, body string) *httptest.ResponseRecorder {
+func request(t *testing.T, s *Server, p *peer.Peer, method, path, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(method, path, strings.NewReader(body))
-	if peer != nil {
-		req = req.WithContext(context.WithValue(req.Context(), peerKey{}, *peer))
+	if p != nil {
+		req = req.WithContext(peer.WithPeer(req.Context(), *p))
 	}
 	rec := httptest.NewRecorder()
 	s.Handler().ServeHTTP(rec, req)
@@ -60,7 +61,7 @@ func newServer() (*Server, *fakeEngine) {
 	return &Server{
 		Engine:  f,
 		Log:     slog.New(slog.NewTextHandler(io.Discard, nil)),
-		Allowed: PeerPolicy{UIDs: []uint32{999}},
+		Allowed: peer.Policy{UIDs: []uint32{999}},
 	}, f
 }
 
@@ -68,12 +69,12 @@ func TestPeerCheck(t *testing.T) {
 	s, _ := newServer()
 	cases := []struct {
 		name string
-		peer *Peer
+		peer *peer.Peer
 		want int
 	}{
-		{"root", &Peer{UID: 0}, http.StatusOK},
-		{"panel user", &Peer{UID: 999}, http.StatusOK},
-		{"someone else", &Peer{UID: 1000}, http.StatusForbidden},
+		{"root", &peer.Peer{UID: 0}, http.StatusOK},
+		{"panel user", &peer.Peer{UID: 999}, http.StatusOK},
+		{"someone else", &peer.Peer{UID: 1000}, http.StatusForbidden},
 		{"unknown peer", nil, http.StatusForbidden},
 	}
 	for _, c := range cases {
@@ -86,7 +87,7 @@ func TestPeerCheck(t *testing.T) {
 }
 
 func TestRun(t *testing.T) {
-	root := &Peer{UID: 0}
+	root := &peer.Peer{UID: 0}
 	valid := `{"id":"web","image":"busybox","memory_bytes":67108864,"cpus":0.5,"pids":64}`
 	cases := []struct {
 		name string
@@ -111,7 +112,7 @@ func TestRun(t *testing.T) {
 }
 
 func TestStop(t *testing.T) {
-	root := &Peer{UID: 0}
+	root := &peer.Peer{UID: 0}
 	s, f := newServer()
 	if got := request(t, s, root, "POST", "/v1/containers/web/stop", "").Code; got != http.StatusNoContent {
 		t.Fatalf("status %d", got)
@@ -129,7 +130,7 @@ func TestStop(t *testing.T) {
 
 func TestList(t *testing.T) {
 	s, _ := newServer()
-	rec := request(t, s, &Peer{UID: 0}, "GET", "/v1/containers", "")
+	rec := request(t, s, &peer.Peer{UID: 0}, "GET", "/v1/containers", "")
 	if !strings.Contains(rec.Body.String(), `"id":"web"`) {
 		t.Errorf("unexpected body %s", rec.Body)
 	}

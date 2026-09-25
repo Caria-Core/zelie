@@ -1,4 +1,4 @@
-package core
+package peer
 
 import (
 	"net"
@@ -6,7 +6,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-func peerCredentials(c *net.UnixConn) (Peer, error) {
+func credentials(c *net.UnixConn) (Peer, error) {
 	raw, err := c.SyscallConn()
 	if err != nil {
 		return Peer{}, err

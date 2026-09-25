@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/Caria-Core/zelie/internal/engine"
+	"github.com/Caria-Core/zelie/internal/peer"
 	"github.com/containerd/errdefs"
 )
 
@@ -39,7 +40,7 @@ type Server struct {
 	Engine  Engine
 	Paths   engine.Paths
 	Log     *slog.Logger
-	Allowed PeerPolicy
+	Allowed peer.Policy
 }
 
 func (s *Server) Handler() http.Handler {
@@ -49,7 +50,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/containers/{id}/stop", s.stop)
 	mux.HandleFunc("DELETE /v1/containers/{id}", s.remove)
 	mux.HandleFunc("GET /v1/containers/{id}/logs", s.logs)
-	return s.checkPeer(mux)
+	return peer.Require(s.Allowed, s.Log, mux)
 }
 
 // Serve listens on the socket until ctx is cancelled.
@@ -73,7 +74,7 @@ func (s *Server) Serve(ctx context.Context, socket string) error {
 	}
 	srv := &http.Server{
 		Handler:           s.Handler(),
-		ConnContext:       withPeer,
+		ConnContext:       peer.ConnContext,
 		ReadHeaderTimeout: 10 * time.Second,
 		// Requests end when the core stops, so a client following logs does
 		// not hold up shutdown.
@@ -90,18 +91,6 @@ func (s *Server) Serve(ctx context.Context, socket string) error {
 		return err
 	}
 	return nil
-}
-
-func (s *Server) checkPeer(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		p, ok := peerFrom(r.Context())
-		if !ok || !s.Allowed.Allows(p) {
-			s.Log.Warn("rejected request", "uid", p.UID, "pid", p.PID, "path", r.URL.Path)
-			writeError(w, http.StatusForbidden, errors.New("not allowed"))
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
 }
 
 type runRequest struct {
