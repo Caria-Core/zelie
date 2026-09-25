@@ -28,12 +28,15 @@ import (
 const setupLinkTTL = 24 * time.Hour
 
 type Server struct {
-	Store *store.Store
-	Log   *slog.Logger
+	Store  *store.Store
+	Sealer *Sealer
+	Log    *slog.Logger
 	// ProxyUID is the user the proxy runs as. Requests from it are web
 	// traffic; requests from root come from the zelie command on the server.
 	ProxyUID uint32
 	Now      func() time.Time
+
+	guards *guards
 }
 
 func (s *Server) now() time.Time {
@@ -47,8 +50,24 @@ func (s *Server) Handler() http.Handler {
 	local := http.NewServeMux()
 	local.HandleFunc("POST /local/setup-link", s.setupLink)
 
+	s.guards = newGuards()
 	web := http.NewServeMux()
 	web.HandleFunc("GET /api/setup", s.setupStatus)
+	web.HandleFunc("POST /api/setup", s.setup)
+	web.HandleFunc("POST /api/login", s.login)
+	web.HandleFunc("POST /api/login/totp", s.loginTOTP)
+	web.HandleFunc("POST /api/login/recovery", s.loginRecovery)
+	web.HandleFunc("POST /api/login/passkey/options", s.loginPasskeyOptions)
+	web.HandleFunc("POST /api/login/passkey", s.loginPasskey)
+	web.HandleFunc("GET /api/me", s.me)
+	web.HandleFunc("POST /api/logout", s.logout)
+	web.HandleFunc("POST /api/2fa/totp/new", s.enrolling(s.newTOTP))
+	web.HandleFunc("POST /api/2fa/totp", s.enrolling(s.confirmTOTP))
+	web.HandleFunc("POST /api/2fa/passkey/options", s.enrolling(s.passkeyOptions))
+	web.HandleFunc("POST /api/2fa/passkey", s.enrolling(s.addPasskey))
+	// Browsers say where a request comes from; anything that changes state
+	// must come from the panel's own pages.
+	webSafe := http.NewCrossOriginProtection().Handler(web)
 
 	return peer.Require(peer.Policy{UIDs: []uint32{s.ProxyUID}}, s.Log, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p, _ := peer.From(r.Context())
@@ -56,7 +75,7 @@ func (s *Server) Handler() http.Handler {
 			local.ServeHTTP(w, r)
 			return
 		}
-		web.ServeHTTP(w, r)
+		webSafe.ServeHTTP(w, r)
 	}))
 }
 

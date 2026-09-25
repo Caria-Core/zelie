@@ -44,7 +44,13 @@ func runPanel(stderr io.Writer) int {
 	}
 	defer db.Close()
 
-	s := &panel.Server{Store: db, Log: log, ProxyUID: proxyUID}
+	sealer, err := panel.LoadSealer(filepath.Join(panelState, "panel.key"))
+	if err != nil {
+		log.Error("start panel", "err", err)
+		return 1
+	}
+
+	s := &panel.Server{Store: db, Sealer: sealer, Log: log, ProxyUID: proxyUID}
 	if err := s.Serve(ctx, panelSocket); err != nil {
 		log.Error("panel stopped", "err", err)
 		return 1

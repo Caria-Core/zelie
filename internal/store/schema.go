@@ -10,6 +10,7 @@ CREATE TABLE users (
 	password    TEXT NOT NULL,  -- argon2id, in PHC string format
 	admin       INTEGER NOT NULL DEFAULT 0,
 	totp_secret BLOB,           -- encrypted with the panel key
+	totp_step   INTEGER NOT NULL DEFAULT 0, -- last time step used, so a code works once
 	created_at  INTEGER NOT NULL
 ) STRICT;
 
