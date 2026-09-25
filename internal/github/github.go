@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strconv"
 	"strings"
@@ -40,12 +41,13 @@ const (
 var ErrNotFound = errors.New("not found on GitHub")
 
 // Manifest describes the App a panel creates for itself. base is the
-// panel's address, such as https://panel.example.com.
+// panel's address, such as https://panel.example.com. GitHub refuses a
+// webhook it cannot reach, so a panel on a private address gets an App
+// without one: private repositories work, pushes do not deploy.
 func Manifest(name, base string) map[string]any {
-	return map[string]any{
+	m := map[string]any{
 		"name":            name,
 		"url":             base,
-		"hook_attributes": map[string]any{"url": base + "/api/github/webhook", "active": true},
 		"redirect_url":    base + "/github/created",
 		"setup_url":       base + "/github",
 		"setup_on_update": true,
@@ -55,8 +57,30 @@ func Manifest(name, base string) map[string]any {
 			"metadata": "read",
 			"statuses": "write",
 		},
-		"default_events": []string{"push"},
 	}
+	if u, err := url.Parse(base); err == nil && PublicHost(u.Hostname()) {
+		m["hook_attributes"] = map[string]any{"url": base + "/api/github/webhook", "active": true}
+		m["default_events"] = []string{"push"}
+	}
+	return m
+}
+
+// PublicHost reports whether GitHub could reach host: not an address
+// meant for one machine or a private network.
+func PublicHost(host string) bool {
+	host = strings.ToLower(strings.TrimSuffix(host, "."))
+	if ip, err := netip.ParseAddr(host); err == nil {
+		return ip.IsGlobalUnicast() && !ip.IsPrivate()
+	}
+	if !strings.Contains(host, ".") {
+		return false
+	}
+	for _, suffix := range []string{".localhost", ".local", ".internal", ".lan", ".home.arpa", ".test", ".invalid"} {
+		if strings.HasSuffix(host, suffix) {
+			return false
+		}
+	}
+	return host != "localhost"
 }
 
 // Credentials are what GitHub hands over once, when the App is created.
@@ -86,7 +110,8 @@ func Convert(ctx context.Context, hc *http.Client, api, code string) (Credential
 	if err := do(hc, req, http.StatusCreated, &c); err != nil {
 		return c, fmt.Errorf("finish creating the GitHub App: %w", err)
 	}
-	if c.ID == 0 || c.Slug == "" || c.PEM == "" || c.WebhookSecret == "" {
+	// An App without a webhook comes without a webhook secret.
+	if c.ID == 0 || c.Slug == "" || c.PEM == "" {
 		return c, errors.New("GitHub's answer is missing the App's keys")
 	}
 	if _, err := ParseKey([]byte(c.PEM)); err != nil {
@@ -116,9 +141,10 @@ func ParseKey(b []byte) (*rsa.PrivateKey, error) {
 }
 
 // Verify checks a webhook's X-Hub-Signature-256 header against its body.
+// Without a secret nothing verifies: anyone can sign with an empty key.
 func Verify(secret, body []byte, header string) bool {
 	sig, ok := strings.CutPrefix(header, "sha256=")
-	if !ok {
+	if !ok || len(secret) == 0 {
 		return false
 	}
 	got, err := hex.DecodeString(sig)

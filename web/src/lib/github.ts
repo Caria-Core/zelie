@@ -8,6 +8,8 @@ export type GitHub = {
 	install_url?: string;
 	installations?: { id: number; account: string; all: boolean }[];
 	webhook?: { state: 'ok' | 'failing' | 'none'; last?: string; status?: string };
+	// The App was made for an address GitHub cannot reach, so it has no webhook.
+	private?: boolean;
 	error?: string;
 };
 

@@ -106,7 +106,9 @@
 					>{t('github.choose')}</a
 				>
 
-				{#if gh.webhook?.state === 'ok'}
+				{#if gh.private}
+					<p class="text-sm text-muted">{t('github.hookPrivate')}</p>
+				{:else if gh.webhook?.state === 'ok'}
 					<p class="text-sm text-ok">{t('github.hookOk', { when: ago(gh.webhook.last!) })}</p>
 				{:else if gh.webhook?.state === 'failing'}
 					<p class="text-sm text-danger">{t('github.hookFailing', { status: gh.webhook.status ?? '' })}</p>

@@ -348,3 +348,15 @@ func TestOnlyTheNewestQueuedDeploymentRuns(t *testing.T) {
 		t.Errorf("states newest first: %s", got)
 	}
 }
+
+func TestAppWithoutWebhookSecret(t *testing.T) {
+	e := newAppEnv(t)
+	g := newFakeGitHub(t)
+	g.secret = "" // GitHub gives none to an App without a webhook
+	e.connect(t, g)
+	e.b.do("POST", "/api/apps", map[string]any{"id": "web", "source": "github", "repo": "owner/private"})
+	e.settle(t, "web")
+	if code, _ := e.hook("push", "x1", push("refs/heads/main", strings.Repeat("d", 40), ""), ""); code != http.StatusUnauthorized {
+		t.Errorf("a webhook signed with no secret: %d", code)
+	}
+}

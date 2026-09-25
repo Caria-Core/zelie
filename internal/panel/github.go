@@ -144,6 +144,9 @@ type githubJSON struct {
 	Installations []github.Installation `json:"installations,omitempty"`
 	// Webhook says whether GitHub has managed to reach the panel.
 	Webhook *webhookJSON `json:"webhook,omitempty"`
+	// Private is true when the App was made for a panel address GitHub
+	// cannot reach, so it has no webhook.
+	Private bool `json:"private,omitempty"`
 	// Error is set when GitHub could not be asked about the App.
 	Error string `json:"error,omitempty"`
 }
@@ -171,6 +174,9 @@ func (s *Server) githubStatus(w http.ResponseWriter, r *http.Request) {
 		Connected: true, Slug: conn.app.Slug, Owner: conn.app.Owner, HTMLURL: conn.app.HTMLURL,
 		InstallURL: s.githubWeb() + "/apps/" + url.PathEscape(conn.app.Slug) + "/installations/new",
 	}
+	if u, err := url.Parse(conn.app.BaseURL); err == nil && !github.PublicHost(u.Hostname()) {
+		out.Private = true
+	}
 	out.Installations, err = conn.client.Installations(ctx)
 	if err != nil {
 		out.Error = err.Error()
@@ -183,7 +189,9 @@ func (s *Server) githubStatus(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, out)
 		return
 	}
-	out.Webhook = webhookState(deliveries)
+	if !out.Private {
+		out.Webhook = webhookState(deliveries)
+	}
 	writeJSON(w, http.StatusOK, out)
 }
 

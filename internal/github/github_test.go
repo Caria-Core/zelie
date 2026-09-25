@@ -73,6 +73,11 @@ func TestVerify(t *testing.T) {
 	if Verify([]byte("other"), body, good) {
 		t.Error("accepted another secret")
 	}
+	empty := hmac.New(sha256.New, nil)
+	empty.Write(body)
+	if Verify(nil, body, "sha256="+hex.EncodeToString(empty.Sum(nil))) {
+		t.Error("accepted a signature made with no secret")
+	}
 }
 
 func TestConvert(t *testing.T) {
@@ -135,5 +140,25 @@ func TestInstallationTokenIsReused(t *testing.T) {
 	c.Resolve(context.Background(), 5, "o/r", "main")
 	if issued.Load() != 2 {
 		t.Error("a token about to expire was reused")
+	}
+}
+
+func TestManifestWithoutAPublicAddress(t *testing.T) {
+	for host, public := range map[string]bool{
+		"panel.example.com": true, "8.8.8.8": true,
+		"zelie.localhost": false, "localhost": false, "nas.local": false, "box": false,
+		"10.0.0.5": false, "192.168.1.2": false, "127.0.0.1": false, "::1": false, "fd00::1": false,
+	} {
+		if PublicHost(host) != public {
+			t.Errorf("%s: public %v", host, !public)
+		}
+	}
+	m := Manifest("Zelie", "https://zelie.localhost:8443")
+	if _, ok := m["hook_attributes"]; ok || m["default_events"] != nil {
+		t.Errorf("a private address got a webhook: %v", m)
+	}
+	m = Manifest("Zelie", "https://panel.example.com")
+	if m["hook_attributes"] == nil || m["default_events"] == nil {
+		t.Errorf("a public address got no webhook: %v", m)
 	}
 }

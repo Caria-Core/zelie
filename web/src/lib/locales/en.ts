@@ -206,6 +206,7 @@ export default {
 	'github.choose': 'Choose repositories',
 	'github.hookOk': 'GitHub reaches this panel. Last event {when}.',
 	'github.hookFailing': 'GitHub cannot reach this panel ({status}). Pushes will not deploy until the panel is reachable from the internet at its domain.',
+	'github.hookPrivate': 'This panel is not on an address GitHub can reach, so pushes do not deploy by themselves; deploy by hand. Once the panel has a public domain, disconnect and connect GitHub again.',
 	'github.hookNone': 'GitHub has sent nothing yet. Push to a connected repository to try it.',
 	'github.disconnect': 'Disconnect',
 	'github.disconnectLead': 'Zelie forgets the App. Delete it on GitHub as well, so its key stops working.',
