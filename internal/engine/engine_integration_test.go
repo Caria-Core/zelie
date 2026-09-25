@@ -371,3 +371,9 @@ func TestLocalImagesAreNotPulled(t *testing.T) {
 		t.Fatalf("missing local image: %v", err)
 	}
 }
+
+func TestShortImageNames(t *testing.T) {
+	e := connect(t)
+	run(t, e, Spec{ID: "it-short", Image: "busybox:latest", Args: []string{"sh", "-c", "echo short; sleep 60"}, MemoryBytes: 64 << 20, CPUs: 0.5, Pids: 32})
+	waitForLog(t, "it-short", "short")
+}

@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/distribution/reference"
+
 	"github.com/Caria-Core/zelie/internal/engine"
 	"github.com/Caria-Core/zelie/internal/proxy"
 	"github.com/Caria-Core/zelie/internal/secret"
@@ -143,6 +145,8 @@ func (req appRequest) apply(a *store.App) error {
 		return errors.New("enter an image, such as nginx:alpine")
 	case a.Source == store.SourceImage && strings.HasPrefix(a.Image, engine.LocalImages):
 		return errors.New("that image name is reserved for images Zelie builds")
+	case a.Source == store.SourceImage && !validImage(a.Image):
+		return fmt.Errorf("%q is not a valid image name", a.Image)
 	case a.Source == store.SourceGitHub:
 		if err := checkRepo(a.Repo, a.Branch); err != nil {
 			return err
@@ -159,6 +163,11 @@ func (req appRequest) apply(a *store.App) error {
 		return errors.New("the CPU limit is out of range")
 	}
 	return nil
+}
+
+func validImage(ref string) bool {
+	_, err := reference.ParseNormalizedNamed(ref)
+	return err == nil
 }
 
 func checkAppID(id string) error {

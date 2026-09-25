@@ -25,6 +25,7 @@ import (
 	"github.com/containerd/containerd/v2/pkg/netns"
 	"github.com/containerd/containerd/v2/pkg/oci"
 	"github.com/containerd/errdefs"
+	"github.com/distribution/reference"
 	"github.com/opencontainers/runtime-spec/specs-go"
 )
 
@@ -337,6 +338,13 @@ func (e *Engine) Run(ctx context.Context, s Spec) (err error) {
 // anything else is pulled.
 func (e *Engine) image(ctx context.Context, ref string) (containerd.Image, error) {
 	if !strings.HasPrefix(ref, LocalImages) {
+		// "nginx:alpine" means docker.io/library/nginx:alpine, as it does
+		// everywhere else.
+		named, err := reference.ParseNormalizedNamed(ref)
+		if err != nil {
+			return nil, fmt.Errorf("image %q: %w", ref, err)
+		}
+		ref = reference.TagNameOnly(named).String()
 		image, err := e.client.Pull(ctx, ref, containerd.WithPullUnpack)
 		if err != nil {
 			return nil, fmt.Errorf("pull %s: %w", ref, err)

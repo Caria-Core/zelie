@@ -9,6 +9,7 @@ require (
 	github.com/containerd/errdefs v1.0.0
 	github.com/containernetworking/cni v1.3.1
 	github.com/containernetworking/plugins v1.9.1
+	github.com/distribution/reference v0.6.0
 	github.com/go-webauthn/webauthn v0.18.2
 	github.com/google/nftables v0.3.0
 	github.com/opencontainers/runtime-spec v1.3.0
@@ -33,7 +34,6 @@ require (
 	github.com/containerd/plugin v1.1.0 // indirect
 	github.com/containerd/ttrpc v1.2.9 // indirect
 	github.com/containerd/typeurl/v2 v2.3.0 // indirect
-	github.com/distribution/reference v0.6.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/felixge/httpsnoop v1.1.0 // indirect
 	github.com/fxamacker/cbor/v2 v2.9.4 // indirect

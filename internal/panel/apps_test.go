@@ -297,6 +297,7 @@ func TestAppValidation(t *testing.T) {
 		{"id": "a", "source": "ftp"},
 		{"id": "a", "source": "image"},
 		{"id": "a", "source": "image", "image": "zelie.local/other:1"},
+		{"id": "a", "source": "image", "image": "Nginx:alpine"},
 		{"id": "a", "source": "github", "repo": "not a repo"},
 		{"id": "a", "source": "github", "repo": "owner/web", "branch": "../x"},
 		{"id": "a", "source": "image", "image": "nginx", "port": 0},
