@@ -99,6 +99,12 @@ export default {
 	'new.cpus': 'CPUs',
 	'new.more': 'Resources',
 	'new.submit': 'Create and deploy',
+	'new.resourcesLead': 'The most the app may use. You can change this later.',
+	'new.advanced': 'More settings',
+	'new.advancedLead': 'Deploys, commands, health check',
+	'new.buildAuto': 'Railpack chooses',
+	'new.startAuto': 'Railpack or the Dockerfile chooses',
+	'new.testAuto': 'Found by the first build',
 	'new.back': 'Back',
 
 	'app.deploy': 'Deploy',

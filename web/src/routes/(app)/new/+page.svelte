@@ -6,6 +6,7 @@
 	import { messageOf } from '$lib/errors';
 	import { repositories, status, type Repository } from '$lib/github';
 	import { t } from '$lib/i18n';
+	import { Plus } from '@lucide/svelte';
 	import AppIcon from '$lib/ui/AppIcon.svelte';
 	import Button from '$lib/ui/Button.svelte';
 	import ErrorText from '$lib/ui/ErrorText.svelte';
@@ -25,6 +26,14 @@
 	let domain = $state('');
 	let memory = $state(512);
 	let cpus = $state(1);
+	// Everything else starts from sensible defaults and can wait for the
+	// settings page; it is here for those who know what they want.
+	let autoDeploy = $state(true);
+	let restartPulls = $state(false);
+	let buildCommand = $state('');
+	let startCommand = $state('');
+	let testCommand = $state('');
+	let healthPath = $state('/');
 	let error = $state('');
 	let busy = $state(false);
 
@@ -76,10 +85,15 @@
 				port: Number(port || (github ? 3000 : 80)),
 				domain,
 				memory_mb: memory,
-				cpus
+				cpus,
+				health_path: healthPath,
+				start_command: startCommand
 			};
-			if (github) Object.assign(body, { repo: cleanRepo, branch });
-			else body.image = image;
+			if (github) {
+				Object.assign(body, { repo: cleanRepo, branch, auto_deploy: autoDeploy, restart_pulls: restartPulls, build_command: buildCommand });
+				// Left empty, the first build suggests one.
+				if (testCommand.trim()) body.test_command = testCommand;
+			} else body.image = image;
 			await api('POST', '/apps', body);
 			await reload();
 			await goto('/a/' + id);
@@ -97,7 +111,7 @@
 		<SourceChoice />
 	</div>
 {:else}
-	<div class="flex max-w-md flex-col gap-8">
+	<div class="flex max-w-xl flex-col gap-8">
 		<div class="flex items-center gap-4">
 			<AppIcon source={source} size="lg" />
 			<Lead title={github ? t('source.github') + '.' : t('source.image') + '.'} />
@@ -137,9 +151,41 @@
 				<Field label={t('new.domain')} placeholder="app.example.com" autocomplete="off" bind:value={domain} />
 			</div>
 			<p class="-mt-2 text-sm text-muted">{t('new.portHint')} {t('new.domainHint')}</p>
-			<details class="group rounded-xl border border-line px-4 py-3">
-				<summary class="cursor-pointer text-sm font-medium select-none">{t('new.more')}</summary>
-				<div class="mt-4"><Resources bind:memory bind:cpus /></div>
+			<section class="mt-4 flex flex-col gap-4">
+				<div>
+					<h2 class="font-medium">{t('new.more')}</h2>
+					<p class="text-sm text-muted">{t('new.resourcesLead')}</p>
+				</div>
+				<Resources bind:memory bind:cpus />
+			</section>
+			<details class="group mt-2 rounded-xl border border-line">
+				<summary class="flex cursor-pointer items-center gap-2 px-4 py-3 text-[15px] font-medium select-none">
+					<Plus size={16} class="transition group-open:rotate-45" />{t('new.advanced')}
+					<span class="font-normal text-muted">{t('new.advancedLead')}</span>
+				</summary>
+				<div class="flex flex-col gap-4 border-t border-line px-4 py-4">
+					{#if github}
+						<label class="flex items-start gap-2.5 text-[15px]">
+							<input type="checkbox" class="mt-1" bind:checked={autoDeploy} />
+							<span>{t('settings.autoDeploy')}<span class="block text-sm text-muted">{t('settings.autoDeployHint')}</span></span>
+						</label>
+						<label class="flex items-start gap-2.5 text-[15px]">
+							<input type="checkbox" class="mt-1" bind:checked={restartPulls} />
+							<span>{t('settings.restartPulls')}<span class="block text-sm text-muted">{t('settings.restartPullsHint')}</span></span>
+						</label>
+						<Field label={t('settings.build')} placeholder={t('new.buildAuto')} autocomplete="off" bind:value={buildCommand} />
+					{/if}
+					<Field
+						label={t('settings.start')}
+						placeholder={github ? t('new.startAuto') : t('settings.startDefault')}
+						autocomplete="off"
+						bind:value={startCommand}
+					/>
+					{#if github}
+						<Field label={t('settings.tests')} placeholder={t('new.testAuto')} autocomplete="off" bind:value={testCommand} />
+					{/if}
+					<Field label={t('settings.health')} hint={t('settings.healthHint')} required autocomplete="off" bind:value={healthPath} />
+				</div>
 			</details>
 			<ErrorText message={error} />
 			<div class="mt-2 flex items-center gap-3">
