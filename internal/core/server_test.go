@@ -23,6 +23,7 @@ type fakeEngine struct {
 	stopped map[string]time.Duration
 
 	removedImages []string
+	volumes       []string
 }
 
 func (f *fakeEngine) Run(_ context.Context, s engine.Spec) error {
@@ -45,6 +46,25 @@ func (f *fakeEngine) Stop(_ context.Context, id string, grace time.Duration) err
 }
 
 func (f *fakeEngine) Remove(context.Context, string) error { return nil }
+
+func (f *fakeEngine) CreateVolume(name string) error {
+	if name == "taken" {
+		return errdefs.ErrAlreadyExists
+	}
+	f.volumes = append(f.volumes, name)
+	return nil
+}
+
+func (f *fakeEngine) RemoveVolume(_ context.Context, name string) error {
+	if name == "in-use" {
+		return errdefs.ErrFailedPrecondition
+	}
+	return nil
+}
+
+func (f *fakeEngine) VolumeSizes() (map[string]int64, error) {
+	return map[string]int64{"data": 4096}, nil
+}
 
 func (f *fakeEngine) Usage(id string) (engine.Usage, error) {
 	if id != "web" {
@@ -238,5 +258,46 @@ func TestUsageAndHost(t *testing.T) {
 	}
 	if rec := request(t, s, panel, "GET", "/v1/host", ""); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"cpus":2`) {
 		t.Errorf("host: %d %s", rec.Code, rec.Body)
+	}
+}
+
+func TestVolumes(t *testing.T) {
+	s, f := newServer()
+	root := &peer.Peer{UID: 0}
+	cases := []struct {
+		name, method, path, body string
+		want                     int
+	}{
+		{"create", "POST", "/v1/volumes", `{"name":"data"}`, http.StatusCreated},
+		{"create taken", "POST", "/v1/volumes", `{"name":"taken"}`, http.StatusConflict},
+		{"create bad name", "POST", "/v1/volumes", `{"name":"../etc"}`, http.StatusBadRequest},
+		{"remove", "DELETE", "/v1/volumes/data", "", http.StatusNoContent},
+		{"remove in use", "DELETE", "/v1/volumes/in-use", "", http.StatusConflict},
+		{"list", "GET", "/v1/volumes", "", http.StatusOK},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			rec := request(t, s, root, c.method, c.path, c.body)
+			if rec.Code != c.want {
+				t.Errorf("status %d, want %d: %s", rec.Code, c.want, rec.Body)
+			}
+		})
+	}
+	if len(f.volumes) != 1 || f.volumes[0] != "data" {
+		t.Errorf("created %v", f.volumes)
+	}
+
+	body := `{"id":"web","image":"busybox","memory_bytes":1,"cpus":1,"pids":1,"volumes":[{"name":"data","target":"/data"}]}`
+	if rec := request(t, s, root, "POST", "/v1/containers", body); rec.Code != http.StatusCreated {
+		t.Fatalf("run with a volume: %d %s", rec.Code, rec.Body)
+	}
+	if got := f.ran[len(f.ran)-1].Volumes; len(got) != 1 || got[0] != (engine.VolumeMount{Name: "data", Target: "/data"}) {
+		t.Errorf("volumes passed to the engine: %v", got)
+	}
+	for _, target := range []string{"/proc/x", "/", "data", "/etc/hosts"} {
+		body := `{"id":"web","image":"busybox","memory_bytes":1,"cpus":1,"pids":1,"volumes":[{"name":"data","target":"` + target + `"}]}`
+		if rec := request(t, s, root, "POST", "/v1/containers", body); rec.Code != http.StatusBadRequest {
+			t.Errorf("volume on %s: status %d", target, rec.Code)
+		}
 	}
 }

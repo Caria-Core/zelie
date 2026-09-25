@@ -82,10 +82,14 @@ func (c *Client) Run(ctx context.Context, s engine.Spec) error {
 
 // RunApp runs a container of s.App with secret variables sealed for it.
 func (c *Client) RunApp(ctx context.Context, s engine.Spec, sealedEnv []string) error {
-	return c.do(ctx, http.MethodPost, "/v1/containers", runRequest{
+	req := runRequest{
 		ID: s.ID, App: s.App, Image: s.Image, Args: s.Args, Env: s.Env, SealedEnv: sealedEnv, Network: s.Network,
 		MemoryBytes: s.MemoryBytes, CPUs: s.CPUs, Pids: s.Pids,
-	}, nil)
+	}
+	for _, v := range s.Volumes {
+		req.Volumes = append(req.Volumes, volumeMountJSON{Name: v.Name, Target: v.Target})
+	}
+	return c.do(ctx, http.MethodPost, "/v1/containers", req, nil)
 }
 
 // SecretKey returns the key to seal secret variables with.

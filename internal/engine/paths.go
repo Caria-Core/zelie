@@ -17,6 +17,9 @@ type Paths struct {
 	Logs   string // container output, one file per container
 	Data   string // Zelie's own state: networks, IP leases, generated files
 	NetNS  string // network namespaces, one per container
+	// Volumes holds the files apps keep between deployments, one
+	// directory each.
+	Volumes string
 }
 
 var DefaultPaths = Paths{
@@ -30,6 +33,8 @@ var DefaultPaths = Paths{
 	Logs:   "/var/lib/zelie/logs",
 	Data:   "/var/lib/zelie/engine",
 	NetNS:  "/run/zelie/netns",
+
+	Volumes: "/var/lib/zelie/volumes",
 }
 
 func (p Paths) Runc() string { return filepath.Join(p.Bin, "runc") }

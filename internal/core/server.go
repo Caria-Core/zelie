@@ -35,6 +35,9 @@ type Engine interface {
 	RemoveImage(ctx context.Context, name string) error
 	Wait(ctx context.Context, id string) (uint32, error)
 	Usage(id string) (engine.Usage, error)
+	CreateVolume(name string) error
+	RemoveVolume(ctx context.Context, name string) error
+	VolumeSizes() (map[string]int64, error)
 }
 
 // Limits a single request may ask for. They keep a confused or compromised
@@ -65,6 +68,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/containers/{id}/logs", s.logs)
 	mux.HandleFunc("GET /v1/containers/{id}/usage", s.usage)
 	mux.HandleFunc("GET /v1/host", s.host)
+	mux.HandleFunc("GET /v1/volumes", s.volumes)
+	mux.HandleFunc("POST /v1/volumes", s.createVolume)
+	mux.HandleFunc("DELETE /v1/volumes/{name}", s.removeVolume)
 	mux.HandleFunc("POST /v1/builds", s.build)
 	mux.HandleFunc("DELETE /v1/images", s.removeImage)
 	mux.HandleFunc("GET /v1/secrets/key", s.secretKey)
@@ -119,11 +125,12 @@ type runRequest struct {
 	Env   []string `json:"env,omitempty"`
 	// SealedEnv holds secret variables sealed for App with the core's key
 	// (see package secret). They are opened here and nowhere else.
-	SealedEnv   []string `json:"sealed_env,omitempty"`
-	Network     string   `json:"network,omitempty"`
-	MemoryBytes int64    `json:"memory_bytes"`
-	CPUs        float64  `json:"cpus"`
-	Pids        int64    `json:"pids"`
+	SealedEnv   []string          `json:"sealed_env,omitempty"`
+	Network     string            `json:"network,omitempty"`
+	Volumes     []volumeMountJSON `json:"volumes,omitempty"`
+	MemoryBytes int64             `json:"memory_bytes"`
+	CPUs        float64           `json:"cpus"`
+	Pids        int64             `json:"pids"`
 }
 
 type stopRequest struct {
@@ -151,6 +158,9 @@ func (s *Server) run(w http.ResponseWriter, r *http.Request) {
 		ID: req.ID, App: req.App, Image: req.Image, Args: req.Args, Network: req.Network,
 		Env:         slices.Clone(req.Env),
 		MemoryBytes: req.MemoryBytes, CPUs: req.CPUs, Pids: req.Pids,
+	}
+	for _, v := range req.Volumes {
+		spec.Volumes = append(spec.Volumes, engine.VolumeMount{Name: v.Name, Target: v.Target})
 	}
 	if err := spec.Validate(); err != nil {
 		writeError(w, http.StatusBadRequest, err)

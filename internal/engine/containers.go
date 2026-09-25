@@ -38,6 +38,7 @@ const (
 	labelNetNS      = "zelie.netns"
 	labelIP         = "zelie.ip"
 	labelApp        = "zelie.app"
+	labelVolumes    = "zelie.volumes" // comma separated
 
 	// Each container gets its own block of 65536 host IDs, starting well above
 	// any range a distribution hands out to regular users or /etc/subuid.
@@ -79,6 +80,9 @@ type Spec struct {
 	CPUs        float64 // required, may be fractional
 	Pids        int64   // required
 
+	// Volumes are the app's own files that outlive the container.
+	Volumes []VolumeMount
+
 	// Mounts are host directories bound into the container. They are for
 	// the core's own use, such as a build's source and cache, and are not
 	// part of the core's API.
@@ -119,6 +123,22 @@ func (s Spec) Validate() error {
 	}
 	if s.Nesting && !s.Builder {
 		return errors.New("only the builder may run nested containers")
+	}
+	targets := map[string]bool{}
+	for _, v := range s.Volumes {
+		if !validID.MatchString(v.Name) {
+			return fmt.Errorf("volume name %q must be lowercase letters, digits and dashes", v.Name)
+		}
+		if err := checkVolumeTarget(v.Target); err != nil {
+			return err
+		}
+		if targets[v.Target] {
+			return fmt.Errorf("two volumes are mounted on %s", v.Target)
+		}
+		targets[v.Target] = true
+	}
+	if s.Builder && len(s.Volumes) > 0 {
+		return errors.New("the builder has no volumes")
 	}
 	for _, m := range s.Mounts {
 		if !filepath.IsAbs(m.Source) || !filepath.IsAbs(m.Target) || filepath.Clean(m.Target) != m.Target {
@@ -246,6 +266,11 @@ func (e *Engine) Run(ctx context.Context, s Spec) (err error) {
 			{Destination: "/etc/hosts", Type: "bind", Source: hostsFile, Options: []string{"rbind", "ro"}},
 		}),
 	}
+	vols, err := e.volumeMounts(s.Volumes, idmap)
+	if err != nil {
+		return err
+	}
+	specOpts = append(specOpts, oci.WithMounts(vols))
 	for _, m := range s.Mounts {
 		opts := []string{"rbind", "rw", "nosuid", "nodev"}
 		if m.ReadOnly {
@@ -278,7 +303,11 @@ func (e *Engine) Run(ctx context.Context, s Spec) (err error) {
 			IoUid: base,
 			IoGid: base,
 		}),
-		containerd.WithContainerLabels(map[string]string{labelUsernsBase: strconv.FormatUint(uint64(base), 10), labelApp: s.App}),
+		containerd.WithContainerLabels(map[string]string{
+			labelUsernsBase: strconv.FormatUint(uint64(base), 10),
+			labelApp:        s.App,
+			labelVolumes:    volumeNames(s.Volumes),
+		}),
 		containerd.WithNewSpec(specOpts...),
 	)
 	if err != nil {
@@ -614,4 +643,12 @@ func (e *Engine) List(ctx context.Context) ([]Status, error) {
 		out = append(out, st)
 	}
 	return out, nil
+}
+
+func volumeNames(vols []VolumeMount) string {
+	names := make([]string, len(vols))
+	for i, v := range vols {
+		names[i] = v.Name
+	}
+	return strings.Join(names, ",")
 }
