@@ -13,6 +13,7 @@ type Paths struct {
 	State  string // runtime state, cleared on reboot
 	Socket string
 	Unit   string // systemd unit file
+	Logs   string // container output, one file per container
 }
 
 var DefaultPaths = Paths{
@@ -22,6 +23,7 @@ var DefaultPaths = Paths{
 	State:  "/run/zelie/containerd",
 	Socket: "/run/zelie/containerd.sock",
 	Unit:   "/etc/systemd/system/zelie-containerd.service",
+	Logs:   "/var/lib/zelie/logs",
 }
 
 func (p Paths) Runc() string { return filepath.Join(p.Bin, "runc") }
