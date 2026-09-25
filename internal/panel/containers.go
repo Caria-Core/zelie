@@ -28,7 +28,7 @@ type Core interface {
 	Logs(ctx context.Context, id string, follow bool, tail int64, w io.Writer) error
 }
 
-// Limits a container gets when the request does not say otherwise.
+// Limits an app gets when the request does not say otherwise.
 const (
 	defaultMemoryMB = 512
 	defaultCPUs     = 1
@@ -36,100 +36,6 @@ const (
 	// logTail is how much earlier output a log view starts with.
 	logTail = 64 << 10
 )
-
-type containerJSON struct {
-	ID      string `json:"id"`
-	Image   string `json:"image"`
-	State   string `json:"state"`
-	Network string `json:"network,omitempty"`
-	IP      string `json:"ip,omitempty"`
-}
-
-func (s *Server) listContainers(w http.ResponseWriter, r *http.Request) {
-	list, err := s.Core.List(r.Context())
-	if err != nil {
-		s.coreFailed(w, "list containers", err)
-		return
-	}
-	out := make([]containerJSON, 0, len(list))
-	for _, c := range list {
-		cj := containerJSON{ID: c.ID, Image: c.Image, State: c.State, Network: c.Network}
-		if c.IP.IsValid() {
-			cj.IP = c.IP.String()
-		}
-		out = append(out, cj)
-	}
-	writeJSON(w, http.StatusOK, out)
-}
-
-func (s *Server) runContainer(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		ID       string  `json:"id"`
-		Image    string  `json:"image"`
-		Network  string  `json:"network"`
-		MemoryMB int64   `json:"memory_mb"`
-		CPUs     float64 `json:"cpus"`
-	}
-	if !decode(w, r, &req) {
-		return
-	}
-	if req.MemoryMB < 0 || req.MemoryMB > 1<<20 || req.CPUs < 0 || req.CPUs > 1024 {
-		writeError(w, http.StatusBadRequest, errors.New("the memory or CPU limit is out of range"))
-		return
-	}
-	spec := engine.Spec{
-		ID: req.ID, Image: req.Image, Network: req.Network,
-		MemoryBytes: orDefault(req.MemoryMB, defaultMemoryMB) << 20,
-		CPUs:        orDefault(req.CPUs, defaultCPUs),
-		Pids:        defaultPids,
-	}
-	// The core checks the spec too; checking here gives the user the
-	// message before an image download starts.
-	if err := spec.Validate(); err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
-	}
-	l := loginFrom(r.Context())
-	if err := s.Core.Run(r.Context(), spec); err != nil {
-		s.coreFailed(w, "run container", err)
-		return
-	}
-	s.Log.Info("container started", "id", spec.ID, "image", spec.Image, "user", l.account.ID)
-	w.WriteHeader(http.StatusCreated)
-}
-
-func (s *Server) stopContainer(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	if err := s.Core.Stop(r.Context(), id, 10); err != nil {
-		s.coreFailed(w, "stop container", err)
-		return
-	}
-	s.Log.Info("container stopped", "id", id, "user", loginFrom(r.Context()).account.ID)
-	w.WriteHeader(http.StatusNoContent)
-}
-
-func (s *Server) removeContainer(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	if err := s.Core.Remove(r.Context(), id); err != nil {
-		s.coreFailed(w, "remove container", err)
-		return
-	}
-	s.Log.Info("container removed", "id", id, "user", loginFrom(r.Context()).account.ID)
-	w.WriteHeader(http.StatusNoContent)
-}
-
-// containerLogs streams a container's output as server-sent events. Each
-// "output" event carries a chunk of text as a JSON string; a "notice" says
-// why the stream ended early. ("error" would clash with the browser's own
-// connection error event.)
-func (s *Server) containerLogs(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	if !engine.ValidID(id) {
-		writeError(w, http.StatusBadRequest, errors.New("invalid container id"))
-		return
-	}
-	s.streamLogs(w, r, id)
-}
 
 // streamLogs streams a container's output as server-sent events. Each
 // "output" event carries a chunk of text as a JSON string; a "notice" says

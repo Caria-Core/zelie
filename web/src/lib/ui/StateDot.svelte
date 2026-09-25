@@ -2,7 +2,7 @@
 	import { t, type Key } from '$lib/i18n';
 
 	let { state, label = false }: { state: string; label?: boolean } = $props();
-	const known = ['running', 'stopped', 'created'];
+	const known = ['running', 'stopped', 'created', 'none'];
 	const key = $derived(`state.${known.includes(state) ? state : 'unknown'}` as Key);
 	const colour = $derived(state === 'running' ? 'bg-ok' : state === 'created' ? 'bg-muted' : 'bg-line');
 </script>

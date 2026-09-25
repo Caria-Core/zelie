@@ -101,11 +101,6 @@ func (s *Server) Handler() http.Handler {
 	web.HandleFunc("POST /api/apps/{app}/deployments", s.signedIn(s.newDeployment))
 	web.HandleFunc("GET /api/apps/{app}/deployments/{id}/log", s.signedIn(s.deploymentLog))
 	web.HandleFunc("GET /api/apps/{app}/logs", s.signedIn(s.appLogs))
-	web.HandleFunc("GET /api/containers", s.signedIn(s.listContainers))
-	web.HandleFunc("POST /api/containers", s.signedIn(s.runContainer))
-	web.HandleFunc("POST /api/containers/{id}/stop", s.signedIn(s.stopContainer))
-	web.HandleFunc("DELETE /api/containers/{id}", s.signedIn(s.removeContainer))
-	web.HandleFunc("GET /api/containers/{id}/logs", s.signedIn(s.containerLogs))
 	web.HandleFunc("GET /api/", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, errors.New("no such API endpoint"))
 	})

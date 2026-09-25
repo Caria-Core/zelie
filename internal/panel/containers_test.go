@@ -1,91 +1,26 @@
 package panel
 
 import (
-	"context"
+	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"net/netip"
 	"strings"
 	"testing"
 
 	"github.com/Caria-Core/zelie/internal/core"
-	"github.com/Caria-Core/zelie/internal/engine"
-	"github.com/Caria-Core/zelie/internal/secret"
 )
 
-type fakeCore struct {
-	ran  []engine.Spec
-	logs string
-}
-
-func (f *fakeCore) List(context.Context) ([]engine.Status, error) {
-	return []engine.Status{{ID: "web", Image: "nginx", State: "running", IP: netip.MustParseAddr("10.210.1.2")}}, nil
-}
-func (f *fakeCore) Run(_ context.Context, s engine.Spec) error { f.ran = append(f.ran, s); return nil }
-func (f *fakeCore) Stop(context.Context, string, int) error {
-	return &core.Error{Status: http.StatusNotFound, Message: "container not found"}
-}
-func (f *fakeCore) Remove(context.Context, string) error { return io.ErrUnexpectedEOF }
-func (f *fakeCore) RunApp(ctx context.Context, s engine.Spec, _ []string) error { return f.Run(ctx, s) }
-func (f *fakeCore) Build(context.Context, string, string, io.Reader, io.Writer) (string, error) {
-	return "", io.ErrUnexpectedEOF
-}
-func (f *fakeCore) SecretKey(context.Context) (secret.PublicKey, error) { return secret.PublicKey{}, nil }
-func (f *fakeCore) Logs(_ context.Context, _ string, _ bool, _ int64, w io.Writer) error {
-	_, err := io.WriteString(w, f.logs)
-	return err
-}
-
-// signedIn returns a browser that has finished setup and its second step.
-func signedIn(t *testing.T) (*browser, *fakeCore) {
-	t.Helper()
-	s, h, now := newAuthServer(t)
-	fc := &fakeCore{}
-	s.Core = fc
-	b := &browser{t: t, h: h, ip: "198.51.100.7"}
-	b.do("POST", "/api/setup", map[string]string{"token": setupToken(t, h), "email": "a@example.com", "password": "long enough pw"})
-	_, out := b.do("POST", "/api/2fa/totp/new", nil)
-	if code, _ := b.do("POST", "/api/2fa/totp", map[string]string{"code": totpNow(t, out["secret"].(string), *now)}); code != http.StatusOK {
-		t.Fatalf("enrol: %d", code)
-	}
-	return b, fc
-}
-
-func TestContainersNeedFullLogin(t *testing.T) {
+func TestAppsNeedFullLogin(t *testing.T) {
 	_, h, _ := newAuthServer(t)
 	b := &browser{t: t, h: h, ip: "198.51.100.7"}
-	if code, _ := b.do("GET", "/api/containers", nil); code != http.StatusUnauthorized {
+	if code, _ := b.do("GET", "/api/apps", nil); code != http.StatusUnauthorized {
 		t.Fatalf("logged out: %d", code)
 	}
 	b.do("POST", "/api/setup", map[string]string{"token": setupToken(t, h), "email": "a@example.com", "password": "long enough pw"})
-	if code, _ := b.do("GET", "/api/containers", nil); code != http.StatusUnauthorized {
+	if code, _ := b.do("GET", "/api/apps", nil); code != http.StatusUnauthorized {
 		t.Fatalf("before the second step: %d", code)
-	}
-}
-
-func TestContainers(t *testing.T) {
-	b, fc := signedIn(t)
-	if code, _ := b.do("GET", "/api/containers", nil); code != http.StatusOK {
-		t.Fatalf("list: %d", code)
-	}
-	if code, _ := b.do("POST", "/api/containers", map[string]any{"id": "web", "image": "nginx"}); code != http.StatusCreated {
-		t.Fatalf("run: %d", code)
-	}
-	if got := fc.ran[0]; got.MemoryBytes != 512<<20 || got.CPUs != 1 || got.Pids != 512 {
-		t.Errorf("defaults not applied: %+v", got)
-	}
-	if code, _ := b.do("POST", "/api/containers", map[string]any{"id": "Bad ID", "image": "nginx"}); code != http.StatusBadRequest {
-		t.Fatalf("bad id: %d", code)
-	}
-	if code, _ := b.do("POST", "/api/containers", map[string]any{"id": "big", "image": "nginx", "memory_mb": 1 << 40}); code != http.StatusBadRequest {
-		t.Fatalf("absurd memory: %d", code)
-	}
-	if code, out := b.do("POST", "/api/containers/web/stop", nil); code != http.StatusNotFound || out["error"] != "container not found" {
-		t.Fatalf("core's not found not passed on: %d %v", code, out)
-	}
-	if code, out := b.do("DELETE", "/api/containers/web", nil); code != http.StatusBadGateway || strings.Contains(out["error"].(string), "EOF") {
-		t.Fatalf("internal error leaked or wrong status: %d %v", code, out)
 	}
 }
 
@@ -102,5 +37,19 @@ func TestLogEventsKeepCharactersWhole(t *testing.T) {
 	}
 	if ct := rec.Header().Get("Content-Type"); ct != "text/event-stream" {
 		t.Errorf("content type %q", ct)
+	}
+}
+
+func TestCoreFailuresAreHidden(t *testing.T) {
+	s := &Server{Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	rec := httptest.NewRecorder()
+	s.coreFailed(rec, "run", &core.Error{Status: http.StatusConflict, Message: "container web: already exists"})
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "already exists") {
+		t.Errorf("the core's answer to a bad request was not passed on: %d %s", rec.Code, rec.Body)
+	}
+	rec = httptest.NewRecorder()
+	s.coreFailed(rec, "run", errors.New("dial unix /run/zelie/core.sock: connection refused"))
+	if rec.Code != http.StatusBadGateway || strings.Contains(rec.Body.String(), "/run/zelie") {
+		t.Errorf("an internal error leaked: %d %s", rec.Code, rec.Body)
 	}
 }

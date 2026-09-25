@@ -1,36 +1,61 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
+	import { page } from '$app/state';
 	import { api } from '$lib/api';
-	import { reload } from '$lib/containers.svelte';
+	import { reload } from '$lib/apps.svelte';
 	import { messageOf } from '$lib/errors';
 	import { t } from '$lib/i18n';
+	import AppIcon from '$lib/ui/AppIcon.svelte';
 	import Button from '$lib/ui/Button.svelte';
 	import ErrorText from '$lib/ui/ErrorText.svelte';
 	import Field from '$lib/ui/Field.svelte';
 	import Lead from '$lib/ui/Lead.svelte';
+	import SourceChoice from '$lib/ui/SourceChoice.svelte';
+
+	const source = $derived(page.url.searchParams.get('source'));
+	const github = $derived(source === 'github');
 
 	let id = $state('');
+	let repo = $state('');
+	let branch = $state('main');
 	let image = $state('');
+	let port = $state('');
+	let domain = $state('');
 	let memory = $state('512');
 	let cpus = $state('1');
-	let network = $state('');
 	let error = $state('');
 	let busy = $state(false);
+
+	// Suggest a name from the repository or image as it is typed.
+	let named = $state(false);
+	$effect(() => {
+		if (named) return;
+		const from = github ? repo.split('/')[1] ?? '' : (image.split('/').pop() ?? '').split(':')[0];
+		id = from
+			.toLowerCase()
+			.replace(/[^a-z0-9-]+/g, '-')
+			.replace(/^-+|-+$/g, '')
+			.slice(0, 40);
+	});
 
 	async function submit(e: SubmitEvent) {
 		e.preventDefault();
 		busy = true;
 		error = '';
 		try {
-			await api('POST', '/containers', {
+			const body: Record<string, unknown> = {
 				id,
-				image,
-				network,
+				source,
+				port: Number(port || (github ? 3000 : 80)),
+				domain,
 				memory_mb: Number(memory),
 				cpus: Number(cpus)
-			});
+			};
+			if (github) Object.assign(body, { repo: repo.trim().replace(/^https:\/\/github\.com\//, '').replace(/\.git$/, ''), branch });
+			else body.image = image;
+			await api('POST', '/apps', body);
 			await reload();
-			await goto('/c/' + id);
+			await goto('/a/' + id);
 		} catch (err) {
 			error = messageOf(err);
 		} finally {
@@ -39,20 +64,51 @@
 	}
 </script>
 
-<div class="flex max-w-md flex-col gap-8">
-	<Lead title={t('new.title')} text={' ' + t('new.lead')} />
-	<form class="flex flex-col gap-4" onsubmit={submit}>
-		<Field label={t('new.name')} hint={t('new.nameHint')} pattern="[a-z0-9][a-z0-9\-]*" required autocomplete="off" bind:value={id} />
-		<Field label={t('new.image')} hint={t('new.imageHint')} required autocomplete="off" bind:value={image} />
-		<div class="grid grid-cols-2 gap-4">
-			<Field label={t('new.memory')} type="number" min="16" step="16" required bind:value={memory} />
-			<Field label={t('new.cpus')} type="number" min="0.1" step="0.1" required bind:value={cpus} />
+{#if source !== 'github' && source !== 'image'}
+	<div class="flex max-w-2xl flex-col gap-8">
+		<Lead title={t('new.title')} text={' ' + t('new.lead')} />
+		<SourceChoice />
+	</div>
+{:else}
+	<div class="flex max-w-md flex-col gap-8">
+		<div class="flex items-center gap-4">
+			<AppIcon source={source} size="lg" />
+			<Lead title={github ? t('source.github') + '.' : t('source.image') + '.'} />
 		</div>
-		<Field label={t('new.network')} hint={t('new.networkHint')} pattern="[a-z0-9][a-z0-9\-]*" autocomplete="off" bind:value={network} />
-		<ErrorText message={error} />
-		<div class="mt-2 flex items-center gap-4">
-			<Button type="submit" {busy}>{t('new.submit')}</Button>
-			{#if busy}<span class="text-sm text-muted">{t('new.starting')}</span>{/if}
-		</div>
-	</form>
-</div>
+		<form class="flex flex-col gap-4" onsubmit={submit}>
+			{#if github}
+				<Field label={t('new.repo')} hint={t('new.repoHint')} placeholder="owner/name" required autocomplete="off" bind:value={repo} />
+				<Field label={t('new.branch')} required autocomplete="off" bind:value={branch} />
+			{:else}
+				<Field label={t('new.image')} placeholder="nginx:alpine" required autocomplete="off" bind:value={image} />
+			{/if}
+			<Field
+				label={t('new.name')}
+				hint={t('new.nameHint')}
+				pattern="[a-z0-9][a-z0-9\-]*"
+				maxlength={40}
+				required
+				autocomplete="off"
+				bind:value={id}
+				oninput={() => (named = true)}
+			/>
+			<div class="grid grid-cols-[7rem_1fr] gap-4">
+				<Field label={t('new.port')} type="number" min="1" max="65535" placeholder={github ? '3000' : '80'} bind:value={port} />
+				<Field label={t('new.domain')} placeholder="app.example.com" autocomplete="off" bind:value={domain} />
+			</div>
+			<p class="-mt-2 text-sm text-muted">{t('new.portHint')} {t('new.domainHint')}</p>
+			<details class="group rounded-xl border border-line px-4 py-3">
+				<summary class="cursor-pointer text-sm font-medium select-none">{t('new.more')}</summary>
+				<div class="mt-4 grid grid-cols-2 gap-4">
+					<Field label={t('new.memory')} type="number" min="16" step="16" required bind:value={memory} />
+					<Field label={t('new.cpus')} type="number" min="0.1" step="0.1" required bind:value={cpus} />
+				</div>
+			</details>
+			<ErrorText message={error} />
+			<div class="mt-2 flex items-center gap-3">
+				<Button type="submit" {busy}>{t('new.submit')}</Button>
+				<Button kind="quiet" type="button" onclick={() => goto('/new')}>{t('new.back')}</Button>
+			</div>
+		</form>
+	</div>
+{/if}

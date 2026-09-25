@@ -3,9 +3,10 @@
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { api } from '$lib/api';
-	import { containers, reload } from '$lib/containers.svelte';
+	import { apps, reload } from '$lib/apps.svelte';
 	import { t } from '$lib/i18n';
 	import { refresh, session } from '$lib/session.svelte';
+	import AppIcon from '$lib/ui/AppIcon.svelte';
 	import ConfirmDialog from '$lib/ui/ConfirmDialog.svelte';
 	import Logo from '$lib/ui/Logo.svelte';
 	import StateDot from '$lib/ui/StateDot.svelte';
@@ -28,8 +29,8 @@
 			if (!me.logged_in || !me.verified) return goto(me.logged_in && me.enroll ? '/enroll' : '/login');
 			ready = true;
 			await reload();
-			// Containers can stop on their own, so the list is refreshed while
-			// the tab is in view.
+			// Apps can stop on their own and deployments move on, so the list
+			// is refreshed while the tab is in view.
 			timer = setInterval(() => document.visibilityState === 'visible' && reload().catch(() => {}), 5000);
 		})();
 		return () => clearInterval(timer);
@@ -65,17 +66,18 @@
 			</a>
 			<nav class="flex flex-1 flex-col gap-0.5 overflow-y-auto text-[15px]">
 				<p class="px-2 pb-1 text-sm text-muted">{t('nav.apps')}</p>
-				{#each containers.list as c (c.id)}
+				{#each apps.list as a (a.id)}
 					<a
-						href="/c/{c.id}"
-						class="{item} {page.params.id === c.id ? 'bg-selected' : ''}"
-						aria-current={page.params.id === c.id ? 'page' : undefined}
+						href="/a/{a.id}"
+						class="{item} {page.params.app === a.id ? 'bg-selected' : ''}"
+						aria-current={page.params.app === a.id ? 'page' : undefined}
 					>
-						<StateDot state={c.state} />
-						<span class="truncate">{c.id}</span>
+						<AppIcon source={a.source} size="sm" />
+						<span class="min-w-0 flex-1 truncate">{a.id}</span>
+						<StateDot state={a.state} />
 					</a>
 				{:else}
-					{#if containers.loaded}<p class="px-2 text-sm text-muted/70">{t('nav.empty')}</p>{/if}
+					{#if apps.loaded}<p class="px-2 text-sm text-muted/70">{t('nav.empty')}</p>{/if}
 				{/each}
 				<a href="/new" class="{item} mt-1 text-muted hover:text-fg {page.url.pathname === '/new' ? 'bg-selected text-fg' : ''}"
 					><span class="w-2 text-center" aria-hidden="true">+</span>{t('nav.new')}</a
