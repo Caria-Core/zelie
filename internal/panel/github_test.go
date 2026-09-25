@@ -39,6 +39,7 @@ type fakeGitHub struct {
 	commit     string
 	statuses   []string
 	deliveries []map[string]any
+	noHook     bool // GitHub answers 404 for the deliveries of an App without a webhook
 }
 
 const fakeToken = "ghs_installation"
@@ -91,6 +92,8 @@ func (g *fakeGitHub) serve(w http.ResponseWriter, r *http.Request) {
 			reply(http.StatusOK, []map[string]any{{"id": 5, "account": map[string]string{"login": "efe"}, "repository_selection": "selected"}})
 		case p == "/app/installations/5/access_tokens":
 			reply(http.StatusCreated, map[string]any{"token": fakeToken, "expires_at": time.Now().Add(time.Hour)})
+		case p == "/app/hook/deliveries" && g.noHook:
+			reply(http.StatusNotFound, map[string]string{"message": "Not Found"})
 		case p == "/app/hook/deliveries":
 			reply(http.StatusOK, g.deliveries)
 		default:
@@ -358,5 +361,19 @@ func TestAppWithoutWebhookSecret(t *testing.T) {
 	e.settle(t, "web")
 	if code, _ := e.hook("push", "x1", push("refs/heads/main", strings.Repeat("d", 40), ""), ""); code != http.StatusUnauthorized {
 		t.Errorf("a webhook signed with no secret: %d", code)
+	}
+}
+
+func TestStatusWithoutWebhook(t *testing.T) {
+	e := newAppEnv(t)
+	g := newFakeGitHub(t)
+	e.connect(t, g)
+	g.deliveries = nil
+	g.mu.Lock()
+	g.noHook = true
+	g.mu.Unlock()
+	_, out := e.b.do("GET", "/api/github", nil)
+	if out["error"] != nil || out["webhook"].(map[string]any)["state"] != "none" {
+		t.Errorf("status of an App without a webhook: %v", out)
 	}
 }

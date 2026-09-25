@@ -183,14 +183,18 @@ func (s *Server) githubStatus(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, out)
 		return
 	}
-	deliveries, err := conn.client.Deliveries(ctx)
-	if err != nil {
-		out.Error = err.Error()
-		writeJSON(w, http.StatusOK, out)
-		return
-	}
+	// An App without a webhook has no deliveries to list; GitHub answers
+	// 404 for those.
 	if !out.Private {
-		out.Webhook = webhookState(deliveries)
+		deliveries, err := conn.client.Deliveries(ctx)
+		switch {
+		case errors.Is(err, github.ErrNotFound):
+			out.Webhook = &webhookJSON{State: "none"}
+		case err != nil:
+			out.Error = err.Error()
+		default:
+			out.Webhook = webhookState(deliveries)
+		}
 	}
 	writeJSON(w, http.StatusOK, out)
 }
