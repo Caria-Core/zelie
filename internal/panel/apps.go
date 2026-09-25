@@ -66,8 +66,10 @@ type appJSON struct {
 	// Stopped is set when the user stopped the app.
 	Stopped bool `json:"stopped"`
 	// Crashing says why Zelie stopped bringing the app back up.
-	Crashing string          `json:"crashing,omitempty"`
-	Latest   *deploymentJSON `json:"latest,omitempty"`
+	Crashing string `json:"crashing,omitempty"`
+	// VolumeFull says which volume keeps the app from running.
+	VolumeFull string          `json:"volume_full,omitempty"`
+	Latest     *deploymentJSON `json:"latest,omitempty"`
 }
 
 // appOut describes an app for the interface. containers is the core's list,
@@ -76,6 +78,11 @@ func (s *Server) appOut(ctx context.Context, a store.App, containers []engine.St
 	out := appJSON{ID: a.ID, Source: a.Source, Image: a.Image, Repo: a.Repo, Branch: a.Branch,
 		Port: a.Port, Domain: a.Domain, MemoryMB: a.MemoryMB, CPUs: a.CPUs, AutoDeploy: a.AutoDeploy, HealthPath: a.HealthPath, TestCommand: a.TestCommand, BuildCommand: a.BuildCommand, StartCommand: a.StartCommand, Detected: a.Detected, RestartPulls: a.RestartPulls, State: "none",
 		Stopped: a.Stopped, Crashing: s.crashes.gaveUp(a.ID)}
+	vols, err := s.Store.Volumes(ctx, a.ID)
+	if err != nil {
+		return out, err
+	}
+	out.VolumeFull = s.overLimit(vols)
 	recent, err := s.Store.Deployments(ctx, a.ID, 1)
 	if err != nil {
 		return out, err
@@ -146,6 +153,8 @@ type appRequest struct {
 	BuildCommand *string `json:"build_command"`
 	StartCommand *string `json:"start_command"`
 	RestartPulls *bool   `json:"restart_pulls"`
+	// Volumes are only for a new app; later they have their own requests.
+	Volumes []volumeRequest `json:"volumes"`
 }
 
 // apply copies the fields that were sent onto a and checks the result.
@@ -303,6 +312,19 @@ func (s *Server) createApp(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, "create app", err)
 		return
 	}
+	for _, vr := range req.Volumes {
+		if _, status, err := s.createVolume(r.Context(), a, vr); err != nil {
+			ctx := context.WithoutCancel(r.Context())
+			s.removeAppVolumes(ctx, a.ID)
+			s.Store.DeleteApp(ctx, a.ID)
+			if status == http.StatusBadGateway {
+				s.coreFailed(w, "create volume", err)
+			} else {
+				writeError(w, status, err)
+			}
+			return
+		}
+	}
 	s.Log.Info("app created", "app", a.ID, "user", loginFrom(r.Context()).account.ID)
 	if _, err := s.deploy(r.Context(), a, store.Deployment{}); err != nil {
 		s.fail(w, "deploy", err)
@@ -405,6 +427,10 @@ func (s *Server) updateApp(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.ID != "" || req.Source != "" {
 		writeError(w, http.StatusBadRequest, errors.New("an app's name and source cannot change"))
+		return
+	}
+	if req.Volumes != nil {
+		writeError(w, http.StatusBadRequest, errors.New("volumes are changed one at a time"))
 		return
 	}
 	oldDomain := a.Domain
@@ -740,6 +766,10 @@ func (s *Server) deleteApp(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+	}
+	if err := s.removeAppVolumes(ctx, a.ID); err != nil {
+		s.coreFailed(w, "remove volumes", err)
+		return
 	}
 	if err := s.Store.DeleteApp(ctx, a.ID); err != nil {
 		s.fail(w, "delete app", err)

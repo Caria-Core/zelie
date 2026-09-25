@@ -150,5 +150,16 @@ ALTER TABLE apps ADD COLUMN detected TEXT NOT NULL DEFAULT '{}';
 -- Restart fetches and builds the branch's newest commit instead of running
 -- the live image again, the way Pelican's auto update does.
 ALTER TABLE apps ADD COLUMN restart_pulls INTEGER NOT NULL DEFAULT 0;
+`, `
+-- Directories an app keeps between deployments. The core knows each one
+-- as "vol-<id>".
+CREATE TABLE volumes (
+	id         INTEGER PRIMARY KEY,
+	app_id     TEXT NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
+	path       TEXT NOT NULL, -- where the app sees it
+	limit_mb   INTEGER NOT NULL,
+	created_at INTEGER NOT NULL,
+	UNIQUE (app_id, path)
+) STRICT;
 `,
 }

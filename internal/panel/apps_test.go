@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Caria-Core/zelie/internal/build"
+	"github.com/Caria-Core/zelie/internal/core"
 	"github.com/Caria-Core/zelie/internal/engine"
 	"github.com/Caria-Core/zelie/internal/proxy"
 	"github.com/Caria-Core/zelie/internal/secret"
@@ -43,8 +44,14 @@ type appCore struct {
 	testExit   int
 	tests      []engine.Spec
 	failBuild  bool
-	crash      bool // new containers stop right away
+	crash      bool   // new containers stop right away
+	crashImage string // containers of this image stop right away
 	next       byte
+
+	volumes     map[string]bool
+	sizes       map[string]int64
+	mounts      map[string][]engine.VolumeMount // by container
+	overlapping bool                            // two containers had the same volume running
 }
 
 func newAppCore(t *testing.T) *appCore {
@@ -78,9 +85,23 @@ func (c *appCore) RunApp(_ context.Context, s engine.Spec, sealed []string) erro
 		}
 		env = append(env, opened)
 	}
+	for _, v := range s.Volumes {
+		if !c.volumes[v.Name] {
+			return &core.Error{Status: http.StatusNotFound, Message: "volume not found"}
+		}
+		for id, other := range c.mounts {
+			if c.containers[id].State == "running" && slices.ContainsFunc(other, func(o engine.VolumeMount) bool { return o.Name == v.Name }) {
+				c.overlapping = true
+			}
+		}
+	}
+	if c.mounts == nil {
+		c.mounts = map[string][]engine.VolumeMount{}
+	}
+	c.mounts[s.ID] = s.Volumes
 	c.next++
 	state := "running"
-	if c.crash {
+	if c.crash || (c.crashImage != "" && s.Image == c.crashImage) {
 		state = "stopped"
 	}
 	if strings.HasSuffix(s.ID, "-test") {
@@ -168,6 +189,41 @@ func (c *appCore) Usage(_ context.Context, id string) (engine.Usage, error) {
 
 func (c *appCore) Host(context.Context) (engine.Host, error) {
 	return engine.Host{CPUs: 2, MemoryBytes: 3 << 30, DiskBytes: 100 << 30, DiskFreeBytes: 60 << 30}, nil
+}
+
+func (c *appCore) CreateVolume(_ context.Context, name string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.volumes == nil {
+		c.volumes = map[string]bool{}
+	}
+	c.volumes[name] = true
+	return nil
+}
+
+func (c *appCore) RemoveVolume(_ context.Context, name string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for id := range c.containers {
+		if slices.ContainsFunc(c.mounts[id], func(v engine.VolumeMount) bool { return v.Name == name }) {
+			return &core.Error{Status: http.StatusConflict, Message: "a container still uses this volume"}
+		}
+	}
+	if !c.volumes[name] {
+		return &core.Error{Status: http.StatusNotFound, Message: "volume not found"}
+	}
+	delete(c.volumes, name)
+	return nil
+}
+
+func (c *appCore) VolumeSizes(context.Context) (map[string]int64, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := map[string]int64{}
+	for name := range c.volumes {
+		out[name] = c.sizes[name]
+	}
+	return out, nil
 }
 
 func (c *appCore) SecretKey(context.Context) (secret.PublicKey, error) { return c.keys.Public(), nil }

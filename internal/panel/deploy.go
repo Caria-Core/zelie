@@ -239,15 +239,41 @@ func (s *Server) runDeployment(ctx context.Context, appID string, id int64) {
 		d.Image = app.Image
 	}
 
+	vols, err := s.Store.Volumes(ctx, app.ID)
+	if err != nil {
+		fail(err)
+		return
+	}
+	if reason := s.overLimit(vols); reason != "" {
+		fail(errors.New(reason))
+		return
+	}
+
 	set(store.DeployStarting)
+	// Two versions writing to the same files at once could corrupt them, so
+	// an app with volumes has a short gap between versions instead.
+	stoppedOld := false
+	if len(vols) > 0 {
+		if stoppedOld, err = s.stopRunning(ctx, app.ID, out); err != nil {
+			fail(fmt.Errorf("stop the old version: %w", err))
+			return
+		}
+	}
 	container := fmt.Sprintf("%s-%d", app.ID, id)
-	if err := s.start(ctx, app, d.Image, container, out); err != nil {
-		s.Core.Remove(context.WithoutCancel(ctx), container)
+	undo := func() {
+		ctx := context.WithoutCancel(ctx)
+		s.Core.Remove(ctx, container)
+		if stoppedOld {
+			s.restoreLive(ctx, app, vols, out)
+		}
+	}
+	if err := s.start(ctx, app, d.Image, container, vols, out); err != nil {
+		undo()
 		fail(err)
 		return
 	}
 	if err := s.syncRoutes(ctx, map[string]string{app.ID: container}); err != nil {
-		s.Core.Remove(context.WithoutCancel(ctx), container)
+		undo()
 		fail(fmt.Errorf("point %s at the new version: %w", app.Domain, err))
 		return
 	}
@@ -402,7 +428,7 @@ func (s *Server) vars(ctx context.Context, app store.App) (env, sealed []string,
 // start runs the new container and waits until it is healthy: answering
 // HTTP if the app has a domain, since that is what the proxy will send it,
 // or staying up for a while otherwise, like a bot with no web side.
-func (s *Server) start(ctx context.Context, app store.App, image, container string, out io.Writer) error {
+func (s *Server) start(ctx context.Context, app store.App, image, container string, vols []store.Volume, out io.Writer) error {
 	env, sealed, err := s.appEnv(ctx, app)
 	if err != nil {
 		return err
@@ -414,7 +440,7 @@ func (s *Server) start(ctx context.Context, app store.App, image, container stri
 		args = []string{"sh", "-c", app.StartCommand}
 	}
 	err = s.Core.RunApp(ctx, engine.Spec{
-		ID: container, App: app.ID, Image: image, Args: args, Env: env, Network: app.ID,
+		ID: container, App: app.ID, Image: image, Args: args, Env: env, Network: app.ID, Volumes: volumeMounts(vols),
 		MemoryBytes: app.MemoryMB << 20, CPUs: app.CPUs, Pids: defaultPids,
 	}, sealed)
 	if err != nil {
@@ -504,6 +530,49 @@ func (s *Server) containerStatus(ctx context.Context, id string) (engine.Status,
 		}
 	}
 	return engine.Status{}, fmt.Errorf("container %s is gone", id)
+}
+
+// stopRunning stops the app's running containers, giving each time to save
+// its state. It reports whether there were any.
+func (s *Server) stopRunning(ctx context.Context, app string, out io.Writer) (bool, error) {
+	list, err := s.Core.List(ctx)
+	if err != nil {
+		return false, err
+	}
+	stopped := false
+	for _, c := range list {
+		if c.App != app || c.State != "running" {
+			continue
+		}
+		if !stopped {
+			fmt.Fprintln(out, "This app keeps files in volumes, so the old version stops before the new one starts.")
+		}
+		if err := s.Core.Stop(ctx, c.ID, volumeStopGrace); err != nil {
+			return stopped, err
+		}
+		stopped = true
+	}
+	return stopped, nil
+}
+
+// restoreLive starts the live version again after a new one failed to
+// replace it.
+func (s *Server) restoreLive(ctx context.Context, app store.App, vols []store.Volume, out io.Writer) {
+	live, err := s.Store.LiveDeployment(ctx, app.ID)
+	if err != nil {
+		return
+	}
+	fmt.Fprintln(out, "\nStarting the previous version again.")
+	container := fmt.Sprintf("%s-%d", app.ID, live.ID)
+	s.Core.Remove(ctx, container)
+	if err := s.start(ctx, app, live.Image, container, vols, out); err != nil {
+		fmt.Fprintf(out, "The previous version did not start either: %v\n", err)
+		s.Log.Error("restore live version", "app", app.ID, "err", err)
+		return
+	}
+	if err := s.syncRoutes(ctx, nil); err != nil {
+		s.Log.Error("restore live version routes", "app", app.ID, "err", err)
+	}
 }
 
 // removeOldContainers removes every container of the app except keep.

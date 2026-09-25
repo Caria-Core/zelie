@@ -129,7 +129,7 @@ func (s Spec) Validate() error {
 		if !validID.MatchString(v.Name) {
 			return fmt.Errorf("volume name %q must be lowercase letters, digits and dashes", v.Name)
 		}
-		if err := checkVolumeTarget(v.Target); err != nil {
+		if err := CheckVolumeTarget(v.Target); err != nil {
 			return err
 		}
 		if targets[v.Target] {

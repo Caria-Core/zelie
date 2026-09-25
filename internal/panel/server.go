@@ -54,6 +54,7 @@ type Server struct {
 	gh      ghCache
 	crashes crashes
 	samples samples
+	sizes   volumeSizes
 	ctx     context.Context // lives as long as the server
 }
 
@@ -115,6 +116,10 @@ func (s *Server) Handler() http.Handler {
 	web.HandleFunc("GET /api/apps/{app}/deployments/{id}/log", s.signedIn(s.deploymentLog))
 	web.HandleFunc("GET /api/apps/{app}/logs", s.signedIn(s.appLogs))
 	web.HandleFunc("GET /api/apps/{app}/usage", s.signedIn(s.appUsage))
+	web.HandleFunc("GET /api/apps/{app}/volumes", s.signedIn(s.listVolumes))
+	web.HandleFunc("POST /api/apps/{app}/volumes", s.signedIn(s.addVolume))
+	web.HandleFunc("PATCH /api/apps/{app}/volumes/{id}", s.signedIn(s.updateVolume))
+	web.HandleFunc("DELETE /api/apps/{app}/volumes/{id}", s.signedIn(s.deleteVolume))
 	web.HandleFunc("GET /api/host", s.signedIn(s.hostInfo))
 	web.HandleFunc("GET /api/github", s.signedIn(s.githubStatus))
 	web.HandleFunc("POST /api/github/manifest", s.confirmed(s.githubManifest))
@@ -153,6 +158,7 @@ func (s *Server) Serve(ctx context.Context, socket string) error {
 		return err
 	}
 	go s.supervise(ctx)
+	go s.watchVolumes(ctx)
 	l, err := net.Listen("unix", socket)
 	if err != nil {
 		return err

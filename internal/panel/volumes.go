@@ -1,0 +1,369 @@
+package panel
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net/http"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/Caria-Core/zelie/internal/engine"
+	"github.com/Caria-Core/zelie/internal/store"
+)
+
+// Volume limits are checked by measuring, not enforced by the file system
+// (K64): an app can go over for as long as one measurement takes. Tests
+// shorten the interval.
+var volumeCheckEvery = time.Minute
+
+const (
+	maxVolumes      = 8
+	minVolumeMB     = 64
+	defaultVolumeMB = 1024
+	// A new version of an app with volumes starts only after the old one
+	// has stopped. This is how long the old one gets to save its state.
+	volumeStopGrace = 30
+)
+
+// volumeSizes is what the last measurement found, by core volume name.
+type volumeSizes struct {
+	mu    sync.Mutex
+	bytes map[string]int64
+	at    time.Time
+}
+
+func (v *volumeSizes) get(name string) (int64, bool) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	n, ok := v.bytes[name]
+	return n, ok
+}
+
+func (v *volumeSizes) set(m map[string]int64, at time.Time) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.bytes, v.at = m, at
+}
+
+type volumeJSON struct {
+	ID      int64  `json:"id"`
+	Path    string `json:"path"`
+	LimitMB int64  `json:"limit_mb"`
+	// UsedBytes is nil until the volume has been measured.
+	UsedBytes *int64    `json:"used_bytes"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type volumeRequest struct {
+	Path    *string `json:"path"`
+	LimitMB *int64  `json:"limit_mb"`
+}
+
+func (s *Server) volumeOut(v store.Volume) volumeJSON {
+	out := volumeJSON{ID: v.ID, Path: v.Path, LimitMB: v.LimitMB, CreatedAt: v.CreatedAt}
+	if n, ok := s.sizes.get(v.Name()); ok {
+		out.UsedBytes = &n
+	}
+	return out
+}
+
+// overLimit returns why the app may not run: a volume that has grown past
+// its limit. Empty means none has.
+func (s *Server) overLimit(vols []store.Volume) string {
+	for _, v := range vols {
+		if n, ok := s.sizes.get(v.Name()); ok && n > v.LimitMB<<20 {
+			return fmt.Sprintf("the volume at %s holds %s, over its %s limit; raise the limit to start the app", v.Path, formatMB(n>>20), formatMB(v.LimitMB))
+		}
+	}
+	return ""
+}
+
+func formatMB(mb int64) string {
+	if mb >= 1024 && mb%1024 == 0 {
+		return strconv.FormatInt(mb/1024, 10) + " GB"
+	}
+	if mb >= 1024 {
+		return strconv.FormatFloat(float64(mb)/1024, 'f', 1, 64) + " GB"
+	}
+	return strconv.FormatInt(mb, 10) + " MB"
+}
+
+// checkVolume validates what the user asked for, against the server's disk.
+func (s *Server) checkVolume(ctx context.Context, v store.Volume) error {
+	if err := engine.CheckVolumeTarget(v.Path); err != nil {
+		return errors.New("the path must start with / and name a directory such as /data; /proc, /sys and /dev are taken")
+	}
+	if len(v.Path) > 255 || strings.ContainsAny(v.Path, ",:\x00") {
+		return errors.New("that path cannot hold a volume")
+	}
+	if v.LimitMB < minVolumeMB {
+		return fmt.Errorf("a volume's limit must be at least %d MB", minVolumeMB)
+	}
+	h, err := s.Core.Host(ctx)
+	if err != nil {
+		return err
+	}
+	if v.LimitMB > h.DiskBytes>>20 {
+		return fmt.Errorf("the limit is larger than the server's disk (%s)", formatMB(h.DiskBytes>>20))
+	}
+	return nil
+}
+
+func (s *Server) listVolumes(w http.ResponseWriter, r *http.Request) {
+	a, ok := s.appFrom(w, r)
+	if !ok {
+		return
+	}
+	vols, err := s.Store.Volumes(r.Context(), a.ID)
+	if err != nil {
+		s.fail(w, "list volumes", err)
+		return
+	}
+	out := make([]volumeJSON, 0, len(vols))
+	for _, v := range vols {
+		out = append(out, s.volumeOut(v))
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// addVolume makes a new, empty volume. The app sees it from its next start.
+func (s *Server) addVolume(w http.ResponseWriter, r *http.Request) {
+	a, ok := s.appFrom(w, r)
+	if !ok {
+		return
+	}
+	var req volumeRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	v, status, err := s.createVolume(r.Context(), a, req)
+	if err != nil {
+		if status == http.StatusBadGateway {
+			s.coreFailed(w, "create volume", err)
+		} else {
+			writeError(w, status, err)
+		}
+		return
+	}
+	s.Log.Info("volume added", "app", a.ID, "path", v.Path, "user", loginFrom(r.Context()).account.ID)
+	writeJSON(w, http.StatusCreated, s.volumeOut(v))
+}
+
+// createVolume records a volume and has the core make it. The status says
+// what kind of failure an error is.
+func (s *Server) createVolume(ctx context.Context, a store.App, req volumeRequest) (store.Volume, int, error) {
+	v := store.Volume{AppID: a.ID, LimitMB: defaultVolumeMB, CreatedAt: s.now()}
+	if req.Path == nil {
+		return v, http.StatusBadRequest, errors.New("a volume needs a path")
+	}
+	v.Path = strings.TrimSpace(*req.Path)
+	if req.LimitMB != nil {
+		v.LimitMB = *req.LimitMB
+	}
+	if err := s.checkVolume(ctx, v); err != nil {
+		return v, http.StatusBadRequest, err
+	}
+	existing, err := s.Store.Volumes(ctx, a.ID)
+	if err != nil {
+		return v, http.StatusInternalServerError, err
+	}
+	if len(existing) >= maxVolumes {
+		return v, http.StatusBadRequest, fmt.Errorf("an app can have at most %d volumes", maxVolumes)
+	}
+	for _, e := range existing {
+		if strings.HasPrefix(v.Path+"/", e.Path+"/") || strings.HasPrefix(e.Path+"/", v.Path+"/") {
+			return v, http.StatusConflict, fmt.Errorf("%s overlaps the volume at %s", v.Path, e.Path)
+		}
+	}
+	id, err := s.Store.CreateVolume(ctx, v)
+	if errors.Is(err, store.ErrExists) {
+		return v, http.StatusConflict, fmt.Errorf("there is already a volume at %s", v.Path)
+	}
+	if err != nil {
+		return v, http.StatusInternalServerError, err
+	}
+	v.ID = id
+	if err := s.Core.CreateVolume(ctx, v.Name()); err != nil {
+		s.Store.DeleteVolume(context.WithoutCancel(ctx), a.ID, id)
+		return v, http.StatusBadGateway, err
+	}
+	return v, 0, nil
+}
+
+// updateVolume changes a volume's path or limit. A new path is used from
+// the app's next start.
+func (s *Server) updateVolume(w http.ResponseWriter, r *http.Request) {
+	a, v, ok := s.volumeFrom(w, r)
+	if !ok {
+		return
+	}
+	var req volumeRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	if req.Path != nil {
+		v.Path = strings.TrimSpace(*req.Path)
+	}
+	if req.LimitMB != nil {
+		v.LimitMB = *req.LimitMB
+	}
+	if err := s.checkVolume(r.Context(), v); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	others, err := s.Store.Volumes(r.Context(), a.ID)
+	if err != nil {
+		s.fail(w, "list volumes", err)
+		return
+	}
+	for _, e := range others {
+		if e.ID != v.ID && (strings.HasPrefix(v.Path+"/", e.Path+"/") || strings.HasPrefix(e.Path+"/", v.Path+"/")) {
+			writeError(w, http.StatusConflict, fmt.Errorf("%s overlaps the volume at %s", v.Path, e.Path))
+			return
+		}
+	}
+	if err := s.Store.UpdateVolume(r.Context(), v); err != nil {
+		s.fail(w, "update volume", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, s.volumeOut(v))
+}
+
+// deleteVolume deletes a volume and its files, for good. The app must be
+// stopped: a running app would lose its files mid-write.
+func (s *Server) deleteVolume(w http.ResponseWriter, r *http.Request) {
+	a, v, ok := s.volumeFrom(w, r)
+	if !ok {
+		return
+	}
+	ctx := r.Context()
+	unlock := s.deploys.lock(a.ID)
+	defer unlock()
+	list, err := s.Core.List(ctx)
+	if err != nil {
+		s.coreFailed(w, "list containers", err)
+		return
+	}
+	for _, c := range list {
+		if c.App == a.ID && c.State != "stopped" {
+			writeError(w, http.StatusConflict, errors.New("stop the app before deleting one of its volumes"))
+			return
+		}
+	}
+	// Stopped containers still hold the volume. The app's next start makes
+	// a new one anyway.
+	for _, c := range list {
+		if c.App == a.ID {
+			if err := s.Core.Remove(ctx, c.ID); err != nil {
+				s.coreFailed(w, "remove container", err)
+				return
+			}
+		}
+	}
+	if err := s.Core.RemoveVolume(ctx, v.Name()); err != nil && !isNotFound(err) {
+		s.coreFailed(w, "remove volume", err)
+		return
+	}
+	if err := s.Store.DeleteVolume(ctx, a.ID, v.ID); err != nil {
+		s.fail(w, "delete volume", err)
+		return
+	}
+	s.Log.Info("volume deleted", "app", a.ID, "path", v.Path, "user", loginFrom(ctx).account.ID)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// removeAppVolumes deletes every volume of an app whose containers are
+// gone, as the app itself is deleted.
+func (s *Server) removeAppVolumes(ctx context.Context, appID string) error {
+	vols, err := s.Store.Volumes(ctx, appID)
+	if err != nil {
+		return err
+	}
+	for _, v := range vols {
+		if err := s.Core.RemoveVolume(ctx, v.Name()); err != nil && !isNotFound(err) {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Server) volumeFrom(w http.ResponseWriter, r *http.Request) (store.App, store.Volume, bool) {
+	a, ok := s.appFrom(w, r)
+	if !ok {
+		return a, store.Volume{}, false
+	}
+	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	vols, err := s.Store.Volumes(r.Context(), a.ID)
+	if err != nil {
+		s.fail(w, "list volumes", err)
+		return a, store.Volume{}, false
+	}
+	for _, v := range vols {
+		if v.ID == id {
+			return a, v, true
+		}
+	}
+	writeError(w, http.StatusNotFound, errors.New("no such volume"))
+	return a, store.Volume{}, false
+}
+
+func volumeMounts(vols []store.Volume) []engine.VolumeMount {
+	out := make([]engine.VolumeMount, len(vols))
+	for i, v := range vols {
+		out[i] = engine.VolumeMount{Name: v.Name(), Target: v.Path}
+	}
+	return out
+}
+
+// watchVolumes measures the volumes now and then and stops an app whose
+// volume has grown past its limit.
+func (s *Server) watchVolumes(ctx context.Context) {
+	t := time.NewTicker(volumeCheckEvery)
+	defer t.Stop()
+	for {
+		s.checkVolumes(ctx)
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
+}
+
+func (s *Server) checkVolumes(ctx context.Context) {
+	vols, err := s.Store.Volumes(ctx, "")
+	if err != nil {
+		s.Log.Error("volumes: list", "err", err)
+		return
+	}
+	if len(vols) == 0 {
+		return
+	}
+	sizes, err := s.Core.VolumeSizes(ctx)
+	if err != nil {
+		s.Log.Error("volumes: measure", "err", err)
+		return
+	}
+	s.sizes.set(sizes, s.now())
+	byApp := map[string][]store.Volume{}
+	for _, v := range vols {
+		byApp[v.AppID] = append(byApp[v.AppID], v)
+	}
+	for appID, vols := range byApp {
+		reason := s.overLimit(vols)
+		if reason == "" {
+			continue
+		}
+		a, err := s.Store.App(ctx, appID)
+		if err != nil || a.Stopped {
+			continue
+		}
+		s.Log.Warn("volume over its limit, stopping the app", "app", appID, "reason", reason)
+		if err := s.stopApp(ctx, a); err != nil {
+			s.Log.Error("volumes: stop app", "app", appID, "err", err)
+		}
+	}
+}

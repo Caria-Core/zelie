@@ -31,6 +31,9 @@ type Core interface {
 	RemoveImage(ctx context.Context, name string) error
 	Usage(ctx context.Context, id string) (engine.Usage, error)
 	Host(ctx context.Context) (engine.Host, error)
+	CreateVolume(ctx context.Context, name string) error
+	RemoveVolume(ctx context.Context, name string) error
+	VolumeSizes(ctx context.Context) (map[string]int64, error)
 }
 
 // Limits an app gets when the request does not say otherwise.
@@ -72,6 +75,13 @@ func (s *Server) coreFailed(w http.ResponseWriter, what string, err error) {
 	}
 	s.Log.Error(what, "err", err)
 	writeError(w, http.StatusBadGateway, errors.New("the Zelie core did not answer; see the server log"))
+}
+
+// isNotFound reports whether the core said the thing asked for does not
+// exist.
+func isNotFound(err error) bool {
+	var ce *core.Error
+	return errors.As(err, &ce) && ce.Status == http.StatusNotFound
 }
 
 // eventStream writes server-sent events. Output from a container arrives

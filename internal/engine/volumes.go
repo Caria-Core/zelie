@@ -29,7 +29,8 @@ type VolumeMount struct {
 // files the kernel or Zelie put there.
 var reservedTargets = []string{"/proc", "/sys", "/dev", "/etc/hosts", "/etc/resolv.conf"}
 
-func checkVolumeTarget(target string) error {
+// CheckVolumeTarget reports whether a volume may be mounted at target.
+func CheckVolumeTarget(target string) error {
 	if !filepath.IsAbs(target) || filepath.Clean(target) != target || target == "/" {
 		return fmt.Errorf("volume path %q must be an absolute, clean path other than /", target)
 	}
