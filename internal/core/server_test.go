@@ -46,6 +46,13 @@ func (f *fakeEngine) Stop(_ context.Context, id string, grace time.Duration) err
 
 func (f *fakeEngine) Remove(context.Context, string) error { return nil }
 
+func (f *fakeEngine) Wait(_ context.Context, id string) (uint32, error) {
+	if id == "missing" {
+		return 0, errdefs.ErrNotFound
+	}
+	return 3, nil
+}
+
 func (f *fakeEngine) RemoveImage(_ context.Context, name string) error {
 	f.removedImages = append(f.removedImages, name)
 	return nil
@@ -194,5 +201,20 @@ func TestRemoveImage(t *testing.T) {
 	}
 	if len(f.removedImages) != 1 || f.removedImages[0] != "zelie.local/web:abc" {
 		t.Errorf("removed %v", f.removedImages)
+	}
+}
+
+func TestWait(t *testing.T) {
+	s, _ := newServer()
+	panel := &peer.Peer{UID: 999}
+	rec := request(t, s, panel, "POST", "/v1/containers/web/wait", "")
+	if rec.Code != http.StatusOK || strings.TrimSpace(rec.Body.String()) != `{"exit_code":3}` {
+		t.Fatalf("wait: %d %s", rec.Code, rec.Body)
+	}
+	if rec := request(t, s, panel, "POST", "/v1/containers/missing/wait", ""); rec.Code != http.StatusNotFound {
+		t.Errorf("missing: %d", rec.Code)
+	}
+	if rec := request(t, s, &peer.Peer{UID: 1000}, "POST", "/v1/containers/web/wait", ""); rec.Code != http.StatusForbidden {
+		t.Errorf("stranger: %d", rec.Code)
 	}
 }

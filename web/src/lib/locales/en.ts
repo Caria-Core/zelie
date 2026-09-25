@@ -65,6 +65,7 @@ export default {
 
 	'deploy.queued': 'Queued',
 	'deploy.building': 'Building',
+	'deploy.testing': 'Testing',
 	'deploy.starting': 'Starting',
 	'deploy.live': 'Live',
 	'deploy.failed': 'Failed',
@@ -132,6 +133,8 @@ export default {
 
 	'settings.autoDeploy': 'Deploy every push to this branch',
 	'settings.autoDeployHint': 'Needs the GitHub connection and access to the repository.',
+	'settings.tests': 'Test command',
+	'settings.testsHint': 'Runs in each new build before it goes live; if it fails, the old version stays. Zelie fills this in when it finds tests. Leave it empty to skip them.',
 	'settings.health': 'Health check path',
 	'settings.healthHint': 'With a domain, a new version must answer here, with any status below 500, before traffic moves to it. Without one it only has to stay up.',
 	'settings.save': 'Save',

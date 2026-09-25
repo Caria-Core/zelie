@@ -18,14 +18,14 @@ import (
 
 type fakeBuilder struct{ got build.Request }
 
-func (f *fakeBuilder) Build(_ context.Context, req build.Request, out io.Writer) (string, error) {
+func (f *fakeBuilder) Build(_ context.Context, req build.Request, out io.Writer) (build.Result, error) {
 	src, _ := io.ReadAll(req.Source)
 	f.got = req
 	io.WriteString(out, "step one\n")
 	if string(src) == "broken" {
-		return "", errors.New("the build step failed with exit code 1")
+		return build.Result{}, errors.New("the build step failed with exit code 1")
 	}
-	return "zelie.local/" + req.App + ":" + req.Version, nil
+	return build.Result{Image: "zelie.local/" + req.App + ":" + req.Version, TestCommand: "npm test"}, nil
 }
 
 // buildClient returns a client talking to s over a real connection, so the
@@ -52,9 +52,9 @@ func TestBuild(t *testing.T) {
 	c := buildClient(t, s)
 
 	var out bytes.Buffer
-	image, err := c.Build(context.Background(), "web", "abc", strings.NewReader("source"), &out)
-	if err != nil || image != "zelie.local/web:abc" {
-		t.Fatalf("Build = %q, %v", image, err)
+	res, err := c.Build(context.Background(), "web", "abc", strings.NewReader("source"), &out)
+	if err != nil || res.Image != "zelie.local/web:abc" || res.TestCommand != "npm test" {
+		t.Fatalf("Build = %+v, %v", res, err)
 	}
 	if out.String() != "step one\n" || fb.got.App != "web" || fb.got.Version != "abc" {
 		t.Errorf("output %q, request %+v", out.String(), fb.got)

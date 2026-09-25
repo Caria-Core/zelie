@@ -89,18 +89,31 @@ type Request struct {
 
 var validVersion = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{0,63}$`)
 
+// Result is what a build produced.
+type Result struct {
+	Image string
+	// TestCommand is how the app's tests can probably be run in the image,
+	// or empty if no tests were found.
+	TestCommand string
+}
+
 // ErrSourceTooLarge is returned for a source archive over MaxSource.
 var ErrSourceTooLarge = fmt.Errorf("the source is larger than %d MB", MaxSource>>20)
 
-// Build builds the source into an image and returns its name. The output of
-// every step is written to out as it happens.
-func (b *Builder) Build(ctx context.Context, req Request, out io.Writer) (string, error) {
+// Build builds the source into an image. The output of every step is
+// written to out as it happens.
+func (b *Builder) Build(ctx context.Context, req Request, out io.Writer) (Result, error) {
 	if !engine.ValidID(req.App) {
-		return "", fmt.Errorf("invalid app id %q", req.App)
+		return Result{}, fmt.Errorf("invalid app id %q", req.App)
 	}
 	if !validVersion.MatchString(req.Version) {
-		return "", fmt.Errorf("invalid version %q", req.Version)
+		return Result{}, fmt.Errorf("invalid version %q", req.Version)
 	}
+	image, test, err := b.build(ctx, req, out)
+	return Result{Image: image, TestCommand: test}, err
+}
+
+func (b *Builder) build(ctx context.Context, req Request, out io.Writer) (image, test string, _ error) {
 
 	select {
 	case b.slot <- struct{}{}:
@@ -109,7 +122,7 @@ func (b *Builder) Build(ctx context.Context, req Request, out io.Writer) (string
 		select {
 		case b.slot <- struct{}{}:
 		case <-ctx.Done():
-			return "", ctx.Err()
+			return "", "", ctx.Err()
 		}
 	}
 	defer func() { <-b.slot }()
@@ -118,7 +131,7 @@ func (b *Builder) Build(ctx context.Context, req Request, out io.Writer) (string
 
 	job, err := b.prepare(req)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	defer os.RemoveAll(job.root)
 
@@ -129,7 +142,7 @@ func (b *Builder) Build(ctx context.Context, req Request, out io.Writer) (string
 			{Source: job.dir("src"), Target: "/src"},
 		},
 	}); err != nil {
-		return "", err
+		return "", "", err
 	}
 
 	buildArgs := []string{"buildctl-daemonless.sh", "build", "--progress", "plain",
@@ -146,6 +159,9 @@ func (b *Builder) Build(ctx context.Context, req Request, out io.Writer) (string
 		buildArgs = append(buildArgs, "--frontend", "dockerfile.v0", "--local", "dockerfile=/src")
 	} else {
 		fmt.Fprintln(out, "No Dockerfile; Railpack works out how to build the app.")
+		// Only for Railpack: an image from a Dockerfile may well leave
+		// out what the tests need.
+		test = suggestTest(job.dir("src"))
 		if err := b.step(ctx, out, "plan", engine.Spec{
 			Args:    []string{"railpack", "prepare", "/src", "--plan-out", "/plan/railpack-plan.json"},
 			Network: Network,
@@ -159,7 +175,7 @@ func (b *Builder) Build(ctx context.Context, req Request, out io.Writer) (string
 				{Source: b.appCache(req.App), Target: "/tmp/railpack"},
 			},
 		}); err != nil {
-			return "", err
+			return "", "", err
 		}
 		buildArgs = append(buildArgs, "--frontend", "gateway.v0",
 			"--opt", "source="+RailpackFrontend,
@@ -177,20 +193,20 @@ func (b *Builder) Build(ctx context.Context, req Request, out io.Writer) (string
 		Mounts:  mounts,
 		Nesting: true,
 	}); err != nil {
-		return "", err
+		return "", "", err
 	}
 
 	f, err := os.Open(filepath.Join(job.dir("out"), "image.tar"))
 	if err != nil {
-		return "", fmt.Errorf("the build left no image: %w", err)
+		return "", "", fmt.Errorf("the build left no image: %w", err)
 	}
 	defer f.Close()
-	image := engine.LocalImages + req.App + ":" + req.Version
+	image = engine.LocalImages + req.App + ":" + req.Version
 	if err := b.Engine.ImportImage(ctx, f, image); err != nil {
-		return "", err
+		return "", "", err
 	}
 	fmt.Fprintf(out, "Built %s.\n", image)
-	return image, nil
+	return image, test, nil
 }
 
 type job struct{ root string }

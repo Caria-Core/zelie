@@ -29,6 +29,9 @@ Website, documentation and support: [zelie.cariacore.com](https://zelie.cariacor
   one without, such as a bot, must stay up. If the build fails or the app does not come
   up, the old version keeps serving and the deployment's log shows why, including the
   app's last output. Build logs stream to the browser while they run.
+- **Tests before going live.** When a Node project has a test script, Zelie runs it on
+  each new build, in its own container with the app's variables, and keeps the old
+  version if it fails. The command can be changed or cleared in the app's settings.
 - **Restart and roll back without building.** The last five versions that went live keep
   their image, so any of them can be put back in a second or two. Older images are
   deleted to free the disk.
@@ -49,8 +52,6 @@ Website, documentation and support: [zelie.cariacore.com](https://zelie.cariacor
 
 ## What is coming
 
-- **Tests before going live.** Run the project's tests on the new build and keep the old
-  version if they fail.
 - **Game servers.** Import existing Pterodactyl and Pelican eggs, with a live console,
   SFTP, a file manager, startup settings, schedules and port management.
 - **Databases.** MariaDB, PostgreSQL and Redis with one click, never exposed to the

@@ -6,13 +6,14 @@
 	const styles: Record<Deployment['state'], string> = {
 		queued: 'bg-selected text-muted',
 		building: 'bg-selected text-fg',
+		testing: 'bg-selected text-fg',
 		starting: 'bg-selected text-fg',
 		live: 'bg-ok/15 text-ok',
 		failed: 'bg-danger/15 text-danger',
 		replaced: 'bg-hover text-muted',
 		skipped: 'bg-hover text-muted'
 	};
-	const moving = $derived(state === 'queued' || state === 'building' || state === 'starting');
+	const moving = $derived(state === 'queued' || state === 'building' || state === 'testing' || state === 'starting');
 </script>
 
 <span class="inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium {styles[state]}">

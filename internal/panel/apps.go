@@ -53,8 +53,9 @@ type appJSON struct {
 	MemoryMB int64   `json:"memory_mb"`
 	CPUs     float64 `json:"cpus"`
 	// AutoDeploy deploys every push to the branch.
-	AutoDeploy bool   `json:"auto_deploy"`
-	HealthPath string `json:"health_path"`
+	AutoDeploy  bool   `json:"auto_deploy"`
+	HealthPath  string `json:"health_path"`
+	TestCommand string `json:"test_command"`
 	// State is the live container's: running, stopped, or none when
 	// nothing has gone live yet.
 	State  string          `json:"state"`
@@ -65,7 +66,7 @@ type appJSON struct {
 // fetched once by the caller.
 func (s *Server) appOut(ctx context.Context, a store.App, containers []engine.Status) (appJSON, error) {
 	out := appJSON{ID: a.ID, Source: a.Source, Image: a.Image, Repo: a.Repo, Branch: a.Branch,
-		Port: a.Port, Domain: a.Domain, MemoryMB: a.MemoryMB, CPUs: a.CPUs, AutoDeploy: a.AutoDeploy, HealthPath: a.HealthPath, State: "none"}
+		Port: a.Port, Domain: a.Domain, MemoryMB: a.MemoryMB, CPUs: a.CPUs, AutoDeploy: a.AutoDeploy, HealthPath: a.HealthPath, TestCommand: a.TestCommand, State: "none"}
 	recent, err := s.Store.Deployments(ctx, a.ID, 1)
 	if err != nil {
 		return out, err
@@ -128,6 +129,9 @@ type appRequest struct {
 	// AutoDeploy is only for apps built from GitHub.
 	AutoDeploy *bool   `json:"auto_deploy"`
 	HealthPath *string `json:"health_path"`
+	// TestCommand is only for apps built from GitHub. Empty turns tests
+	// off.
+	TestCommand *string `json:"test_command"`
 }
 
 // apply copies the fields that were sent onto a and checks the result.
@@ -151,6 +155,16 @@ func (req appRequest) apply(a *store.App) error {
 	}
 	if req.CPUs != nil {
 		a.CPUs = *req.CPUs
+	}
+	if req.TestCommand != nil {
+		cmd := strings.TrimSpace(*req.TestCommand)
+		switch {
+		case a.Source != store.SourceGitHub:
+			return errors.New("only apps built from GitHub run tests")
+		case len(cmd) > 500 || strings.ContainsAny(cmd, "\x00\r\n"):
+			return errors.New("the test command must be one line of at most 500 characters")
+		}
+		a.TestCommand, a.TestSet = cmd, true
 	}
 	if req.AutoDeploy != nil {
 		if a.Source != store.SourceGitHub {

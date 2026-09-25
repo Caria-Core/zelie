@@ -33,6 +33,7 @@ type Engine interface {
 	Remove(ctx context.Context, id string) error
 	List(ctx context.Context) ([]engine.Status, error)
 	RemoveImage(ctx context.Context, name string) error
+	Wait(ctx context.Context, id string) (uint32, error)
 }
 
 // Limits a single request may ask for. They keep a confused or compromised
@@ -57,6 +58,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/containers", s.run)
 	mux.HandleFunc("POST /v1/containers/{id}/stop", s.stop)
 	mux.HandleFunc("DELETE /v1/containers/{id}", s.remove)
+	mux.HandleFunc("POST /v1/containers/{id}/wait", s.wait)
 	mux.HandleFunc("GET /v1/containers/{id}/logs", s.logs)
 	mux.HandleFunc("POST /v1/builds", s.build)
 	mux.HandleFunc("DELETE /v1/images", s.removeImage)
@@ -202,6 +204,22 @@ func (s *Server) stop(w http.ResponseWriter, r *http.Request) {
 	}
 	s.Log.Info("container stopped", "id", id)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// wait answers once the container's process has exited, with its exit
+// code. The caller decides how long to wait by closing the request.
+func (s *Server) wait(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !engine.ValidID(id) {
+		writeError(w, http.StatusBadRequest, errors.New("invalid container id"))
+		return
+	}
+	code, err := s.Engine.Wait(r.Context(), id)
+	if err != nil {
+		s.fail(w, "wait", id, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]uint32{"exit_code": code})
 }
 
 func (s *Server) remove(w http.ResponseWriter, r *http.Request) {

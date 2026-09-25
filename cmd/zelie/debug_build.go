@@ -17,10 +17,13 @@ import (
 func debugBuild(ctx context.Context, c *core.Client, app, version, dir string, stdout io.Writer) error {
 	pr, pw := io.Pipe()
 	go func() { pw.CloseWithError(tarGz(dir, pw)) }()
-	image, err := c.Build(ctx, app, version, pr, stdout)
+	res, err := c.Build(ctx, app, version, pr, stdout)
 	pr.CloseWithError(err)
 	if err == nil {
-		fmt.Fprintf(stdout, "\nRun it with: zelie debug run %s-%s %s\n", app, version, image)
+		if res.TestCommand != "" {
+			fmt.Fprintf(stdout, "\nTests found: %s\n", res.TestCommand)
+		}
+		fmt.Fprintf(stdout, "\nRun it with: zelie debug run %s-%s %s\n", app, version, res.Image)
 	}
 	return err
 }

@@ -130,5 +130,10 @@ ALTER TABLE apps ADD COLUMN health_path TEXT NOT NULL DEFAULT '/';
 -- Set once a deployment's image has been deleted to free disk space; it
 -- can no longer be rolled back to.
 ALTER TABLE deployments ADD COLUMN pruned INTEGER NOT NULL DEFAULT 0;
+`, `
+-- The command that runs the app's tests before a new build goes live.
+-- NULL until it is known: the first build suggests one, and whatever the
+-- user sets after that, an empty string included, is kept.
+ALTER TABLE apps ADD COLUMN test_command TEXT;
 `,
 }

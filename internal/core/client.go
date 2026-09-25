@@ -107,6 +107,16 @@ func (c *Client) Remove(ctx context.Context, id string) error {
 	return c.do(ctx, http.MethodDelete, "/v1/containers/"+url.PathEscape(id), nil, nil)
 }
 
+// Wait waits until the container's process has exited and returns its exit
+// code.
+func (c *Client) Wait(ctx context.Context, id string) (int, error) {
+	var out struct {
+		ExitCode int `json:"exit_code"`
+	}
+	err := c.do(ctx, http.MethodPost, "/v1/containers/"+url.PathEscape(id)+"/wait", nil, &out)
+	return out.ExitCode, err
+}
+
 // RemoveImage deletes an image Zelie built.
 func (c *Client) RemoveImage(ctx context.Context, name string) error {
 	return c.do(ctx, http.MethodDelete, "/v1/images?"+url.Values{"name": {name}}.Encode(), nil, nil)

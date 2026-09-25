@@ -30,19 +30,25 @@ type App struct {
 	// HealthPath is what the health check asks for, when the app has a
 	// domain.
 	HealthPath string
-	CreatedAt  time.Time
+	// TestCommand runs the app's tests; empty means none. TestSet is false
+	// until it has been decided, by a build's suggestion or by the user.
+	TestCommand string
+	TestSet     bool
+	CreatedAt   time.Time
 }
 
 // ErrExists is returned when a name or domain is already taken.
 var ErrExists = errors.New("already exists")
 
-const appColumns = "id, source, image, repo, branch, port, domain, memory_mb, cpus, auto_deploy, health_path, created_at"
+const appColumns = "id, source, image, repo, branch, port, domain, memory_mb, cpus, auto_deploy, health_path, test_command, created_at"
 
 func scanApp(row scanner) (App, error) {
 	var a App
 	var created int64
-	err := row.Scan(&a.ID, &a.Source, &a.Image, &a.Repo, &a.Branch, &a.Port, &a.Domain, &a.MemoryMB, &a.CPUs, &a.AutoDeploy, &a.HealthPath, &created)
+	var test sql.NullString
+	err := row.Scan(&a.ID, &a.Source, &a.Image, &a.Repo, &a.Branch, &a.Port, &a.Domain, &a.MemoryMB, &a.CPUs, &a.AutoDeploy, &a.HealthPath, &test, &created)
 	a.CreatedAt = time.Unix(created, 0)
+	a.TestCommand, a.TestSet = test.String, test.Valid
 	if errors.Is(err, sql.ErrNoRows) {
 		return a, ErrNotFound
 	}
@@ -50,17 +56,35 @@ func scanApp(row scanner) (App, error) {
 }
 
 func (s *Store) CreateApp(ctx context.Context, a App) error {
-	_, err := s.db.ExecContext(ctx, "INSERT INTO apps ("+appColumns+") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-		a.ID, a.Source, a.Image, a.Repo, a.Branch, a.Port, a.Domain, a.MemoryMB, a.CPUs, a.AutoDeploy, a.HealthPath, a.CreatedAt.Unix())
+	_, err := s.db.ExecContext(ctx, "INSERT INTO apps ("+appColumns+") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		a.ID, a.Source, a.Image, a.Repo, a.Branch, a.Port, a.Domain, a.MemoryMB, a.CPUs, a.AutoDeploy, a.HealthPath, a.testColumn(), a.CreatedAt.Unix())
 	return uniqueErr(err)
 }
 
 // UpdateApp saves everything about an app except its id, source and
 // creation time.
 func (s *Store) UpdateApp(ctx context.Context, a App) error {
-	res, err := s.db.ExecContext(ctx, "UPDATE apps SET image = ?, repo = ?, branch = ?, port = ?, domain = ?, memory_mb = ?, cpus = ?, auto_deploy = ?, health_path = ? WHERE id = ?",
-		a.Image, a.Repo, a.Branch, a.Port, a.Domain, a.MemoryMB, a.CPUs, a.AutoDeploy, a.HealthPath, a.ID)
+	res, err := s.db.ExecContext(ctx, "UPDATE apps SET image = ?, repo = ?, branch = ?, port = ?, domain = ?, memory_mb = ?, cpus = ?, auto_deploy = ?, health_path = ?, test_command = ? WHERE id = ?",
+		a.Image, a.Repo, a.Branch, a.Port, a.Domain, a.MemoryMB, a.CPUs, a.AutoDeploy, a.HealthPath, a.testColumn(), a.ID)
 	return oneRow(res, uniqueErr(err))
+}
+
+func (a App) testColumn() any {
+	if !a.TestSet {
+		return nil
+	}
+	return a.TestCommand
+}
+
+// SuggestTest stores a build's suggested test command, unless one was
+// decided already. It reports whether it was stored.
+func (s *Store) SuggestTest(ctx context.Context, appID, command string) (bool, error) {
+	res, err := s.db.ExecContext(ctx, "UPDATE apps SET test_command = ? WHERE id = ? AND test_command IS NULL", command, appID)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n == 1, err
 }
 
 func (s *Store) App(ctx context.Context, id string) (App, error) {
@@ -155,6 +179,7 @@ func (s *Store) SetEnv(ctx context.Context, appID string, vars []EnvVar) error {
 const (
 	DeployQueued   = "queued"
 	DeployBuilding = "building"
+	DeployTesting  = "testing"
 	DeployStarting = "starting"
 	DeployLive     = "live"
 	DeployFailed   = "failed"
@@ -300,8 +325,8 @@ func (s *Store) GoLive(ctx context.Context, d Deployment, now time.Time) error {
 // FailUnfinished marks deployments that were in progress when the panel
 // stopped as failed. The panel calls it on start.
 func (s *Store) FailUnfinished(ctx context.Context, now time.Time) error {
-	_, err := s.db.ExecContext(ctx, "UPDATE deployments SET state = ?, error = ?, finished_at = ? WHERE state IN (?, ?, ?)",
-		DeployFailed, "the panel restarted during this deployment", now.Unix(), DeployQueued, DeployBuilding, DeployStarting)
+	_, err := s.db.ExecContext(ctx, "UPDATE deployments SET state = ?, error = ?, finished_at = ? WHERE state IN (?, ?, ?, ?)",
+		DeployFailed, "the panel restarted during this deployment", now.Unix(), DeployQueued, DeployBuilding, DeployTesting, DeployStarting)
 	return err
 }
 

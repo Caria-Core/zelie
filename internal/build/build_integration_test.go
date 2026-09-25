@@ -62,9 +62,9 @@ func TestBuildDockerfile(t *testing.T) {
 	b := newBuilder(t, connect(t))
 	var out bytes.Buffer
 	src := archive(t, map[string]string{"Dockerfile": "FROM docker.io/library/busybox:latest\nRUN echo ok > /ok\n"})
-	image, err := b.Build(context.Background(), Request{App: "it-app", Version: "1", Source: src}, &out)
-	if err != nil || image != "zelie.local/it-app:1" {
-		t.Fatalf("Build = %q, %v\n%s", image, err, out.String())
+	res, err := b.Build(context.Background(), Request{App: "it-app", Version: "1", Source: src}, &out)
+	if err != nil || res.Image != "zelie.local/it-app:1" || res.TestCommand != "" {
+		t.Fatalf("Build = %+v, %v\n%s", res, err, out.String())
 	}
 }
 

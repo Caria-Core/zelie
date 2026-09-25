@@ -82,12 +82,12 @@ func TestBuildWithRailpack(t *testing.T) {
 	f := &fakeEngine{}
 	b := newTestBuilder(t, f)
 	var out bytes.Buffer
-	image, err := b.Build(context.Background(), request(), &out)
+	res, err := b.Build(context.Background(), request(), &out)
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out.String())
 	}
-	if image != "zelie.local/web:abc123" || f.imported != image {
-		t.Errorf("image %q, imported %q", image, f.imported)
+	if res.Image != "zelie.local/web:abc123" || f.imported != res.Image {
+		t.Errorf("image %q, imported %q", res.Image, f.imported)
 	}
 	var steps []string
 	for _, s := range f.specs {
@@ -211,3 +211,35 @@ func TestSourceSizeLimit(t *testing.T) {
 type zeros struct{}
 
 func (zeros) Read(p []byte) (int, error) { clear(p); return len(p), nil }
+
+func TestSuggestTest(t *testing.T) {
+	for _, c := range []struct {
+		files map[string]string
+		want  string
+	}{
+		{map[string]string{"package.json": `{"scripts":{"test":"vitest run"}}`}, "npm test"},
+		{map[string]string{"package.json": `{"scripts":{"test":"jest"}}`, "pnpm-lock.yaml": ""}, "pnpm test"},
+		{map[string]string{"package.json": `{"scripts":{"test":"jest"}}`, "yarn.lock": ""}, "yarn test"},
+		{map[string]string{"package.json": `{"scripts":{"test":"echo \"Error: no test specified\" && exit 1"}}`}, ""},
+		{map[string]string{"package.json": `{"scripts":{"start":"node ."}}`}, ""},
+		{map[string]string{"package.json": `not json`}, ""},
+		{map[string]string{"requirements.txt": "flask"}, ""},
+	} {
+		dir := t.TempDir()
+		for name, body := range c.files {
+			os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644)
+		}
+		if got := suggestTest(dir); got != c.want {
+			t.Errorf("%v: %q, want %q", c.files, got, c.want)
+		}
+	}
+
+	// A package.json that is a symlink could point anywhere on the host.
+	dir := t.TempDir()
+	target := filepath.Join(t.TempDir(), "elsewhere.json")
+	os.WriteFile(target, []byte(`{"scripts":{"test":"jest"}}`), 0o644)
+	os.Symlink(target, filepath.Join(dir, "package.json"))
+	if got := suggestTest(dir); got != "" {
+		t.Errorf("followed a symlink: %q", got)
+	}
+}

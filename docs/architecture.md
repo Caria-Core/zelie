@@ -67,7 +67,9 @@ access only to the repositories you choose. On a push:
 1. The code is built in a temporary container. If the repository has a Dockerfile, it
    is used. Otherwise [Railpack](https://github.com/railwayapp/railpack) works out how
    to build it.
-2. The project's tests run, if it has any.
+2. The project's tests run, if it has any: in the new image, in a container of their
+   own, for at most ten minutes. For Node projects built with Railpack, Zelie finds the
+   test script itself; any other command can be set in the app's settings.
 3. The new version starts next to the old one and must pass a health check: an app
    with a domain must answer HTTP with a status below 500, an app without one must stay
    up.

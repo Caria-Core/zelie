@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Caria-Core/zelie/internal/build"
 	"github.com/Caria-Core/zelie/internal/engine"
 	"github.com/Caria-Core/zelie/internal/github"
 	"github.com/Caria-Core/zelie/internal/proxy"
@@ -45,6 +46,12 @@ var healthClient = &http.Client{
 	Transport:     &http.Transport{DisableKeepAlives: true},
 	CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 }
+
+// The tests of a new build must finish within testTimeout. Tests shorten
+// testSettle, the time given to the last of their output to arrive.
+const testTimeout = 10 * time.Minute
+
+var testSettle = 600 * time.Millisecond
 
 // keepImages is how many of an app's most recent live versions keep their
 // image, so they can be rolled back to.
@@ -196,13 +203,29 @@ func (s *Server) runDeployment(ctx context.Context, appID string, id int64) {
 		if d.Cause == store.CausePush {
 			commit = d.Version
 		}
-		image, commit, err := s.build(ctx, app, src, commit, status, out)
+		res, commit, err := s.build(ctx, app, src, commit, status, out)
 		d.Version = commit
 		if err != nil {
 			fail(err)
 			return
 		}
-		d.Image = image
+		d.Image = res.Image
+		if !app.TestSet && res.TestCommand != "" {
+			if ok, err := s.Store.SuggestTest(ctx, app.ID, res.TestCommand); err != nil {
+				s.Log.Error("save test command", "app", app.ID, "err", err)
+			} else if ok {
+				app.TestCommand, app.TestSet = res.TestCommand, true
+				fmt.Fprintf(out, "Found tests: %s. Change or clear this in the app's settings.\n", res.TestCommand)
+			}
+		}
+		if app.TestCommand != "" {
+			set(store.DeployTesting)
+			status.set(ctx, github.StatusPending, "Testing")
+			if err := s.runTests(ctx, app, d.Image, id, out); err != nil {
+				fail(err)
+				return
+			}
+		}
 	default:
 		d.Image = app.Image
 	}
@@ -262,11 +285,11 @@ func (s *Server) pruneImages(ctx context.Context, app string) {
 
 // build fetches the app's code and has the core build it. Without a
 // commit, it takes the newest one on the app's branch.
-func (s *Server) build(ctx context.Context, app store.App, src Source, commit string, status *commitStatus, out io.Writer) (image, _ string, err error) {
+func (s *Server) build(ctx context.Context, app store.App, src Source, commit string, status *commitStatus, out io.Writer) (res build.Result, _ string, err error) {
 	if commit == "" {
 		fmt.Fprintf(out, "Fetching %s, branch %s.\n", app.Repo, app.Branch)
 		if commit, err = src.Resolve(ctx, app.Repo, app.Branch); err != nil {
-			return "", "", err
+			return res, "", err
 		}
 	}
 	if status != nil {
@@ -276,30 +299,85 @@ func (s *Server) build(ctx context.Context, app store.App, src Source, commit st
 	fmt.Fprintf(out, "Building commit %s of %s.\n", commit[:12], app.Repo)
 	archive, err := src.Archive(ctx, app.Repo, commit)
 	if err != nil {
-		return "", commit, err
+		return res, commit, err
 	}
 	defer archive.Close()
-	image, err = s.Core.Build(ctx, app.ID, commit[:12], archive, out)
-	return image, commit, err
+	res, err = s.Core.Build(ctx, app.ID, commit[:12], archive, out)
+	return res, commit, err
 }
 
-// start runs the new container and waits until it is healthy: answering
-// HTTP if the app has a domain, since that is what the proxy will send it,
-// or staying up for a while otherwise, like a bot with no web side.
-func (s *Server) start(ctx context.Context, app store.App, image, container string, out io.Writer) error {
-	vars, err := s.Store.Env(ctx, app.ID)
+// runTests runs the app's test command in the new image, with the app's
+// variables, and fails if it exits with anything but 0.
+func (s *Server) runTests(ctx context.Context, app store.App, image string, deployment int64, out io.Writer) error {
+	fmt.Fprintf(out, "Running the tests: %s\n", app.TestCommand)
+	env, sealed, err := s.appEnv(ctx, app)
 	if err != nil {
 		return err
 	}
+	// Test runners that would otherwise wait for changes run once.
+	env = append(env, "CI=true")
+	id := fmt.Sprintf("%s-%d-test", app.ID, deployment)
+	err = s.Core.RunApp(ctx, engine.Spec{
+		ID: id, App: app.ID, Image: image, Args: []string{"sh", "-c", app.TestCommand}, Env: env, Network: app.ID,
+		MemoryBytes: app.MemoryMB << 20, CPUs: app.CPUs, Pids: defaultPids,
+	}, sealed)
+	if err != nil {
+		return fmt.Errorf("start the tests: %w", err)
+	}
+	defer s.Core.Remove(context.WithoutCancel(ctx), id)
+
+	logCtx, stopLogs := context.WithCancel(ctx)
+	logsDone := make(chan struct{})
+	go func() {
+		s.Core.Logs(logCtx, id, true, 0, out)
+		close(logsDone)
+	}()
+	waitCtx, cancel := context.WithTimeout(ctx, testTimeout)
+	defer cancel()
+	code, err := s.Core.Wait(waitCtx, id)
+	if err == nil {
+		time.Sleep(testSettle)
+	}
+	stopLogs()
+	<-logsDone
+	switch {
+	case errors.Is(waitCtx.Err(), context.DeadlineExceeded):
+		return fmt.Errorf("the tests did not finish within %s", testTimeout)
+	case err != nil:
+		return err
+	case code != 0:
+		return fmt.Errorf("the tests failed (exit code %d)", code)
+	}
+	fmt.Fprintln(out, "The tests passed.")
+	return nil
+}
+
+// appEnv returns the app's variables for a container: the plain ones and
+// the sealed ones, which only the core can open.
+func (s *Server) appEnv(ctx context.Context, app store.App) (env, sealed []string, err error) {
+	vars, err := s.Store.Env(ctx, app.ID)
+	if err != nil {
+		return nil, nil, err
+	}
 	// Most frameworks read the port to listen on from PORT.
-	env := []string{"PORT=" + strconv.Itoa(app.Port)}
-	var sealed []string
+	env = []string{"PORT=" + strconv.Itoa(app.Port)}
 	for _, v := range vars {
 		if v.Secret {
 			sealed = append(sealed, v.Value)
 		} else {
 			env = append(env, v.Name+"="+v.Value)
 		}
+	}
+	return env, sealed, nil
+}
+
+// start runs the new container and waits until it is healthy: answering
+// HTTP if the app has a domain, since that is what the proxy will send it,
+// or staying up for a while otherwise, like a bot with no web side.
+func (s *Server) start(ctx context.Context, app store.App, image, container string, out io.Writer) error {
+	env, sealed, err := s.appEnv(ctx, app)
+	if err != nil {
+		return err
 	}
 	fmt.Fprintf(out, "Starting %s.\n", image)
 	err = s.Core.RunApp(ctx, engine.Spec{

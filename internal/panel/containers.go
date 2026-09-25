@@ -10,6 +10,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/Caria-Core/zelie/internal/build"
 	"github.com/Caria-Core/zelie/internal/core"
 	"github.com/Caria-Core/zelie/internal/engine"
 	"github.com/Caria-Core/zelie/internal/secret"
@@ -21,7 +22,8 @@ type Core interface {
 	List(ctx context.Context) ([]engine.Status, error)
 	Run(ctx context.Context, s engine.Spec) error
 	RunApp(ctx context.Context, s engine.Spec, sealedEnv []string) error
-	Build(ctx context.Context, app, version string, source io.Reader, out io.Writer) (string, error)
+	Build(ctx context.Context, app, version string, source io.Reader, out io.Writer) (build.Result, error)
+	Wait(ctx context.Context, id string) (int, error)
 	SecretKey(ctx context.Context) (secret.PublicKey, error)
 	Stop(ctx context.Context, id string, graceSeconds int) error
 	Remove(ctx context.Context, id string) error

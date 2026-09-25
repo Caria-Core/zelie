@@ -4,7 +4,7 @@ export type Deployment = {
 	id: number;
 	version: string;
 	image?: string;
-	state: 'queued' | 'building' | 'starting' | 'live' | 'failed' | 'replaced' | 'skipped';
+	state: 'queued' | 'building' | 'testing' | 'starting' | 'live' | 'failed' | 'replaced' | 'skipped';
 	error?: string;
 	cause: 'manual' | 'push' | 'restart' | 'rollback';
 	// The image still exists, so it can be rolled back to.
@@ -27,6 +27,8 @@ export type App = {
 	cpus: number;
 	auto_deploy: boolean;
 	health_path: string;
+	// Runs the tests before a new build goes live; empty for none.
+	test_command: string;
 	// The live container's state, or none before anything went live.
 	state: string;
 	latest?: Deployment;
@@ -44,7 +46,7 @@ export async function reload(): Promise<void> {
 }
 
 export function inProgress(d?: Deployment): boolean {
-	return !!d && (d.state === 'queued' || d.state === 'building' || d.state === 'starting');
+	return !!d && (d.state === 'queued' || d.state === 'building' || d.state === 'testing' || d.state === 'starting');
 }
 
 // shortVersion shows a commit the way git does and an image as it is.

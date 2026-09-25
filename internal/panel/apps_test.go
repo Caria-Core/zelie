@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Caria-Core/zelie/internal/build"
 	"github.com/Caria-Core/zelie/internal/engine"
 	"github.com/Caria-Core/zelie/internal/proxy"
 	"github.com/Caria-Core/zelie/internal/secret"
@@ -23,6 +24,7 @@ import (
 
 func init() {
 	startupGrace, startupLimit, startupPoll = 20*time.Millisecond, 2*time.Second, 5*time.Millisecond
+	testSettle = time.Millisecond
 }
 
 // appCore keeps containers in memory the way the core would, and opens
@@ -34,6 +36,9 @@ type appCore struct {
 	env        map[string][]string
 	builds     []string
 	removed    []string // images
+	suggest    string   // the test command builds find
+	testExit   int
+	tests      []engine.Spec
 	failBuild  bool
 	crash      bool // new containers stop right away
 	next       byte
@@ -75,6 +80,10 @@ func (c *appCore) RunApp(_ context.Context, s engine.Spec, sealed []string) erro
 	if c.crash {
 		state = "stopped"
 	}
+	if strings.HasSuffix(s.ID, "-test") {
+		c.tests = append(c.tests, s)
+		c.tests[len(c.tests)-1].Env = env
+	}
 	c.containers[s.ID] = engine.Status{ID: s.ID, App: s.App, Image: s.Image, State: state, IP: netip.AddrFrom4([4]byte{10, 210, 0, c.next})}
 	c.env[s.ID] = env
 	return nil
@@ -94,16 +103,26 @@ func (c *appCore) Logs(_ context.Context, _ string, _ bool, _ int64, w io.Writer
 	return err
 }
 
-func (c *appCore) Build(_ context.Context, app, version string, src io.Reader, out io.Writer) (string, error) {
+func (c *appCore) Build(_ context.Context, app, version string, src io.Reader, out io.Writer) (build.Result, error) {
 	b, _ := io.ReadAll(src)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.builds = append(c.builds, app+":"+version+":"+string(b))
 	fmt.Fprintln(out, "npm install")
 	if c.failBuild {
-		return "", errors.New("the build step failed with exit code 1")
+		return build.Result{}, errors.New("the build step failed with exit code 1")
 	}
-	return engine.LocalImages + app + ":" + version, nil
+	return build.Result{Image: engine.LocalImages + app + ":" + version, TestCommand: c.suggest}, nil
+}
+
+func (c *appCore) Wait(_ context.Context, id string) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if s, ok := c.containers[id]; ok {
+		s.State = "stopped"
+		c.containers[id] = s
+	}
+	return c.testExit, nil
 }
 
 func (c *appCore) RemoveImage(_ context.Context, name string) error {
