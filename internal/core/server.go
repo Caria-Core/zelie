@@ -1,0 +1,255 @@
+// Package core is the privileged half of Zelie. It runs as root, owns
+// containerd, and accepts a small set of typed requests over a Unix socket.
+// Nothing here listens on the network.
+package core
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"net"
+	"net/http"
+	"os"
+	"path/filepath"
+	"time"
+
+	"github.com/Caria-Core/zelie/internal/engine"
+	"github.com/containerd/errdefs"
+)
+
+// Engine is what the core needs from the container engine.
+type Engine interface {
+	Run(ctx context.Context, s engine.Spec) error
+	Stop(ctx context.Context, id string, grace time.Duration) error
+	Remove(ctx context.Context, id string) error
+	List(ctx context.Context) ([]engine.Status, error)
+}
+
+// Limits a single request may ask for. They keep a confused or compromised
+// panel from asking for absurd resources in one call.
+const (
+	maxBodyBytes = 1 << 20
+	maxGrace     = 5 * time.Minute
+)
+
+type Server struct {
+	Engine  Engine
+	Paths   engine.Paths
+	Log     *slog.Logger
+	Allowed PeerPolicy
+}
+
+func (s *Server) Handler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /v1/containers", s.list)
+	mux.HandleFunc("POST /v1/containers", s.run)
+	mux.HandleFunc("POST /v1/containers/{id}/stop", s.stop)
+	mux.HandleFunc("DELETE /v1/containers/{id}", s.remove)
+	mux.HandleFunc("GET /v1/containers/{id}/logs", s.logs)
+	return s.checkPeer(mux)
+}
+
+// Serve listens on the socket until ctx is cancelled.
+func (s *Server) Serve(ctx context.Context, socket string) error {
+	if err := os.MkdirAll(filepath.Dir(socket), 0o711); err != nil {
+		return err
+	}
+	// A stale socket from a previous run would make Listen fail.
+	if err := os.Remove(socket); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	l, err := net.Listen("unix", socket)
+	if err != nil {
+		return err
+	}
+	// Everyone may connect; checkPeer decides who is let through. The kernel
+	// tells us who is on the other end, which a file mode alone cannot.
+	if err := os.Chmod(socket, 0o666); err != nil {
+		l.Close()
+		return err
+	}
+	srv := &http.Server{
+		Handler:           s.Handler(),
+		ConnContext:       withPeer,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	go func() {
+		<-ctx.Done()
+		shutdown, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		srv.Shutdown(shutdown)
+	}()
+	s.Log.Info("core listening", "socket", socket)
+	if err := srv.Serve(l); !errors.Is(err, http.ErrServerClosed) {
+		return err
+	}
+	return nil
+}
+
+func (s *Server) checkPeer(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p, ok := peerFrom(r.Context())
+		if !ok || !s.Allowed.Allows(p) {
+			s.Log.Warn("rejected request", "uid", p.UID, "pid", p.PID, "path", r.URL.Path)
+			writeError(w, http.StatusForbidden, errors.New("not allowed"))
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+type runRequest struct {
+	ID          string   `json:"id"`
+	Image       string   `json:"image"`
+	Args        []string `json:"args,omitempty"`
+	Env         []string `json:"env,omitempty"`
+	MemoryBytes int64    `json:"memory_bytes"`
+	CPUs        float64  `json:"cpus"`
+	Pids        int64    `json:"pids"`
+}
+
+type stopRequest struct {
+	GraceSeconds int `json:"grace_seconds"`
+}
+
+type containerJSON struct {
+	ID     string `json:"id"`
+	Image  string `json:"image"`
+	State  string `json:"state"`
+	Pid    uint32 `json:"pid,omitempty"`
+	Userns uint32 `json:"userns"`
+}
+
+func (s *Server) run(w http.ResponseWriter, r *http.Request) {
+	var req runRequest
+	if err := decode(w, r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	spec := engine.Spec{
+		ID: req.ID, Image: req.Image, Args: req.Args, Env: req.Env,
+		MemoryBytes: req.MemoryBytes, CPUs: req.CPUs, Pids: req.Pids,
+	}
+	if err := spec.Validate(); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := s.Engine.Run(r.Context(), spec); err != nil {
+		s.fail(w, "run", req.ID, err)
+		return
+	}
+	s.Log.Info("container started", "id", req.ID, "image", req.Image)
+	w.WriteHeader(http.StatusCreated)
+}
+
+func (s *Server) stop(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !engine.ValidID(id) {
+		writeError(w, http.StatusBadRequest, errors.New("invalid container id"))
+		return
+	}
+	req := stopRequest{GraceSeconds: 10}
+	if r.ContentLength != 0 {
+		if err := decode(w, r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+	}
+	grace := time.Duration(req.GraceSeconds) * time.Second
+	if grace < 0 || grace > maxGrace {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("grace_seconds must be between 0 and %d", int(maxGrace.Seconds())))
+		return
+	}
+	if err := s.Engine.Stop(r.Context(), id, grace); err != nil {
+		s.fail(w, "stop", id, err)
+		return
+	}
+	s.Log.Info("container stopped", "id", id)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) remove(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !engine.ValidID(id) {
+		writeError(w, http.StatusBadRequest, errors.New("invalid container id"))
+		return
+	}
+	if err := s.Engine.Remove(r.Context(), id); err != nil {
+		s.fail(w, "remove", id, err)
+		return
+	}
+	s.Log.Info("container removed", "id", id)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) list(w http.ResponseWriter, r *http.Request) {
+	list, err := s.Engine.List(r.Context())
+	if err != nil {
+		s.fail(w, "list", "", err)
+		return
+	}
+	out := make([]containerJSON, 0, len(list))
+	for _, c := range list {
+		out = append(out, containerJSON{ID: c.ID, Image: c.Image, State: c.State, Pid: c.Pid, Userns: c.Userns})
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *Server) logs(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !engine.ValidID(id) {
+		writeError(w, http.StatusBadRequest, errors.New("invalid container id"))
+		return
+	}
+	f, err := os.Open(engine.LogPathFor(s.Paths, id))
+	if errors.Is(err, os.ErrNotExist) {
+		writeError(w, http.StatusNotFound, errors.New("no logs for this container"))
+		return
+	}
+	if err != nil {
+		s.fail(w, "logs", id, err)
+		return
+	}
+	defer f.Close()
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	io.Copy(w, f)
+}
+
+// fail maps engine errors to status codes. Internal details go to the log,
+// not to the caller.
+func (s *Server) fail(w http.ResponseWriter, op, id string, err error) {
+	switch {
+	case errdefs.IsNotFound(err):
+		writeError(w, http.StatusNotFound, errors.New("container not found"))
+	case errdefs.IsAlreadyExists(err):
+		writeError(w, http.StatusConflict, errors.New("container already exists"))
+	default:
+		s.Log.Error(op+" failed", "id", id, "err", err)
+		writeError(w, http.StatusInternalServerError, fmt.Errorf("%s failed, see the core log", op))
+	}
+}
+
+func decode(w http.ResponseWriter, r *http.Request, v any) error {
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(v); err != nil {
+		return fmt.Errorf("invalid request body: %w", err)
+	}
+	if dec.More() {
+		return errors.New("invalid request body: trailing data")
+	}
+	return nil
+}
+
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(v)
+}
+
+func writeError(w http.ResponseWriter, status int, err error) {
+	writeJSON(w, status, map[string]string{"error": err.Error()})
+}

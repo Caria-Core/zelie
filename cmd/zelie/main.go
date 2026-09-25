@@ -17,8 +17,9 @@ import (
 const usage = `Usage: zelie <command>
 
 Commands:
+  core             Run the privileged core (needs root)
   engine install   Install or update Zelie's containerd and runc (needs root)
-  debug            Run containers by hand while developing (needs root)
+  debug            Send requests to the core by hand while developing
   version          Print the version and exit
   help             Show this help
 `
@@ -42,6 +43,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		}
 		fmt.Fprintf(stderr, "zelie: usage: zelie engine install\n")
 		return 2
+	case "core":
+		return runCore(stderr)
 	case "debug":
 		return debug(args[1:], stdout, stderr)
 	case "help", "--help", "-h":

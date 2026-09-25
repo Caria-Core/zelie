@@ -8,13 +8,13 @@ import (
 	"os"
 	"os/signal"
 	"text/tabwriter"
-	"time"
 
+	"github.com/Caria-Core/zelie/internal/core"
 	"github.com/Caria-Core/zelie/internal/engine"
 )
 
-// The debug commands drive containerd directly as root. They exist to test the
-// engine by hand until the core process and its socket take over this job.
+// The debug commands send requests to the core by hand. They exist to test
+// the core until the panel does this job.
 const debugUsage = `Usage: zelie debug <command>
 
 Commands:
@@ -30,36 +30,11 @@ func debug(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprint(stderr, debugUsage)
 		return 2
 	}
-	if os.Geteuid() != 0 {
-		fmt.Fprintln(stderr, "zelie: debug commands need root")
-		return 1
-	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
+	c := core.NewClient(core.DefaultSocket)
 
-	if args[0] == "logs" {
-		if len(args) != 2 || !engine.ValidID(args[1]) {
-			fmt.Fprint(stderr, debugUsage)
-			return 2
-		}
-		// Reading the log needs no containerd connection.
-		f, err := os.Open(engine.LogPathFor(engine.DefaultPaths, args[1]))
-		if err != nil {
-			fmt.Fprintf(stderr, "zelie: %v\n", err)
-			return 1
-		}
-		defer f.Close()
-		io.Copy(stdout, f)
-		return 0
-	}
-
-	e, err := engine.Connect(ctx, engine.DefaultPaths)
-	if err != nil {
-		fmt.Fprintf(stderr, "zelie: %v\n", err)
-		return 1
-	}
-	defer e.Close()
-
+	var err error
 	switch args[0] {
 	case "run":
 		fs := flag.NewFlagSet("run", flag.ContinueOnError)
@@ -74,49 +49,48 @@ func debug(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprint(stderr, debugUsage)
 			return 2
 		}
-		spec := engine.Spec{
+		err = c.Run(ctx, engine.Spec{
 			ID:          fs.Arg(0),
 			Image:       fs.Arg(1),
 			Args:        fs.Args()[2:],
 			MemoryBytes: *mem << 20,
 			CPUs:        *cpus,
 			Pids:        *pids,
+		})
+		if err == nil {
+			fmt.Fprintf(stdout, "started %s\n", fs.Arg(0))
 		}
-		if err := e.Run(ctx, spec); err != nil {
-			fmt.Fprintf(stderr, "zelie: %v\n", err)
-			return 1
-		}
-		fmt.Fprintf(stdout, "started %s\n", spec.ID)
-	case "stop", "rm":
+	case "stop", "rm", "logs":
 		if len(args) != 2 {
 			fmt.Fprint(stderr, debugUsage)
 			return 2
 		}
-		var err error
-		if args[0] == "stop" {
-			err = e.Stop(ctx, args[1], 10*time.Second)
-		} else {
-			err = e.Remove(ctx, args[1])
-		}
-		if err != nil {
-			fmt.Fprintf(stderr, "zelie: %v\n", err)
-			return 1
+		switch args[0] {
+		case "stop":
+			err = c.Stop(ctx, args[1], 10)
+		case "rm":
+			err = c.Remove(ctx, args[1])
+		case "logs":
+			err = c.Logs(ctx, args[1], stdout)
 		}
 	case "ps":
-		list, err := e.List(ctx)
-		if err != nil {
-			fmt.Fprintf(stderr, "zelie: %v\n", err)
-			return 1
+		var list []engine.Status
+		list, err = c.List(ctx)
+		if err == nil {
+			tw := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
+			fmt.Fprintln(tw, "ID\tSTATE\tPID\tUSERNS\tIMAGE")
+			for _, s := range list {
+				fmt.Fprintf(tw, "%s\t%s\t%d\t%d\t%s\n", s.ID, s.State, s.Pid, s.Userns, s.Image)
+			}
+			tw.Flush()
 		}
-		tw := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
-		fmt.Fprintln(tw, "ID\tSTATE\tPID\tUSERNS\tIMAGE")
-		for _, c := range list {
-			fmt.Fprintf(tw, "%s\t%s\t%d\t%d\t%s\n", c.ID, c.State, c.Pid, c.Userns, c.Image)
-		}
-		tw.Flush()
 	default:
 		fmt.Fprint(stderr, debugUsage)
 		return 2
+	}
+	if err != nil {
+		fmt.Fprintf(stderr, "zelie: %v\n", err)
+		return 1
 	}
 	return 0
 }

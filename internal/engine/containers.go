@@ -51,7 +51,8 @@ type Spec struct {
 	Pids        int64   // required
 }
 
-func (s Spec) validate() error {
+// Validate checks the spec before anything is created.
+func (s Spec) Validate() error {
 	switch {
 	case !validID.MatchString(s.ID):
 		return fmt.Errorf("container id %q must be lowercase letters, digits and dashes", s.ID)
@@ -95,7 +96,7 @@ func LogPathFor(p Paths, id string) string {
 
 // Run pulls the image if needed, creates the container and starts it.
 func (e *Engine) Run(ctx context.Context, s Spec) error {
-	if err := s.validate(); err != nil {
+	if err := s.Validate(); err != nil {
 		return err
 	}
 	ctx = e.ctx(ctx)
