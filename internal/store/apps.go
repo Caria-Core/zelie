@@ -16,27 +16,29 @@ const (
 
 // App is something Zelie keeps running.
 type App struct {
-	ID        string
-	Source    string
-	Image     string // for SourceImage
-	Repo      string // owner/name, for SourceGitHub
-	Branch    string
-	Port      int
-	Domain    string
-	MemoryMB  int64
-	CPUs      float64
-	CreatedAt time.Time
+	ID       string
+	Source   string
+	Image    string // for SourceImage
+	Repo     string // owner/name, for SourceGitHub
+	Branch   string
+	Port     int
+	Domain   string
+	MemoryMB int64
+	CPUs     float64
+	// AutoDeploy deploys each push to the branch, for SourceGitHub.
+	AutoDeploy bool
+	CreatedAt  time.Time
 }
 
 // ErrExists is returned when a name or domain is already taken.
 var ErrExists = errors.New("already exists")
 
-const appColumns = "id, source, image, repo, branch, port, domain, memory_mb, cpus, created_at"
+const appColumns = "id, source, image, repo, branch, port, domain, memory_mb, cpus, auto_deploy, created_at"
 
 func scanApp(row scanner) (App, error) {
 	var a App
 	var created int64
-	err := row.Scan(&a.ID, &a.Source, &a.Image, &a.Repo, &a.Branch, &a.Port, &a.Domain, &a.MemoryMB, &a.CPUs, &created)
+	err := row.Scan(&a.ID, &a.Source, &a.Image, &a.Repo, &a.Branch, &a.Port, &a.Domain, &a.MemoryMB, &a.CPUs, &a.AutoDeploy, &created)
 	a.CreatedAt = time.Unix(created, 0)
 	if errors.Is(err, sql.ErrNoRows) {
 		return a, ErrNotFound
@@ -45,16 +47,16 @@ func scanApp(row scanner) (App, error) {
 }
 
 func (s *Store) CreateApp(ctx context.Context, a App) error {
-	_, err := s.db.ExecContext(ctx, "INSERT INTO apps ("+appColumns+") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-		a.ID, a.Source, a.Image, a.Repo, a.Branch, a.Port, a.Domain, a.MemoryMB, a.CPUs, a.CreatedAt.Unix())
+	_, err := s.db.ExecContext(ctx, "INSERT INTO apps ("+appColumns+") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		a.ID, a.Source, a.Image, a.Repo, a.Branch, a.Port, a.Domain, a.MemoryMB, a.CPUs, a.AutoDeploy, a.CreatedAt.Unix())
 	return uniqueErr(err)
 }
 
 // UpdateApp saves everything about an app except its id, source and
 // creation time.
 func (s *Store) UpdateApp(ctx context.Context, a App) error {
-	res, err := s.db.ExecContext(ctx, "UPDATE apps SET image = ?, repo = ?, branch = ?, port = ?, domain = ?, memory_mb = ?, cpus = ? WHERE id = ?",
-		a.Image, a.Repo, a.Branch, a.Port, a.Domain, a.MemoryMB, a.CPUs, a.ID)
+	res, err := s.db.ExecContext(ctx, "UPDATE apps SET image = ?, repo = ?, branch = ?, port = ?, domain = ?, memory_mb = ?, cpus = ?, auto_deploy = ? WHERE id = ?",
+		a.Image, a.Repo, a.Branch, a.Port, a.Domain, a.MemoryMB, a.CPUs, a.AutoDeploy, a.ID)
 	return oneRow(res, uniqueErr(err))
 }
 
@@ -64,6 +66,26 @@ func (s *Store) App(ctx context.Context, id string) (App, error) {
 
 func (s *Store) Apps(ctx context.Context) ([]App, error) {
 	rows, err := s.db.QueryContext(ctx, "SELECT "+appColumns+" FROM apps ORDER BY id")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []App
+	for rows.Next() {
+		a, err := scanApp(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+// PushTargets lists the apps that deploy pushes to a repository's branch.
+// GitHub names are case-insensitive.
+func (s *Store) PushTargets(ctx context.Context, repo, branch string) ([]App, error) {
+	rows, err := s.db.QueryContext(ctx, "SELECT "+appColumns+" FROM apps WHERE source = ? AND repo = ? COLLATE NOCASE AND branch = ? AND auto_deploy ORDER BY id",
+		SourceGitHub, repo, branch)
 	if err != nil {
 		return nil, err
 	}
@@ -126,7 +148,7 @@ func (s *Store) SetEnv(ctx context.Context, appID string, vars []EnvVar) error {
 }
 
 // Deployment states. A deployment moves forward through them and ends in
-// one of the last three.
+// one of the last four.
 const (
 	DeployQueued   = "queued"
 	DeployBuilding = "building"
@@ -134,26 +156,35 @@ const (
 	DeployLive     = "live"
 	DeployFailed   = "failed"
 	DeployReplaced = "replaced" // was live until a newer one took over
+	DeploySkipped  = "skipped"  // a newer one came before it started
+)
+
+// What started a deployment.
+const (
+	CauseManual = "manual"
+	CausePush   = "push"
 )
 
 // Deployment is one attempt to put a version of an app live.
 type Deployment struct {
 	ID         int64
 	AppID      string
-	Version    string
+	Version    string // a branch until the commit is known
 	Image      string
+	Cause      string
+	Message    string // first line of the pushed commit's message
 	State      string
 	Error      string
 	CreatedAt  time.Time
 	FinishedAt time.Time // zero while in progress
 }
 
-const deploymentColumns = "id, app_id, version, image, state, error, created_at, coalesce(finished_at, 0)"
+const deploymentColumns = "id, app_id, version, image, state, error, cause, message, created_at, coalesce(finished_at, 0)"
 
 func scanDeployment(row scanner) (Deployment, error) {
 	var d Deployment
 	var created, finished int64
-	err := row.Scan(&d.ID, &d.AppID, &d.Version, &d.Image, &d.State, &d.Error, &created, &finished)
+	err := row.Scan(&d.ID, &d.AppID, &d.Version, &d.Image, &d.State, &d.Error, &d.Cause, &d.Message, &created, &finished)
 	d.CreatedAt = time.Unix(created, 0)
 	if finished != 0 {
 		d.FinishedAt = time.Unix(finished, 0)
@@ -164,10 +195,13 @@ func scanDeployment(row scanner) (Deployment, error) {
 	return d, err
 }
 
-// CreateDeployment adds a queued deployment and returns its id.
-func (s *Store) CreateDeployment(ctx context.Context, appID, version string, now time.Time) (int64, error) {
-	res, err := s.db.ExecContext(ctx, "INSERT INTO deployments (app_id, version, state, created_at) VALUES (?, ?, ?, ?)",
-		appID, version, DeployQueued, now.Unix())
+// CreateDeployment adds d as a queued deployment and returns its id.
+func (s *Store) CreateDeployment(ctx context.Context, d Deployment, now time.Time) (int64, error) {
+	if d.Cause == "" {
+		d.Cause = CauseManual
+	}
+	res, err := s.db.ExecContext(ctx, "INSERT INTO deployments (app_id, version, cause, message, state, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+		d.AppID, d.Version, d.Cause, d.Message, DeployQueued, now.Unix())
 	if err != nil {
 		return 0, err
 	}
@@ -196,6 +230,13 @@ func (s *Store) Deployments(ctx context.Context, appID string, limit int) ([]Dep
 	return out, rows.Err()
 }
 
+// HasNewer reports whether the app has a deployment created after d.
+func (s *Store) HasNewer(ctx context.Context, d Deployment) (bool, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, "SELECT count(*) FROM deployments WHERE app_id = ? AND id > ?", d.AppID, d.ID).Scan(&n)
+	return n > 0, err
+}
+
 // LiveDeployment returns the deployment serving an app, if any.
 func (s *Store) LiveDeployment(ctx context.Context, appID string) (Deployment, error) {
 	return scanDeployment(s.db.QueryRowContext(ctx, "SELECT "+deploymentColumns+" FROM deployments WHERE app_id = ? AND state = ?", appID, DeployLive))
@@ -204,7 +245,7 @@ func (s *Store) LiveDeployment(ctx context.Context, appID string) (Deployment, e
 // SetDeployment records progress. Ending states also set the finish time.
 func (s *Store) SetDeployment(ctx context.Context, d Deployment, now time.Time) error {
 	var finished any
-	if d.State == DeployLive || d.State == DeployFailed || d.State == DeployReplaced {
+	if d.State == DeployLive || d.State == DeployFailed || d.State == DeployReplaced || d.State == DeploySkipped {
 		finished = now.Unix()
 	}
 	_, err := s.db.ExecContext(ctx, "UPDATE deployments SET version = ?, image = ?, state = ?, error = ?, finished_at = coalesce(finished_at, ?) WHERE id = ?",

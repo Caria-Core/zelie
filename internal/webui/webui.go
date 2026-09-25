@@ -97,7 +97,8 @@ func policyFor(index []byte, bundles ...[]byte) string {
 		"connect-src 'self'",
 		"manifest-src 'self'",
 		"base-uri 'none'",
-		"form-action 'self'",
+		// The GitHub connection posts the App manifest to GitHub.
+		"form-action 'self' https://github.com",
 		"frame-ancestors 'none'",
 	}, "; ")
 }

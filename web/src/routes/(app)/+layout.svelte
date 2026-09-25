@@ -86,6 +86,12 @@
 			<div class="flex flex-col gap-0.5 text-sm">
 				<div class="px-1 pb-2"><ThemeSwitch /></div>
 				<a
+					href="/github"
+					class="rounded-lg px-2 py-1.5 text-muted hover:bg-hover hover:text-fg {page.url.pathname.startsWith('/github')
+						? 'bg-selected text-fg'
+						: ''}">{t('nav.github')}</a
+				>
+				<a
 					href="/account"
 					class="truncate rounded-lg px-2 py-1.5 text-muted hover:bg-hover hover:text-fg {page.url.pathname === '/account'
 						? 'bg-selected text-fg'

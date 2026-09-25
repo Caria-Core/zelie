@@ -4,6 +4,7 @@
 	import { api } from '$lib/api';
 	import { reload } from '$lib/apps.svelte';
 	import { messageOf } from '$lib/errors';
+	import { repositories, status, type Repository } from '$lib/github';
 	import { t } from '$lib/i18n';
 	import AppIcon from '$lib/ui/AppIcon.svelte';
 	import Button from '$lib/ui/Button.svelte';
@@ -25,6 +26,28 @@
 	let cpus = $state('1');
 	let error = $state('');
 	let busy = $state(false);
+
+	// With GitHub connected, the repositories Zelie was given are offered as
+	// the name is typed, and picking one fills in its default branch.
+	let connected = $state<boolean | null>(null);
+	let repos = $state<Repository[]>([]);
+	let branchTouched = $state(false);
+	let asked = false;
+	$effect(() => {
+		if (!github || asked) return;
+		asked = true;
+		status()
+			.then(async (s) => {
+				connected = s.connected;
+				if (s.connected) repos = await repositories();
+			})
+			.catch(() => {});
+	});
+	const cleanRepo = $derived(repo.trim().replace(/^https:\/\/github\.com\//, '').replace(/\.git$/, ''));
+	$effect(() => {
+		const r = repos.find((x) => x.full_name.toLowerCase() === cleanRepo.toLowerCase());
+		if (r && !branchTouched) branch = r.default_branch;
+	});
 
 	// Suggest a name from the repository or image as it is typed.
 	let named = $state(false);
@@ -51,7 +74,7 @@
 				memory_mb: Number(memory),
 				cpus: Number(cpus)
 			};
-			if (github) Object.assign(body, { repo: repo.trim().replace(/^https:\/\/github\.com\//, '').replace(/\.git$/, ''), branch });
+			if (github) Object.assign(body, { repo: cleanRepo, branch });
 			else body.image = image;
 			await api('POST', '/apps', body);
 			await reload();
@@ -77,8 +100,21 @@
 		</div>
 		<form class="flex flex-col gap-4" onsubmit={submit}>
 			{#if github}
-				<Field label={t('new.repo')} hint={t('new.repoHint')} placeholder="owner/name" required autocomplete="off" bind:value={repo} />
-				<Field label={t('new.branch')} required autocomplete="off" bind:value={branch} />
+				<div class="flex flex-col gap-1.5">
+					<Field label={t('new.repo')} placeholder="owner/name" required autocomplete="off" list="repos" bind:value={repo} />
+					<datalist id="repos">
+						{#each repos as r (r.full_name)}<option value={r.full_name}></option>{/each}
+					</datalist>
+					<p class="text-sm text-muted">
+						{#if connected}
+							{t('new.repoHintConnected')}
+						{:else}
+							{t('new.repoHint')}
+							{#if connected === false}<a href="/github" class="text-fg underline underline-offset-2">{t('new.repoHintConnect')}</a>{/if}
+						{/if}
+					</p>
+				</div>
+				<Field label={t('new.branch')} required autocomplete="off" bind:value={branch} oninput={() => (branchTouched = true)} />
 			{:else}
 				<Field label={t('new.image')} placeholder="nginx:alpine" required autocomplete="off" bind:value={image} />
 			{/if}

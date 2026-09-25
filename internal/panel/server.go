@@ -42,9 +42,14 @@ type Server struct {
 	// traffic; requests from root come from the zelie command on the server.
 	ProxyUID uint32
 	Now      func() time.Time
+	// Where GitHub is. Empty means the real one; tests set them.
+	GitHubAPI  string
+	GitHubWeb  string
+	GitHubHTTP *http.Client
 
 	guards  *guards
 	deploys deploys
+	gh      ghCache
 	ctx     context.Context // lives as long as the server
 }
 
@@ -101,6 +106,12 @@ func (s *Server) Handler() http.Handler {
 	web.HandleFunc("POST /api/apps/{app}/deployments", s.signedIn(s.newDeployment))
 	web.HandleFunc("GET /api/apps/{app}/deployments/{id}/log", s.signedIn(s.deploymentLog))
 	web.HandleFunc("GET /api/apps/{app}/logs", s.signedIn(s.appLogs))
+	web.HandleFunc("GET /api/github", s.signedIn(s.githubStatus))
+	web.HandleFunc("POST /api/github/manifest", s.confirmed(s.githubManifest))
+	web.HandleFunc("POST /api/github/app", s.signedIn(s.githubCreated))
+	web.HandleFunc("DELETE /api/github", s.confirmed(s.githubDisconnect))
+	web.HandleFunc("GET /api/github/repos", s.signedIn(s.githubRepos))
+	web.HandleFunc("POST /api/github/webhook", s.githubWebhook)
 	web.HandleFunc("GET /api/", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, errors.New("no such API endpoint"))
 	})

@@ -94,4 +94,34 @@ CREATE TABLE deployments (
 ) STRICT;
 CREATE INDEX deployments_app ON deployments(app_id, id);
 `,
+	`
+-- The panel's own GitHub App (package github). There is at most one. Its
+-- private key and webhook secret are encrypted with the panel key.
+CREATE TABLE github_app (
+	one            INTEGER PRIMARY KEY CHECK (one = 1),
+	app_id         INTEGER NOT NULL,
+	slug           TEXT NOT NULL,
+	owner          TEXT NOT NULL,
+	html_url       TEXT NOT NULL,
+	base_url       TEXT NOT NULL, -- the panel's address the App was made for
+	private_key    BLOB NOT NULL,
+	webhook_secret BLOB NOT NULL,
+	created_at     INTEGER NOT NULL
+) STRICT;
+
+-- Webhook deliveries already acted on, so a recorded one sent again does
+-- nothing.
+CREATE TABLE github_deliveries (
+	id          TEXT PRIMARY KEY,
+	received_at INTEGER NOT NULL
+) STRICT;
+
+ALTER TABLE apps ADD COLUMN auto_deploy INTEGER NOT NULL DEFAULT 1;
+UPDATE apps SET auto_deploy = 0 WHERE source != 'github';
+
+-- What started a deployment (manual or push), and for a push the first
+-- line of its commit message.
+ALTER TABLE deployments ADD COLUMN cause TEXT NOT NULL DEFAULT 'manual';
+ALTER TABLE deployments ADD COLUMN message TEXT NOT NULL DEFAULT '';
+`,
 }

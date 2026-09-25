@@ -128,13 +128,13 @@ func TestApps(t *testing.T) {
 		t.Fatalf("env %+v", env)
 	}
 
-	id1, _ := s.CreateDeployment(ctx, "web", "abc", now)
+	id1, _ := s.CreateDeployment(ctx, Deployment{AppID: "web", Version: "abc"}, now)
 	d1, _ := s.Deployment(ctx, "web", id1)
 	d1.Image = "zelie.local/web:abc"
 	if err := s.GoLive(ctx, d1, now); err != nil {
 		t.Fatal(err)
 	}
-	id2, _ := s.CreateDeployment(ctx, "web", "def", now)
+	id2, _ := s.CreateDeployment(ctx, Deployment{AppID: "web", Version: "def"}, now)
 	d2, _ := s.Deployment(ctx, "web", id2)
 	d2.Image = "zelie.local/web:def"
 	s.GoLive(ctx, d2, now)
@@ -149,7 +149,7 @@ func TestApps(t *testing.T) {
 		t.Error("a deployment was found under another app")
 	}
 
-	id3, _ := s.CreateDeployment(ctx, "web", "ghi", now)
+	id3, _ := s.CreateDeployment(ctx, Deployment{AppID: "web", Version: "ghi"}, now)
 	s.FailUnfinished(ctx, now)
 	if d3, _ := s.Deployment(ctx, "web", id3); d3.State != DeployFailed || d3.FinishedAt.IsZero() {
 		t.Errorf("unfinished deployment: %+v", d3)
@@ -163,5 +163,62 @@ func TestApps(t *testing.T) {
 	}
 	if env, _ := s.Env(ctx, "web"); len(env) != 0 {
 		t.Error("variables outlived their app")
+	}
+}
+
+func TestGitHub(t *testing.T) {
+	ctx := context.Background()
+	s := open(t)
+	now := time.Unix(1_800_000_000, 0)
+	if _, err := s.GitHubApp(ctx); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("before connecting: %v", err)
+	}
+	g := GitHubApp{AppID: 1, Slug: "zelie", Owner: "efe", BaseURL: "https://p", Key: []byte("k"), WebhookSecret: []byte("w"), CreatedAt: now}
+	s.SetGitHubApp(ctx, g)
+	g.Slug = "zelie-2"
+	s.SetGitHubApp(ctx, g)
+	if got, err := s.GitHubApp(ctx); err != nil || got.Slug != "zelie-2" || string(got.Key) != "k" {
+		t.Fatalf("app %+v, %v", got, err)
+	}
+
+	for _, a := range []App{
+		{ID: "web", Repo: "Owner/Web", Branch: "main", AutoDeploy: true},
+		{ID: "staging", Repo: "owner/web", Branch: "dev", AutoDeploy: true},
+		{ID: "manual", Repo: "owner/web", Branch: "main"},
+	} {
+		a.Source, a.Port, a.MemoryMB, a.CPUs, a.CreatedAt = SourceGitHub, 3000, 512, 1, now
+		if err := s.CreateApp(ctx, a); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if apps, _ := s.PushTargets(ctx, "OWNER/web", "main"); len(apps) != 1 || apps[0].ID != "web" {
+		t.Errorf("push targets %+v", apps)
+	}
+
+	id1, _ := s.CreateDeployment(ctx, Deployment{AppID: "web", Version: "a", Cause: CausePush, Message: "m"}, now)
+	d1, _ := s.Deployment(ctx, "web", id1)
+	if d1.Cause != CausePush || d1.Message != "m" {
+		t.Errorf("deployment %+v", d1)
+	}
+	if newer, _ := s.HasNewer(ctx, d1); newer {
+		t.Error("newer before there is one")
+	}
+	s.CreateDeployment(ctx, Deployment{AppID: "staging", Version: "b"}, now)
+	if newer, _ := s.HasNewer(ctx, d1); newer {
+		t.Error("another app's deployment counted")
+	}
+	s.CreateDeployment(ctx, Deployment{AppID: "web", Version: "c"}, now)
+	if newer, _ := s.HasNewer(ctx, d1); !newer {
+		t.Error("newer not seen")
+	}
+
+	if first, _ := s.FirstDelivery(ctx, "x", now); !first {
+		t.Error("first delivery")
+	}
+	if first, _ := s.FirstDelivery(ctx, "x", now.Add(time.Hour)); first {
+		t.Error("the same delivery twice")
+	}
+	if first, _ := s.FirstDelivery(ctx, "x", now.Add(8*24*time.Hour)); !first {
+		t.Error("a delivery id is kept forever")
 	}
 }

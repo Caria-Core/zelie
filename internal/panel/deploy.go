@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Caria-Core/zelie/internal/engine"
+	"github.com/Caria-Core/zelie/internal/github"
 	"github.com/Caria-Core/zelie/internal/proxy"
 	"github.com/Caria-Core/zelie/internal/store"
 )
@@ -81,13 +82,18 @@ func (d *deploys) lock(app string) func() {
 	return l.Unlock
 }
 
-// deploy queues a new deployment of the app and returns its id.
-func (s *Server) deploy(ctx context.Context, app store.App) (int64, error) {
-	version := app.Image
-	if app.Source == store.SourceGitHub {
-		version = app.Branch
+// deploy queues a new deployment of the app and returns its id. d may name
+// the commit to deploy and what caused the deployment; by default it is the
+// newest commit of the app's branch, or its image.
+func (s *Server) deploy(ctx context.Context, app store.App, d store.Deployment) (int64, error) {
+	d.AppID = app.ID
+	if d.Version == "" {
+		d.Version = app.Image
+		if app.Source == store.SourceGitHub {
+			d.Version = app.Branch
+		}
 	}
-	id, err := s.Store.CreateDeployment(ctx, app.ID, version, s.now())
+	id, err := s.Store.CreateDeployment(ctx, d, s.now())
 	if err != nil {
 		return 0, err
 	}
@@ -136,11 +142,25 @@ func (s *Server) runDeployment(ctx context.Context, appID string, id int64) {
 			s.Log.Error("save deployment", "app", appID, "id", id, "err", err)
 		}
 	}
+	var status *commitStatus
 	fail := func(err error) {
 		fmt.Fprintf(out, "\nDeployment failed: %v\n", err)
 		d.Error = err.Error()
 		set(store.DeployFailed)
+		status.set(ctx, github.StatusFailure, "Deployment failed: "+err.Error())
 		s.Log.Warn("deployment failed", "app", appID, "id", id, "err", err)
+	}
+
+	// Only the newest of several queued deployments is worth the work.
+	// Waiting deployments do not start in order, so an older one must also
+	// not undo a newer one that already ran.
+	if newer, err := s.Store.HasNewer(ctx, d); err != nil {
+		fail(err)
+		return
+	} else if newer {
+		fmt.Fprintln(out, "A newer deployment came before this one started, so this one was skipped.")
+		set(store.DeploySkipped)
+		return
 	}
 
 	// Settings may have changed while the deployment waited its turn.
@@ -152,7 +172,13 @@ func (s *Server) runDeployment(ctx context.Context, appID string, id int64) {
 
 	if app.Source == store.SourceGitHub {
 		set(store.DeployBuilding)
-		image, commit, err := s.build(ctx, app, out)
+		var src Source
+		src, status = s.sourceFor(ctx, app.Repo, out)
+		commit := ""
+		if d.Cause == store.CausePush {
+			commit = d.Version
+		}
+		image, commit, err := s.build(ctx, app, src, commit, status, out)
 		d.Version = commit
 		if err != nil {
 			fail(err)
@@ -180,19 +206,26 @@ func (s *Server) runDeployment(ctx context.Context, appID string, id int64) {
 		return
 	}
 	fmt.Fprintln(out, "The new version is live.")
+	status.set(ctx, github.StatusSuccess, "Live")
 	s.Log.Info("deployment live", "app", app.ID, "id", id, "image", d.Image)
 	s.removeOldContainers(ctx, app.ID, container, out)
 }
 
-// build fetches the app's code and has the core build it.
-func (s *Server) build(ctx context.Context, app store.App, out io.Writer) (image, commit string, err error) {
-	fmt.Fprintf(out, "Fetching %s, branch %s.\n", app.Repo, app.Branch)
-	commit, err = s.Source.Resolve(ctx, app.Repo, app.Branch)
-	if err != nil {
-		return "", "", err
+// build fetches the app's code and has the core build it. Without a
+// commit, it takes the newest one on the app's branch.
+func (s *Server) build(ctx context.Context, app store.App, src Source, commit string, status *commitStatus, out io.Writer) (image, _ string, err error) {
+	if commit == "" {
+		fmt.Fprintf(out, "Fetching %s, branch %s.\n", app.Repo, app.Branch)
+		if commit, err = src.Resolve(ctx, app.Repo, app.Branch); err != nil {
+			return "", "", err
+		}
 	}
-	fmt.Fprintf(out, "Building commit %s.\n", commit[:12])
-	archive, err := s.Source.Archive(ctx, app.Repo, commit)
+	if status != nil {
+		status.commit, status.app = commit, app.ID
+		status.set(ctx, github.StatusPending, "Building")
+	}
+	fmt.Fprintf(out, "Building commit %s of %s.\n", commit[:12], app.Repo)
+	archive, err := src.Archive(ctx, app.Repo, commit)
 	if err != nil {
 		return "", commit, err
 	}

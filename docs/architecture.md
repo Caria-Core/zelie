@@ -72,7 +72,19 @@ access only to the repositories you choose. On a push:
 4. Traffic moves to the new version. The old one is kept for a quick rollback.
 
 If any step fails, the old version keeps serving traffic and the panel shows what went
-wrong.
+wrong. The commit on GitHub is marked as building, live or failed.
+
+The App is created with GitHub's manifest flow: the panel describes the App, you confirm
+it on GitHub, and GitHub hands the panel its private key and webhook secret. Both are
+encrypted with the panel's key before they are stored. The App may read code and set
+commit statuses, nothing else. It signs its requests to GitHub with short-lived tokens
+that reach only the repositories it was given.
+
+Webhooks need no login, so each one is checked against the webhook secret before
+anything else, and a delivery that was already handled is ignored if it arrives again.
+For pushes to work, GitHub has to reach the panel at its domain; the GitHub page in the
+panel shows whether its last delivery arrived. Public repositories deploy without the
+App, when you start the deployment yourself.
 
 Builds run [BuildKit](https://github.com/moby/buildkit) inside an ordinary Zelie
 container, with its own user namespace and resource limits, not as a service on the

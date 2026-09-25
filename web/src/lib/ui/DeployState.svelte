@@ -9,7 +9,8 @@
 		starting: 'bg-selected text-fg',
 		live: 'bg-ok/15 text-ok',
 		failed: 'bg-danger/15 text-danger',
-		replaced: 'bg-hover text-muted'
+		replaced: 'bg-hover text-muted',
+		skipped: 'bg-hover text-muted'
 	};
 	const moving = $derived(state === 'queued' || state === 'building' || state === 'starting');
 </script>

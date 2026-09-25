@@ -14,10 +14,15 @@ Website, documentation and support: [zelie.cariacore.com](https://zelie.cariacor
 
 ## What works today
 
-- **Apps from GitHub.** Give it a public repository and a branch. Zelie fetches the
-  code, builds it with the repository's Dockerfile or, when there is none, works out the
-  build on its own with [Railpack](https://github.com/railwayapp/railpack), which
-  knows Node, Python, Go, static sites and more.
+- **Apps from GitHub.** Give it a repository and a branch. Zelie fetches the code,
+  builds it with the repository's Dockerfile or, when there is none, works out the build
+  on its own with [Railpack](https://github.com/railwayapp/railpack), which knows Node,
+  Python, Go, static sites and more.
+- **Push to deploy.** Connect GitHub and Zelie creates a GitHub App in your own account,
+  with access only to the repositories you choose. Private repositories work, every push
+  to the branch is deployed, and the commit on GitHub shows whether it went live. If
+  several pushes arrive during a build, only the newest is deployed next. So far this has
+  been tested against a stand-in for GitHub's API, not yet against GitHub itself.
 - **Apps from an image.** Run any public image, such as `nginx:alpine`.
 - **Deployments that fail safely.** A new version starts next to the old one and must
   stay up before the domain moves over. If the build fails or the app crashes on start,
@@ -40,8 +45,8 @@ Website, documentation and support: [zelie.cariacore.com](https://zelie.cariacor
 
 ## What is coming
 
-- **Push to deploy** and private repositories, through a GitHub App that Zelie creates
-  in your own account with access to the repositories you choose.
+- **Safer deployments.** Run the project's tests before a version goes live, check its
+  health over HTTP, and roll back to an earlier version with one click.
 - **Game servers.** Import existing Pterodactyl and Pelican eggs, with a live console,
   SFTP, a file manager, startup settings, schedules and port management.
 - **Databases.** MariaDB, PostgreSQL and Redis with one click, never exposed to the

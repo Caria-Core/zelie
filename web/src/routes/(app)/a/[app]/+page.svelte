@@ -31,8 +31,11 @@
 				<div class="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
 					<div class="flex min-w-0 items-center gap-3">
 						<DeployState state={d.state} />
-						<span class="truncate font-mono text-sm">{shortVersion(d.version)}</span>
-						<span class="text-sm text-muted">{ago(d.created_at)}{d.finished_at ? ' · ' + took(d) : ''}</span>
+						<span class="shrink-0 font-mono text-sm">{shortVersion(d.version)}</span>
+						{#if d.message}<span class="min-w-0 truncate text-sm" title={d.message}>{d.message}</span>{/if}
+						<span class="shrink-0 text-sm text-muted"
+							>{ago(d.created_at)}{d.cause === 'push' ? ' · ' + t('deploy.push') : ''}{d.finished_at ? ' · ' + took(d) : ''}</span
+						>
 					</div>
 					<button class="text-sm text-muted hover:text-fg" onclick={() => (opened = opened === d.id ? -1 : d.id)}
 						>{opened === d.id ? t('app.hideLog') : t('app.buildLog')}</button

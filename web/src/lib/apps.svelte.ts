@@ -4,8 +4,11 @@ export type Deployment = {
 	id: number;
 	version: string;
 	image?: string;
-	state: 'queued' | 'building' | 'starting' | 'live' | 'failed' | 'replaced';
+	state: 'queued' | 'building' | 'starting' | 'live' | 'failed' | 'replaced' | 'skipped';
 	error?: string;
+	cause: 'manual' | 'push';
+	// The first line of the pushed commit's message.
+	message?: string;
 	created_at: string;
 	finished_at?: string;
 };
@@ -20,6 +23,7 @@ export type App = {
 	domain?: string;
 	memory_mb: number;
 	cpus: number;
+	auto_deploy: boolean;
 	// The live container's state, or none before anything went live.
 	state: string;
 	latest?: Deployment;

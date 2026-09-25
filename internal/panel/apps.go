@@ -25,12 +25,14 @@ type deploymentJSON struct {
 	Image      string     `json:"image,omitempty"`
 	State      string     `json:"state"`
 	Error      string     `json:"error,omitempty"`
+	Cause      string     `json:"cause"`
+	Message    string     `json:"message,omitempty"`
 	CreatedAt  time.Time  `json:"created_at"`
 	FinishedAt *time.Time `json:"finished_at,omitempty"`
 }
 
 func deploymentOut(d store.Deployment) deploymentJSON {
-	out := deploymentJSON{ID: d.ID, Version: d.Version, Image: d.Image, State: d.State, Error: d.Error, CreatedAt: d.CreatedAt}
+	out := deploymentJSON{ID: d.ID, Version: d.Version, Image: d.Image, State: d.State, Error: d.Error, Cause: d.Cause, Message: d.Message, CreatedAt: d.CreatedAt}
 	if !d.FinishedAt.IsZero() {
 		out.FinishedAt = &d.FinishedAt
 	}
@@ -47,6 +49,8 @@ type appJSON struct {
 	Domain   string  `json:"domain,omitempty"`
 	MemoryMB int64   `json:"memory_mb"`
 	CPUs     float64 `json:"cpus"`
+	// AutoDeploy deploys every push to the branch.
+	AutoDeploy bool `json:"auto_deploy"`
 	// State is the live container's: running, stopped, or none when
 	// nothing has gone live yet.
 	State  string          `json:"state"`
@@ -57,7 +61,7 @@ type appJSON struct {
 // fetched once by the caller.
 func (s *Server) appOut(ctx context.Context, a store.App, containers []engine.Status) (appJSON, error) {
 	out := appJSON{ID: a.ID, Source: a.Source, Image: a.Image, Repo: a.Repo, Branch: a.Branch,
-		Port: a.Port, Domain: a.Domain, MemoryMB: a.MemoryMB, CPUs: a.CPUs, State: "none"}
+		Port: a.Port, Domain: a.Domain, MemoryMB: a.MemoryMB, CPUs: a.CPUs, AutoDeploy: a.AutoDeploy, State: "none"}
 	recent, err := s.Store.Deployments(ctx, a.ID, 1)
 	if err != nil {
 		return out, err
@@ -117,6 +121,8 @@ type appRequest struct {
 	Domain   *string  `json:"domain"`
 	MemoryMB *int64   `json:"memory_mb"`
 	CPUs     *float64 `json:"cpus"`
+	// AutoDeploy is only for apps built from GitHub.
+	AutoDeploy *bool `json:"auto_deploy"`
 }
 
 // apply copies the fields that were sent onto a and checks the result.
@@ -139,6 +145,12 @@ func (req appRequest) apply(a *store.App) error {
 	}
 	if req.CPUs != nil {
 		a.CPUs = *req.CPUs
+	}
+	if req.AutoDeploy != nil {
+		if a.Source != store.SourceGitHub {
+			return errors.New("only apps built from GitHub deploy on push")
+		}
+		a.AutoDeploy = *req.AutoDeploy
 	}
 	switch {
 	case a.Source == store.SourceImage && (a.Image == "" || len(a.Image) > 255 || strings.ContainsAny(a.Image, " \t\n")):
@@ -191,7 +203,7 @@ func (s *Server) createApp(w http.ResponseWriter, r *http.Request) {
 	a := store.App{ID: req.ID, Source: req.Source, MemoryMB: defaultMemoryMB, CPUs: defaultCPUs, CreatedAt: s.now()}
 	switch a.Source {
 	case store.SourceGitHub:
-		a.Branch, a.Port = "main", 3000
+		a.Branch, a.Port, a.AutoDeploy = "main", 3000, true
 	case store.SourceImage:
 		a.Port = 80
 	default:
@@ -214,7 +226,7 @@ func (s *Server) createApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.Log.Info("app created", "app", a.ID, "user", loginFrom(r.Context()).account.ID)
-	if _, err := s.deploy(r.Context(), a); err != nil {
+	if _, err := s.deploy(r.Context(), a, store.Deployment{}); err != nil {
 		s.fail(w, "deploy", err)
 		return
 	}
@@ -430,7 +442,7 @@ func (s *Server) newDeployment(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	id, err := s.deploy(r.Context(), a)
+	id, err := s.deploy(r.Context(), a, store.Deployment{})
 	if err != nil {
 		s.fail(w, "deploy", err)
 		return

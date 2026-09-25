@@ -11,7 +11,7 @@
 	import Field from '$lib/ui/Field.svelte';
 
 	const app = $derived(current.app!);
-	let form = $state({ repo: '', branch: '', image: '', port: '', domain: '', memory: '', cpus: '' });
+	let form = $state({ repo: '', branch: '', image: '', port: '', domain: '', memory: '', cpus: '', autoDeploy: true });
 	let error = $state('');
 	let saved = $state(false);
 	let busy = $state(false);
@@ -27,7 +27,8 @@
 			port: String(app.port),
 			domain: app.domain ?? '',
 			memory: String(app.memory_mb),
-			cpus: String(app.cpus)
+			cpus: String(app.cpus),
+			autoDeploy: app.auto_deploy
 		};
 	});
 
@@ -43,7 +44,7 @@
 				memory_mb: Number(form.memory),
 				cpus: Number(form.cpus)
 			};
-			if (app.source === 'github') Object.assign(body, { repo: form.repo, branch: form.branch });
+			if (app.source === 'github') Object.assign(body, { repo: form.repo, branch: form.branch, auto_deploy: form.autoDeploy });
 			else body.image = form.image;
 			await api('PATCH', `/apps/${app.id}`, body);
 			await Promise.all([load(app.id), reload()]);
@@ -74,6 +75,10 @@
 		{#if app.source === 'github'}
 			<Field label={t('new.repo')} required autocomplete="off" bind:value={form.repo} />
 			<Field label={t('new.branch')} required autocomplete="off" bind:value={form.branch} />
+			<label class="flex items-start gap-2.5 text-[15px]">
+				<input type="checkbox" class="mt-1" bind:checked={form.autoDeploy} />
+				<span>{t('settings.autoDeploy')}<span class="block text-sm text-muted">{t('settings.autoDeployHint')}</span></span>
+			</label>
 		{:else}
 			<Field label={t('new.image')} required autocomplete="off" bind:value={form.image} />
 		{/if}
