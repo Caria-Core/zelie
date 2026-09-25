@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -21,6 +22,7 @@ type fakeEngine struct {
 	fail       string // step that exits with an error
 	specs      []engine.Spec
 	imported   string
+	secrets    map[string]string // what the build step found in /secrets
 }
 
 func mount(s engine.Spec, target string) string {
@@ -44,6 +46,14 @@ func (f *fakeEngine) Run(_ context.Context, s engine.Spec) error {
 		}
 	case "build":
 		os.WriteFile(filepath.Join(mount(s, "/out"), "image.tar"), []byte("oci"), 0o644)
+		if dir := mount(s, "/secrets"); dir != "" {
+			f.secrets = map[string]string{}
+			entries, _ := os.ReadDir(dir)
+			for _, e := range entries {
+				b, _ := os.ReadFile(filepath.Join(dir, e.Name()))
+				f.secrets[e.Name()] = string(b)
+			}
+		}
 	}
 	return nil
 }
@@ -241,5 +251,63 @@ func TestSuggestTest(t *testing.T) {
 	os.Symlink(target, filepath.Join(dir, "package.json"))
 	if got := suggestTest(dir); got != "" {
 		t.Errorf("followed a symlink: %q", got)
+	}
+}
+
+func TestVariablesReachTheBuild(t *testing.T) {
+	vars := []Var{{Name: "NEXT_PUBLIC_URL", Value: "https://example.com"}, {Name: "NPM_TOKEN", Value: "npm_s3cret", Secret: true}, {Name: "PATH", Value: "/custom"}}
+
+	f := &fakeEngine{}
+	b := newTestBuilder(t, f)
+	req := request()
+	req.Vars = vars
+	var out bytes.Buffer
+	if _, err := b.Build(context.Background(), req, &out); err != nil {
+		t.Fatal(err)
+	}
+	plan, build := f.specs[1], f.specs[2]
+	for _, s := range f.specs {
+		if args := strings.Join(s.Args, " "); strings.Contains(args, "npm_s3cret") || strings.Contains(args, "example.com") && s.ID != "zelie-build-plan" {
+			t.Errorf("%s has a value on its command line: %s", s.ID, args)
+		}
+	}
+	if args := strings.Join(plan.Args, " "); !strings.Contains(args, "--env NEXT_PUBLIC_URL --env NPM_TOKEN") || strings.Contains(args, "PATH") {
+		t.Errorf("plan args %s", args)
+	}
+	if !slices.Contains(plan.Env, "NPM_TOKEN=npm_s3cret") || slices.Contains(plan.Env, "PATH=/custom") {
+		t.Errorf("plan env %v", plan.Env)
+	}
+	args := strings.Join(build.Args, " ")
+	for _, want := range []string{"--secret id=NPM_TOKEN,src=/secrets/NPM_TOKEN", "--secret id=PATH,src=/secrets/PATH", "build-arg:secrets-hash="} {
+		if !strings.Contains(args, want) {
+			t.Errorf("build args lack %q: %s", want, args)
+		}
+	}
+	if f.secrets["NPM_TOKEN"] != "npm_s3cret" || len(f.secrets) != 3 {
+		t.Errorf("secret files %v", f.secrets)
+	}
+	if strings.Contains(out.String(), "npm_s3cret") || !strings.Contains(out.String(), "NPM_TOKEN") {
+		t.Errorf("output:\n%s", out.String())
+	}
+
+	// A Dockerfile gets plain variables as build arguments too, but never
+	// a secret one, which would be saved in the image.
+	f = &fakeEngine{dockerfile: true}
+	b = newTestBuilder(t, f)
+	req = request()
+	req.Vars = vars
+	b.Build(context.Background(), req, io.Discard)
+	args = strings.Join(f.specs[1].Args, " ")
+	if !strings.Contains(args, "build-arg:NEXT_PUBLIC_URL=https://example.com") || strings.Contains(args, "npm_s3cret") {
+		t.Errorf("dockerfile build args: %s", args)
+	}
+
+	if varsHash(vars) == varsHash([]Var{vars[0], {Name: "NPM_TOKEN", Value: "other", Secret: true}, vars[2]}) {
+		t.Error("the hash does not change with a value")
+	}
+	req = request()
+	req.Vars = []Var{{Name: "../x", Value: "y"}}
+	if _, err := newTestBuilder(t, &fakeEngine{}).Build(context.Background(), req, io.Discard); err == nil {
+		t.Error("a variable name with a path in it was accepted")
 	}
 }

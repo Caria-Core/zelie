@@ -17,7 +17,7 @@ import (
 func debugBuild(ctx context.Context, c *core.Client, app, version, dir string, stdout io.Writer) error {
 	pr, pw := io.Pipe()
 	go func() { pw.CloseWithError(tarGz(dir, pw)) }()
-	res, err := c.Build(ctx, app, version, pr, stdout)
+	res, err := c.Build(ctx, app, version, nil, nil, pr, stdout)
 	pr.CloseWithError(err)
 	if err == nil {
 		if res.TestCommand != "" {

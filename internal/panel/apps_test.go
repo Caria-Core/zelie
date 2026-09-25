@@ -37,6 +37,7 @@ type appCore struct {
 	builds     []string
 	removed    []string // images
 	suggest    string   // the test command builds find
+	buildEnv   []string // the variables the last build got, opened
 	testExit   int
 	tests      []engine.Spec
 	failBuild  bool
@@ -103,10 +104,18 @@ func (c *appCore) Logs(_ context.Context, _ string, _ bool, _ int64, w io.Writer
 	return err
 }
 
-func (c *appCore) Build(_ context.Context, app, version string, src io.Reader, out io.Writer) (build.Result, error) {
+func (c *appCore) Build(_ context.Context, app, version string, env, sealed []string, src io.Reader, out io.Writer) (build.Result, error) {
 	b, _ := io.ReadAll(src)
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.buildEnv = slices.Clone(env)
+	for _, v := range sealed {
+		opened, err := c.keys.Open(v, app)
+		if err != nil {
+			return build.Result{}, err
+		}
+		c.buildEnv = append(c.buildEnv, opened)
+	}
 	c.builds = append(c.builds, app+":"+version+":"+string(b))
 	fmt.Fprintln(out, "npm install")
 	if c.failBuild {
@@ -254,6 +263,9 @@ func TestDeployFromGitHub(t *testing.T) {
 	container := fmt.Sprintf("web-%d", d2.ID)
 	if env := strings.Join(e.core.env[container], " "); env != "PORT=3000 NODE_ENV=production TOKEN=hunter2" {
 		t.Errorf("env %q", env)
+	}
+	if env := strings.Join(e.core.buildEnv, " "); env != "NODE_ENV=production TOKEN=hunter2" {
+		t.Errorf("build env %q", env)
 	}
 	list, _ := e.core.List(context.Background())
 	if len(list) != 1 || list[0].ID != container {

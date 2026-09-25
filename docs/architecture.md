@@ -129,6 +129,12 @@ the interface never shows a secret again once it is saved. Someone in full contr
 the panel could still deploy a version of the app that prints its environment, so this
 protects the stored data, not against a taken-over panel.
 
+Builds can read the variables too, since frameworks such as Next.js need some of them
+at build time. The core opens the sealed ones and hands every variable to BuildKit as a
+secret: a file mounted for the build, not a build argument, so its value stays out of the
+image and its history. Only a build step that prints a value would show it in the build
+log.
+
 The sealed text names its app, so a value cannot be moved to another app. The core's key
 will be part of what the installer asks you to back up, because losing it would mean
 losing the secrets.

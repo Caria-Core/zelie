@@ -118,7 +118,7 @@ export default {
 	'app.hideLog': 'Hide log',
 	'app.took': 'took {time}',
 
-	'env.lead': 'Changes apply with the next deployment.',
+	'env.lead': 'Changes apply with the next deployment. Builds can read them too.',
 	'env.name': 'Name',
 	'env.value': 'Value',
 	'env.secret': 'Secret',

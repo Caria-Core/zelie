@@ -40,7 +40,9 @@ Website, documentation and support: [zelie.cariacore.com](https://zelie.cariacor
   certificates only, not yet against Let's Encrypt itself.
 - **Environment variables, with secrets.** Mark a variable secret and it is sealed as
   it is saved. Not even the panel can read it back: only the privileged core opens it,
-  when it starts the container. Paste a whole `.env` file to fill in the list.
+  when it starts the container or a build. Builds get every variable as a BuildKit
+  secret, which stays out of the image; a Dockerfile also gets the plain ones as build
+  arguments. Paste a whole `.env` file to fill in the list.
 - **Live logs** of every app, in the browser.
 - **Careful logins.** The administrator needs a passkey or an authenticator app
   as well as a password, with recovery codes as a fallback. Changing any of these, or

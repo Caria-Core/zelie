@@ -302,7 +302,11 @@ func (s *Server) build(ctx context.Context, app store.App, src Source, commit st
 		return res, commit, err
 	}
 	defer archive.Close()
-	res, err = s.Core.Build(ctx, app.ID, commit[:12], archive, out)
+	env, sealed, err := s.vars(ctx, app)
+	if err != nil {
+		return res, commit, err
+	}
+	res, err = s.Core.Build(ctx, app.ID, commit[:12], env, sealed, archive, out)
 	return res, commit, err
 }
 
@@ -352,15 +356,20 @@ func (s *Server) runTests(ctx context.Context, app store.App, image string, depl
 	return nil
 }
 
-// appEnv returns the app's variables for a container: the plain ones and
-// the sealed ones, which only the core can open.
+// appEnv returns the app's variables for a container: the plain ones with
+// PORT, and the sealed ones, which only the core can open.
 func (s *Server) appEnv(ctx context.Context, app store.App) (env, sealed []string, err error) {
+	env, sealed, err = s.vars(ctx, app)
+	// Most frameworks read the port to listen on from PORT.
+	return append([]string{"PORT=" + strconv.Itoa(app.Port)}, env...), sealed, err
+}
+
+// vars returns the app's own variables, plain and sealed.
+func (s *Server) vars(ctx context.Context, app store.App) (env, sealed []string, err error) {
 	vars, err := s.Store.Env(ctx, app.ID)
 	if err != nil {
 		return nil, nil, err
 	}
-	// Most frameworks read the port to listen on from PORT.
-	env = []string{"PORT=" + strconv.Itoa(app.Port)}
 	for _, v := range vars {
 		if v.Secret {
 			sealed = append(sealed, v.Value)

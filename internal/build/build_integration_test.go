@@ -92,3 +92,46 @@ func TestUnpackCannotReachTheCache(t *testing.T) {
 		t.Fatal("the archive wrote into the build cache")
 	}
 }
+
+func TestDockerfileGetsVariables(t *testing.T) {
+	b := newBuilder(t, connect(t))
+	var out bytes.Buffer
+	src := archive(t, map[string]string{"Dockerfile": `FROM docker.io/library/busybox:latest
+ARG GREETING
+RUN --mount=type=secret,id=TOKEN,env=TOKEN echo "greeting=$GREETING token-length=${#TOKEN}"
+`})
+	_, err := b.Build(context.Background(), Request{App: "it-app", Version: "4", Source: src,
+		Vars: []Var{{Name: "GREETING", Value: "hello"}, {Name: "TOKEN", Value: "s3cret-value", Secret: true}}}, &out)
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out.String())
+	}
+	if !strings.Contains(out.String(), "greeting=hello token-length=12") {
+		t.Errorf("the variables did not reach the build:\n%s", out.String())
+	}
+	if strings.Contains(out.String(), "s3cret-value") {
+		t.Errorf("the secret is in the output:\n%s", out.String())
+	}
+}
+
+func TestRailpackGetsVariables(t *testing.T) {
+	b := newBuilder(t, connect(t))
+	var out bytes.Buffer
+	src := archive(t, map[string]string{
+		"package.json": `{"name":"it","version":"1.0.0","scripts":{"build":"node -e \"console.log('token-length=' + process.env.NPM_TOKEN.length)\"","start":"node -e 1","test":"node -e 1"}}`,
+		"package-lock.json": `{"name":"it","version":"1.0.0","lockfileVersion":3,"requires":true,"packages":{"":{"name":"it","version":"1.0.0"}}}`,
+	})
+	res, err := b.Build(context.Background(), Request{App: "it-app", Version: "5", Source: src,
+		Vars: []Var{{Name: "NPM_TOKEN", Value: "npm_s3cret", Secret: true}}}, &out)
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out.String())
+	}
+	if !strings.Contains(out.String(), "token-length=10") {
+		t.Errorf("the variable did not reach the build:\n%s", out.String())
+	}
+	if strings.Contains(out.String(), "npm_s3cret") {
+		t.Errorf("the secret is in the output:\n%s", out.String())
+	}
+	if res.TestCommand != "npm test" {
+		t.Errorf("test command %q", res.TestCommand)
+	}
+}

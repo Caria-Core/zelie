@@ -18,12 +18,16 @@ package build
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/Caria-Core/zelie/internal/engine"
@@ -85,9 +89,23 @@ type Request struct {
 	// Source is a gzipped tar with the code in a single top-level
 	// directory, the way GitHub hands out repository archives.
 	Source io.Reader
+	// Vars are the app's variables, which the build can read too.
+	Vars []Var
 }
 
-var validVersion = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{0,63}$`)
+// Var is one of the app's variables. A secret one is only handed to the
+// build as a BuildKit secret, never as a build argument, so it does not end
+// up in the image's metadata.
+type Var struct {
+	Name, Value string
+	Secret      bool
+}
+
+var (
+	validVersion = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{0,63}$`)
+	// Variable names also name files and BuildKit secret ids.
+	validVar = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,127}$`)
+)
 
 // Result is what a build produced.
 type Result struct {
@@ -108,6 +126,11 @@ func (b *Builder) Build(ctx context.Context, req Request, out io.Writer) (Result
 	}
 	if !validVersion.MatchString(req.Version) {
 		return Result{}, fmt.Errorf("invalid version %q", req.Version)
+	}
+	for _, v := range req.Vars {
+		if !validVar.MatchString(v.Name) {
+			return Result{}, fmt.Errorf("invalid variable name %q", v.Name)
+		}
 	}
 	image, test, err := b.build(ctx, req, out)
 	return Result{Image: image, TestCommand: test}, err
@@ -152,18 +175,50 @@ func (b *Builder) build(ctx context.Context, req Request, out io.Writer) (image,
 		{Source: b.cacheDir("buildkit"), Target: "/cache"},
 		{Source: job.dir("out"), Target: "/out"},
 	}
+	// Every variable is a BuildKit secret, read from a file so no value is
+	// on a command line or in the builder's own environment.
+	if len(req.Vars) > 0 {
+		names := make([]string, 0, len(req.Vars))
+		for _, v := range req.Vars {
+			names = append(names, v.Name)
+			buildArgs = append(buildArgs, "--secret", "id="+v.Name+",src=/secrets/"+v.Name)
+		}
+		fmt.Fprintf(out, "Variables available to the build: %s.\n", strings.Join(names, ", "))
+		mounts = append(mounts, engine.Mount{Source: job.dir("secrets"), Target: "/secrets", ReadOnly: true})
+	}
 	// Lstat, not Stat: a Dockerfile that is a symlink could point anywhere
 	// on the host, and the core runs as root.
 	if st, err := os.Lstat(filepath.Join(job.dir("src"), "Dockerfile")); err == nil && st.Mode().IsRegular() {
 		fmt.Fprintln(out, "Building with the Dockerfile.")
 		buildArgs = append(buildArgs, "--frontend", "dockerfile.v0", "--local", "dockerfile=/src")
+		// A Dockerfile reads plain variables with ARG, and secret ones
+		// with RUN --mount=type=secret.
+		for _, v := range req.Vars {
+			if !v.Secret {
+				buildArgs = append(buildArgs, "--opt", "build-arg:"+v.Name+"="+v.Value)
+			}
+		}
 	} else {
 		fmt.Fprintln(out, "No Dockerfile; Railpack works out how to build the app.")
 		// Only for Railpack: an image from a Dockerfile may well leave
 		// out what the tests need.
 		test = suggestTest(job.dir("src"))
+		// Railpack reads the variables to plan, and lists their names as
+		// the plan's secrets. A bare --env NAME takes the value from the
+		// environment.
+		plan := []string{"railpack", "prepare", "/src", "--plan-out", "/plan/railpack-plan.json"}
+		var env []string
+		for _, v := range req.Vars {
+			if reservedForPlan[v.Name] {
+				fmt.Fprintf(out, "%s is not passed to Railpack, which needs its own.\n", v.Name)
+				continue
+			}
+			plan = append(plan, "--env", v.Name)
+			env = append(env, v.Name+"="+v.Value)
+		}
 		if err := b.step(ctx, out, "plan", engine.Spec{
-			Args:    []string{"railpack", "prepare", "/src", "--plan-out", "/plan/railpack-plan.json"},
+			Args:    plan,
+			Env:     env,
 			Network: Network,
 			Mounts: []engine.Mount{
 				{Source: job.dir("src"), Target: "/src", ReadOnly: true},
@@ -182,6 +237,9 @@ func (b *Builder) build(ctx context.Context, req Request, out io.Writer) (image,
 			// Package manager caches are separate per app for the same
 			// reason.
 			"--opt", "build-arg:cache-key="+req.App,
+			// Changing a variable's value must rebuild the steps that
+			// use it, which BuildKit does not do for secrets by itself.
+			"--opt", "build-arg:secrets-hash="+varsHash(req.Vars),
 			"--local", "dockerfile=/plan")
 		mounts = append(mounts, engine.Mount{Source: job.dir("plan"), Target: "/plan", ReadOnly: true})
 	}
@@ -209,6 +267,21 @@ func (b *Builder) build(ctx context.Context, req Request, out io.Writer) (image,
 	return image, test, nil
 }
 
+// reservedForPlan are variables Railpack's planning step cannot take from
+// the app without breaking itself. The build steps still get them.
+var reservedForPlan = map[string]bool{"PATH": true, "HOME": true}
+
+// varsHash changes whenever a variable's name or value does.
+func varsHash(vars []Var) string {
+	sorted := slices.Clone(vars)
+	slices.SortFunc(sorted, func(a, b Var) int { return strings.Compare(a.Name, b.Name) })
+	h := sha256.New()
+	for _, v := range sorted {
+		fmt.Fprintf(h, "%d:%s=%d:%s\n", len(v.Name), v.Name, len(v.Value), v.Value)
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
 type job struct{ root string }
 
 func (j job) dir(name string) string { return filepath.Join(j.root, name) }
@@ -225,8 +298,19 @@ func (b *Builder) prepare(req Request) (job, error) {
 	if err := os.RemoveAll(j.root); err != nil {
 		return j, err
 	}
-	for _, d := range []string{"in", "src", "plan", "out"} {
+	for _, d := range []string{"in", "src", "plan", "out", "secrets"} {
 		if err := b.builderDir(j.dir(d)); err != nil {
+			return j, err
+		}
+	}
+	for _, v := range req.Vars {
+		p := filepath.Join(j.dir("secrets"), v.Name)
+		if err := os.WriteFile(p, []byte(v.Value), 0o400); err != nil {
+			os.RemoveAll(j.root)
+			return j, err
+		}
+		if err := b.chown(p, engine.BuilderHostID, engine.BuilderHostID); err != nil {
+			os.RemoveAll(j.root)
 			return j, err
 		}
 	}
