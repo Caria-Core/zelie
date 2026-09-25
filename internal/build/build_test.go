@@ -44,6 +44,9 @@ func (f *fakeEngine) Run(_ context.Context, s engine.Spec) error {
 		if f.dockerfile {
 			os.WriteFile(filepath.Join(mount(s, "/src"), "Dockerfile"), []byte("FROM scratch\n"), 0o644)
 		}
+	case "plan":
+		os.WriteFile(filepath.Join(mount(s, "/plan"), "railpack-plan.json"),
+			[]byte(`{"steps":[{"name":"install","commands":[{"cmd":"npm ci"}]},{"name":"build","commands":[{"cmd":"npm run build"},{"path":"/x"}]}],"deploy":{"startCommand":"node index.js"}}`), 0o644)
 	case "build":
 		os.WriteFile(filepath.Join(mount(s, "/out"), "image.tar"), []byte("oci"), 0o644)
 		if dir := mount(s, "/secrets"); dir != "" {
@@ -98,6 +101,9 @@ func TestBuildWithRailpack(t *testing.T) {
 	}
 	if res.Image != "zelie.local/web:abc123" || f.imported != res.Image {
 		t.Errorf("image %q, imported %q", res.Image, f.imported)
+	}
+	if res.Builder != "railpack" || res.BuildCommand != "npm run build" || res.StartCommand != "node index.js" {
+		t.Errorf("detected %+v", res)
 	}
 	var steps []string
 	for _, s := range f.specs {

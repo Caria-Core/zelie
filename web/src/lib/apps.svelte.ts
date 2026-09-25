@@ -29,6 +29,11 @@ export type App = {
 	health_path: string;
 	// Runs the tests before a new build goes live; empty for none.
 	test_command: string;
+	// The user's own commands; empty means what the build chose.
+	build_command: string;
+	start_command: string;
+	detected: { builder?: 'dockerfile' | 'railpack'; build?: string; start?: string };
+	restart_pulls: boolean;
 	// The live container's state, or none before anything went live.
 	state: string;
 	// The user stopped it; Zelie keeps it down.

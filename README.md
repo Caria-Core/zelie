@@ -32,6 +32,9 @@ Website, documentation and support: [zelie.cariacore.com](https://zelie.cariacor
 - **Tests before going live.** When a Node project has a test script, Zelie runs it on
   each new build, in its own container with the app's variables, and keeps the old
   version if it fails. The command can be changed or cleared in the app's settings.
+- **Your own commands.** Zelie shows the build and start commands Railpack chose, and
+  either can be replaced. A restart can also pull and build the newest code, the way
+  Pelican's auto update does.
 - **Apps that come back.** If an app stops by itself, or the server restarts, Zelie
   starts its live version again, waiting longer each time. After five crashes in ten
   minutes it leaves the app down and shows why. An app you stop stays stopped.

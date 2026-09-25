@@ -28,7 +28,8 @@ func (f *fakeBuilder) Build(_ context.Context, req build.Request, out io.Writer)
 	if string(src) == "broken" {
 		return build.Result{}, errors.New("the build step failed with exit code 1")
 	}
-	return build.Result{Image: "zelie.local/" + req.App + ":" + req.Version, TestCommand: "npm test"}, nil
+	return build.Result{Image: "zelie.local/" + req.App + ":" + req.Version, TestCommand: "npm test",
+		Builder: "railpack", StartCommand: "node index.js"}, nil
 }
 
 // buildClient returns a client talking to s over a real connection, so the
@@ -56,7 +57,7 @@ func TestBuild(t *testing.T) {
 
 	var out bytes.Buffer
 	res, err := c.Build(context.Background(), "web", "abc", []string{"A=1"}, nil, strings.NewReader("source"), &out)
-	if err != nil || res.Image != "zelie.local/web:abc" || res.TestCommand != "npm test" {
+	if err != nil || res.Image != "zelie.local/web:abc" || res.TestCommand != "npm test" || res.Builder != "railpack" || res.StartCommand != "node index.js" {
 		t.Fatalf("Build = %+v, %v", res, err)
 	}
 	if out.String() != "step one\n" || fb.got.App != "web" || fb.got.Version != "abc" {

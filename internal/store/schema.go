@@ -139,5 +139,16 @@ ALTER TABLE apps ADD COLUMN test_command TEXT;
 -- The user stopped the app. Zelie does not bring a stopped app back up,
 -- after a crash or when the server starts.
 ALTER TABLE apps ADD COLUMN stopped INTEGER NOT NULL DEFAULT 0;
+`, `
+-- The user's own build and start commands; empty uses what the build
+-- chose. detected holds what the last build chose, as JSON, to show next
+-- to them.
+ALTER TABLE apps ADD COLUMN build_command TEXT NOT NULL DEFAULT '';
+ALTER TABLE apps ADD COLUMN start_command TEXT NOT NULL DEFAULT '';
+ALTER TABLE apps ADD COLUMN detected TEXT NOT NULL DEFAULT '{}';
+
+-- Restart fetches and builds the branch's newest commit instead of running
+-- the live image again, the way Pelican's auto update does.
+ALTER TABLE apps ADD COLUMN restart_pulls INTEGER NOT NULL DEFAULT 0;
 `,
 }

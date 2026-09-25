@@ -113,6 +113,11 @@ type Result struct {
 	// TestCommand is how the app's tests can probably be run in the image,
 	// or empty if no tests were found.
 	TestCommand string
+	// How the image was built: "dockerfile" or "railpack", and for
+	// Railpack the commands it chose, to show next to the user's own.
+	Builder      string
+	BuildCommand string
+	StartCommand string
 }
 
 // ErrSourceTooLarge is returned for a source archive over MaxSource.
@@ -132,11 +137,12 @@ func (b *Builder) Build(ctx context.Context, req Request, out io.Writer) (Result
 			return Result{}, fmt.Errorf("invalid variable name %q", v.Name)
 		}
 	}
-	image, test, err := b.build(ctx, req, out)
-	return Result{Image: image, TestCommand: test}, err
+	var res Result
+	err := b.build(ctx, req, out, &res)
+	return res, err
 }
 
-func (b *Builder) build(ctx context.Context, req Request, out io.Writer) (image, test string, _ error) {
+func (b *Builder) build(ctx context.Context, req Request, out io.Writer, res *Result) error {
 
 	select {
 	case b.slot <- struct{}{}:
@@ -145,7 +151,7 @@ func (b *Builder) build(ctx context.Context, req Request, out io.Writer) (image,
 		select {
 		case b.slot <- struct{}{}:
 		case <-ctx.Done():
-			return "", "", ctx.Err()
+			return ctx.Err()
 		}
 	}
 	defer func() { <-b.slot }()
@@ -154,7 +160,7 @@ func (b *Builder) build(ctx context.Context, req Request, out io.Writer) (image,
 
 	job, err := b.prepare(req)
 	if err != nil {
-		return "", "", err
+		return err
 	}
 	defer os.RemoveAll(job.root)
 
@@ -165,7 +171,7 @@ func (b *Builder) build(ctx context.Context, req Request, out io.Writer) (image,
 			{Source: job.dir("src"), Target: "/src"},
 		},
 	}); err != nil {
-		return "", "", err
+		return err
 	}
 
 	buildArgs := []string{"buildctl-daemonless.sh", "build", "--progress", "plain",
@@ -190,6 +196,7 @@ func (b *Builder) build(ctx context.Context, req Request, out io.Writer) (image,
 	// on the host, and the core runs as root.
 	if st, err := os.Lstat(filepath.Join(job.dir("src"), "Dockerfile")); err == nil && st.Mode().IsRegular() {
 		fmt.Fprintln(out, "Building with the Dockerfile.")
+		res.Builder = "dockerfile"
 		buildArgs = append(buildArgs, "--frontend", "dockerfile.v0", "--local", "dockerfile=/src")
 		// A Dockerfile reads plain variables with ARG, and secret ones
 		// with RUN --mount=type=secret.
@@ -202,7 +209,8 @@ func (b *Builder) build(ctx context.Context, req Request, out io.Writer) (image,
 		fmt.Fprintln(out, "No Dockerfile; Railpack works out how to build the app.")
 		// Only for Railpack: an image from a Dockerfile may well leave
 		// out what the tests need.
-		test = suggestTest(job.dir("src"))
+		res.TestCommand = suggestTest(job.dir("src"))
+		res.Builder = "railpack"
 		// Railpack reads the variables to plan, and lists their names as
 		// the plan's secrets. A bare --env NAME takes the value from the
 		// environment.
@@ -230,8 +238,9 @@ func (b *Builder) build(ctx context.Context, req Request, out io.Writer) (image,
 				{Source: b.appCache(req.App), Target: "/tmp/railpack"},
 			},
 		}); err != nil {
-			return "", "", err
+			return err
 		}
+		res.BuildCommand, res.StartCommand = planCommands(job.dir("plan"))
 		buildArgs = append(buildArgs, "--frontend", "gateway.v0",
 			"--opt", "source="+RailpackFrontend,
 			// Package manager caches are separate per app for the same
@@ -251,20 +260,20 @@ func (b *Builder) build(ctx context.Context, req Request, out io.Writer) (image,
 		Mounts:  mounts,
 		Nesting: true,
 	}); err != nil {
-		return "", "", err
+		return err
 	}
 
 	f, err := os.Open(filepath.Join(job.dir("out"), "image.tar"))
 	if err != nil {
-		return "", "", fmt.Errorf("the build left no image: %w", err)
+		return fmt.Errorf("the build left no image: %w", err)
 	}
 	defer f.Close()
-	image = engine.LocalImages + req.App + ":" + req.Version
-	if err := b.Engine.ImportImage(ctx, f, image); err != nil {
-		return "", "", err
+	res.Image = engine.LocalImages + req.App + ":" + req.Version
+	if err := b.Engine.ImportImage(ctx, f, res.Image); err != nil {
+		return err
 	}
-	fmt.Fprintf(out, "Built %s.\n", image)
-	return image, test, nil
+	fmt.Fprintf(out, "Built %s.\n", res.Image)
+	return nil
 }
 
 // reservedForPlan are variables Railpack's planning step cannot take from

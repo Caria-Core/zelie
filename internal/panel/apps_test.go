@@ -38,6 +38,7 @@ type appCore struct {
 	removed    []string // images
 	suggest    string   // the test command builds find
 	buildEnv   []string // the variables the last build got, opened
+	args       map[string][]string
 	testExit   int
 	tests      []engine.Spec
 	failBuild  bool
@@ -87,6 +88,10 @@ func (c *appCore) RunApp(_ context.Context, s engine.Spec, sealed []string) erro
 	}
 	c.containers[s.ID] = engine.Status{ID: s.ID, App: s.App, Image: s.Image, State: state, IP: netip.AddrFrom4([4]byte{10, 210, 0, c.next})}
 	c.env[s.ID] = env
+	if c.args == nil {
+		c.args = map[string][]string{}
+	}
+	c.args[s.ID] = s.Args
 	return nil
 }
 
@@ -121,7 +126,8 @@ func (c *appCore) Build(_ context.Context, app, version string, env, sealed []st
 	if c.failBuild {
 		return build.Result{}, errors.New("the build step failed with exit code 1")
 	}
-	return build.Result{Image: engine.LocalImages + app + ":" + version, TestCommand: c.suggest}, nil
+	return build.Result{Image: engine.LocalImages + app + ":" + version, TestCommand: c.suggest,
+		Builder: "railpack", BuildCommand: "npm run build", StartCommand: "node index.js"}, nil
 }
 
 func (c *appCore) Wait(_ context.Context, id string) (int, error) {

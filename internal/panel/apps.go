@@ -53,9 +53,13 @@ type appJSON struct {
 	MemoryMB int64   `json:"memory_mb"`
 	CPUs     float64 `json:"cpus"`
 	// AutoDeploy deploys every push to the branch.
-	AutoDeploy  bool   `json:"auto_deploy"`
-	HealthPath  string `json:"health_path"`
-	TestCommand string `json:"test_command"`
+	AutoDeploy   bool           `json:"auto_deploy"`
+	HealthPath   string         `json:"health_path"`
+	TestCommand  string         `json:"test_command"`
+	BuildCommand string         `json:"build_command"`
+	StartCommand string         `json:"start_command"`
+	Detected     store.Detected `json:"detected"`
+	RestartPulls bool           `json:"restart_pulls"`
 	// State is the live container's: running, stopped, or none when
 	// nothing has gone live yet.
 	State string `json:"state"`
@@ -70,7 +74,7 @@ type appJSON struct {
 // fetched once by the caller.
 func (s *Server) appOut(ctx context.Context, a store.App, containers []engine.Status) (appJSON, error) {
 	out := appJSON{ID: a.ID, Source: a.Source, Image: a.Image, Repo: a.Repo, Branch: a.Branch,
-		Port: a.Port, Domain: a.Domain, MemoryMB: a.MemoryMB, CPUs: a.CPUs, AutoDeploy: a.AutoDeploy, HealthPath: a.HealthPath, TestCommand: a.TestCommand, State: "none",
+		Port: a.Port, Domain: a.Domain, MemoryMB: a.MemoryMB, CPUs: a.CPUs, AutoDeploy: a.AutoDeploy, HealthPath: a.HealthPath, TestCommand: a.TestCommand, BuildCommand: a.BuildCommand, StartCommand: a.StartCommand, Detected: a.Detected, RestartPulls: a.RestartPulls, State: "none",
 		Stopped: a.Stopped, Crashing: s.crashes.gaveUp(a.ID)}
 	recent, err := s.Store.Deployments(ctx, a.ID, 1)
 	if err != nil {
@@ -137,6 +141,11 @@ type appRequest struct {
 	// TestCommand is only for apps built from GitHub. Empty turns tests
 	// off.
 	TestCommand *string `json:"test_command"`
+	// Empty uses what the build chose. BuildCommand is only for apps
+	// built from GitHub.
+	BuildCommand *string `json:"build_command"`
+	StartCommand *string `json:"start_command"`
+	RestartPulls *bool   `json:"restart_pulls"`
 }
 
 // apply copies the fields that were sent onto a and checks the result.
@@ -161,15 +170,38 @@ func (req appRequest) apply(a *store.App) error {
 	if req.CPUs != nil {
 		a.CPUs = *req.CPUs
 	}
+	for _, c := range []struct {
+		dst *string
+		src *string
+	}{{&a.BuildCommand, req.BuildCommand}, {&a.StartCommand, req.StartCommand}} {
+		if c.src == nil {
+			continue
+		}
+		cmd := strings.TrimSpace(*c.src)
+		if err := checkCommand(cmd); err != nil {
+			return err
+		}
+		*c.dst = cmd
+	}
+	if req.BuildCommand != nil && a.BuildCommand != "" && a.Source != store.SourceGitHub {
+		return errors.New("only apps built from GitHub have a build command")
+	}
 	if req.TestCommand != nil {
 		cmd := strings.TrimSpace(*req.TestCommand)
 		switch {
 		case a.Source != store.SourceGitHub:
 			return errors.New("only apps built from GitHub run tests")
-		case len(cmd) > 500 || strings.ContainsAny(cmd, "\x00\r\n"):
-			return errors.New("the test command must be one line of at most 500 characters")
+		}
+		if err := checkCommand(cmd); err != nil {
+			return err
 		}
 		a.TestCommand, a.TestSet = cmd, true
+	}
+	if req.RestartPulls != nil {
+		if a.Source != store.SourceGitHub {
+			return errors.New("only apps built from GitHub can pull on restart")
+		}
+		a.RestartPulls = *req.RestartPulls
 	}
 	if req.AutoDeploy != nil {
 		if a.Source != store.SourceGitHub {
@@ -200,6 +232,13 @@ func (req appRequest) apply(a *store.App) error {
 		return errors.New("the CPU limit is out of range")
 	case !validHealthPath(a.HealthPath):
 		return errors.New("the health check path must start with / and hold no spaces")
+	}
+	return nil
+}
+
+func checkCommand(cmd string) error {
+	if len(cmd) > 500 || strings.ContainsAny(cmd, "\x00\r\n") {
+		return errors.New("a command must be one line of at most 500 characters")
 	}
 	return nil
 }
@@ -495,6 +534,15 @@ func (s *Server) newDeployment(w http.ResponseWriter, r *http.Request) {
 func (s *Server) restartApp(w http.ResponseWriter, r *http.Request) {
 	a, ok := s.appFrom(w, r)
 	if !ok || !s.unstop(w, r, a) {
+		return
+	}
+	if a.RestartPulls && a.Source == store.SourceGitHub {
+		id, err := s.deploy(r.Context(), a, store.Deployment{Cause: store.CauseRestart})
+		if err != nil {
+			s.fail(w, "deploy", err)
+			return
+		}
+		writeJSON(w, http.StatusCreated, map[string]int64{"id": id})
 		return
 	}
 	live, err := s.Store.LiveDeployment(r.Context(), a.ID)

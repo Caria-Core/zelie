@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"strings"
 	"time"
@@ -35,21 +36,38 @@ type App struct {
 	TestCommand string
 	TestSet     bool
 	// Stopped is set when the user stopped the app.
-	Stopped   bool
-	CreatedAt time.Time
+	Stopped bool
+	// The user's own commands; empty means what the build chose.
+	BuildCommand string
+	StartCommand string
+	// Detected is what the last build chose.
+	Detected Detected
+	// RestartPulls makes a restart build the branch's newest commit.
+	RestartPulls bool
+	CreatedAt    time.Time
+}
+
+// Detected is how the last build built an app.
+type Detected struct {
+	Builder string `json:"builder,omitempty"` // dockerfile or railpack
+	Build   string `json:"build,omitempty"`
+	Start   string `json:"start,omitempty"`
 }
 
 // ErrExists is returned when a name or domain is already taken.
 var ErrExists = errors.New("already exists")
 
-const appColumns = "id, source, image, repo, branch, port, domain, memory_mb, cpus, auto_deploy, health_path, test_command, stopped, created_at"
+const appColumns = "id, source, image, repo, branch, port, domain, memory_mb, cpus, auto_deploy, health_path, test_command, stopped, build_command, start_command, detected, restart_pulls, created_at"
 
 func scanApp(row scanner) (App, error) {
 	var a App
 	var created int64
 	var test sql.NullString
-	err := row.Scan(&a.ID, &a.Source, &a.Image, &a.Repo, &a.Branch, &a.Port, &a.Domain, &a.MemoryMB, &a.CPUs, &a.AutoDeploy, &a.HealthPath, &test, &a.Stopped, &created)
+	var detected string
+	err := row.Scan(&a.ID, &a.Source, &a.Image, &a.Repo, &a.Branch, &a.Port, &a.Domain, &a.MemoryMB, &a.CPUs, &a.AutoDeploy, &a.HealthPath, &test, &a.Stopped,
+		&a.BuildCommand, &a.StartCommand, &detected, &a.RestartPulls, &created)
 	a.CreatedAt = time.Unix(created, 0)
+	json.Unmarshal([]byte(detected), &a.Detected)
 	a.TestCommand, a.TestSet = test.String, test.Valid
 	if errors.Is(err, sql.ErrNoRows) {
 		return a, ErrNotFound
@@ -58,17 +76,28 @@ func scanApp(row scanner) (App, error) {
 }
 
 func (s *Store) CreateApp(ctx context.Context, a App) error {
-	_, err := s.db.ExecContext(ctx, "INSERT INTO apps ("+appColumns+") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-		a.ID, a.Source, a.Image, a.Repo, a.Branch, a.Port, a.Domain, a.MemoryMB, a.CPUs, a.AutoDeploy, a.HealthPath, a.testColumn(), a.Stopped, a.CreatedAt.Unix())
+	_, err := s.db.ExecContext(ctx, "INSERT INTO apps ("+appColumns+") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		a.ID, a.Source, a.Image, a.Repo, a.Branch, a.Port, a.Domain, a.MemoryMB, a.CPUs, a.AutoDeploy, a.HealthPath, a.testColumn(), a.Stopped,
+		a.BuildCommand, a.StartCommand, "{}", a.RestartPulls, a.CreatedAt.Unix())
 	return uniqueErr(err)
 }
 
 // UpdateApp saves everything about an app except its id, source and
 // creation time.
 func (s *Store) UpdateApp(ctx context.Context, a App) error {
-	res, err := s.db.ExecContext(ctx, "UPDATE apps SET image = ?, repo = ?, branch = ?, port = ?, domain = ?, memory_mb = ?, cpus = ?, auto_deploy = ?, health_path = ?, test_command = ? WHERE id = ?",
-		a.Image, a.Repo, a.Branch, a.Port, a.Domain, a.MemoryMB, a.CPUs, a.AutoDeploy, a.HealthPath, a.testColumn(), a.ID)
+	res, err := s.db.ExecContext(ctx, "UPDATE apps SET image = ?, repo = ?, branch = ?, port = ?, domain = ?, memory_mb = ?, cpus = ?, auto_deploy = ?, health_path = ?, test_command = ?, build_command = ?, start_command = ?, restart_pulls = ? WHERE id = ?",
+		a.Image, a.Repo, a.Branch, a.Port, a.Domain, a.MemoryMB, a.CPUs, a.AutoDeploy, a.HealthPath, a.testColumn(), a.BuildCommand, a.StartCommand, a.RestartPulls, a.ID)
 	return oneRow(res, uniqueErr(err))
+}
+
+// SetDetected records how the last build built the app.
+func (s *Store) SetDetected(ctx context.Context, appID string, d Detected) error {
+	b, err := json.Marshal(d)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, "UPDATE apps SET detected = ? WHERE id = ?", string(b), appID)
+	return err
 }
 
 // SetStopped records whether the user stopped the app.

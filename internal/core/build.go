@@ -24,6 +24,9 @@ type Builder interface {
 const (
 	trailerImage = "Zelie-Image"
 	trailerTest  = "Zelie-Test-Command"
+	trailerKind  = "Zelie-Builder"
+	trailerBuild = "Zelie-Build-Command"
+	trailerStart = "Zelie-Start-Command"
 	trailerError = "Zelie-Error"
 )
 
@@ -73,7 +76,7 @@ func (s *Server) build(w http.ResponseWriter, r *http.Request) {
 	req.Source = part
 	// The output starts before the whole source has been read.
 	http.NewResponseController(w).EnableFullDuplex()
-	w.Header().Set("Trailer", trailerImage+", "+trailerTest+", "+trailerError)
+	w.Header().Set("Trailer", strings.Join([]string{trailerImage, trailerTest, trailerKind, trailerBuild, trailerStart, trailerError}, ", "))
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	res, err := s.Builder.Build(r.Context(), req, flushWriter{w})
@@ -85,6 +88,9 @@ func (s *Server) build(w http.ResponseWriter, r *http.Request) {
 	s.Log.Info("image built", "app", req.App, "image", res.Image)
 	w.Header().Set(trailerImage, res.Image)
 	w.Header().Set(trailerTest, res.TestCommand)
+	w.Header().Set(trailerKind, res.Builder)
+	w.Header().Set(trailerBuild, res.BuildCommand)
+	w.Header().Set(trailerStart, res.StartCommand)
 }
 
 // openVars turns the request's variables into the build's, opening the
@@ -173,7 +179,11 @@ func (c *Client) Build(ctx context.Context, app, version string, env, sealedEnv 
 	if msg := resp.Trailer.Get(trailerError); msg != "" {
 		return build.Result{}, &Error{Status: http.StatusUnprocessableEntity, Message: msg}
 	}
-	res := build.Result{Image: resp.Trailer.Get(trailerImage), TestCommand: resp.Trailer.Get(trailerTest)}
+	t := resp.Trailer
+	res := build.Result{
+		Image: t.Get(trailerImage), TestCommand: t.Get(trailerTest),
+		Builder: t.Get(trailerKind), BuildCommand: t.Get(trailerBuild), StartCommand: t.Get(trailerStart),
+	}
 	if res.Image == "" {
 		return res, errors.New("the build ended without a result")
 	}

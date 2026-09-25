@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -52,6 +53,8 @@ var healthClient = &http.Client{
 const testTimeout = 10 * time.Minute
 
 var testSettle = 600 * time.Millisecond
+
+const railpackBuildCmd = "RAILPACK_BUILD_CMD"
 
 // keepImages is how many of an app's most recent live versions keep their
 // image, so they can be rolled back to.
@@ -213,6 +216,9 @@ func (s *Server) runDeployment(ctx context.Context, appID string, id int64) {
 			return
 		}
 		d.Image = res.Image
+		if err := s.Store.SetDetected(ctx, app.ID, store.Detected{Builder: res.Builder, Build: res.BuildCommand, Start: res.StartCommand}); err != nil {
+			s.Log.Error("save detected commands", "app", app.ID, "err", err)
+		}
 		if !app.TestSet && res.TestCommand != "" {
 			if ok, err := s.Store.SuggestTest(ctx, app.ID, res.TestCommand); err != nil {
 				s.Log.Error("save test command", "app", app.ID, "err", err)
@@ -312,6 +318,13 @@ func (s *Server) build(ctx context.Context, app store.App, src Source, commit st
 	if err != nil {
 		return res, commit, err
 	}
+	// Railpack takes its build command from its own variable. Dockerfile
+	// builds ignore it.
+	if app.BuildCommand != "" {
+		env = slices.DeleteFunc(env, func(kv string) bool { return strings.HasPrefix(kv, railpackBuildCmd+"=") })
+		env = append(env, railpackBuildCmd+"="+app.BuildCommand)
+		fmt.Fprintf(out, "Build command: %s\n", app.BuildCommand)
+	}
 	res, err = s.Core.Build(ctx, app.ID, commit[:12], env, sealed, archive, out)
 	return res, commit, err
 }
@@ -395,8 +408,13 @@ func (s *Server) start(ctx context.Context, app store.App, image, container stri
 		return err
 	}
 	fmt.Fprintf(out, "Starting %s.\n", image)
+	var args []string
+	if app.StartCommand != "" {
+		fmt.Fprintf(out, "Start command: %s\n", app.StartCommand)
+		args = []string{"sh", "-c", app.StartCommand}
+	}
 	err = s.Core.RunApp(ctx, engine.Spec{
-		ID: container, App: app.ID, Image: image, Env: env, Network: app.ID,
+		ID: container, App: app.ID, Image: image, Args: args, Env: env, Network: app.ID,
 		MemoryBytes: app.MemoryMB << 20, CPUs: app.CPUs, Pids: defaultPids,
 	}, sealed)
 	if err != nil {
