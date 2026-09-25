@@ -53,6 +53,7 @@ type Server struct {
 	deploys deploys
 	gh      ghCache
 	crashes crashes
+	samples samples
 	ctx     context.Context // lives as long as the server
 }
 
@@ -113,6 +114,8 @@ func (s *Server) Handler() http.Handler {
 	web.HandleFunc("POST /api/apps/{app}/deployments/{id}/rollback", s.signedIn(s.rollback))
 	web.HandleFunc("GET /api/apps/{app}/deployments/{id}/log", s.signedIn(s.deploymentLog))
 	web.HandleFunc("GET /api/apps/{app}/logs", s.signedIn(s.appLogs))
+	web.HandleFunc("GET /api/apps/{app}/usage", s.signedIn(s.appUsage))
+	web.HandleFunc("GET /api/host", s.signedIn(s.hostInfo))
 	web.HandleFunc("GET /api/github", s.signedIn(s.githubStatus))
 	web.HandleFunc("POST /api/github/manifest", s.confirmed(s.githubManifest))
 	web.HandleFunc("POST /api/github/app", s.signedIn(s.githubCreated))

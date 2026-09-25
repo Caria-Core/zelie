@@ -46,6 +46,13 @@ func (f *fakeEngine) Stop(_ context.Context, id string, grace time.Duration) err
 
 func (f *fakeEngine) Remove(context.Context, string) error { return nil }
 
+func (f *fakeEngine) Usage(id string) (engine.Usage, error) {
+	if id != "web" {
+		return engine.Usage{}, errdefs.ErrNotFound
+	}
+	return engine.Usage{MemoryBytes: 1 << 20, CPUUsec: 500}, nil
+}
+
 func (f *fakeEngine) Wait(_ context.Context, id string) (uint32, error) {
 	if id == "missing" {
 		return 0, errdefs.ErrNotFound
@@ -216,5 +223,20 @@ func TestWait(t *testing.T) {
 	}
 	if rec := request(t, s, &peer.Peer{UID: 1000}, "POST", "/v1/containers/web/wait", ""); rec.Code != http.StatusForbidden {
 		t.Errorf("stranger: %d", rec.Code)
+	}
+}
+
+func TestUsageAndHost(t *testing.T) {
+	s, _ := newServer()
+	s.Host = func() (engine.Host, error) { return engine.Host{CPUs: 2, MemoryBytes: 3 << 30}, nil }
+	panel := &peer.Peer{UID: 999}
+	if rec := request(t, s, panel, "GET", "/v1/containers/web/usage", ""); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"memory_bytes":1048576`) {
+		t.Errorf("usage: %d %s", rec.Code, rec.Body)
+	}
+	if rec := request(t, s, panel, "GET", "/v1/containers/other/usage", ""); rec.Code != http.StatusNotFound {
+		t.Errorf("usage of a stopped container: %d", rec.Code)
+	}
+	if rec := request(t, s, panel, "GET", "/v1/host", ""); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"cpus":2`) {
+		t.Errorf("host: %d %s", rec.Code, rec.Body)
 	}
 }

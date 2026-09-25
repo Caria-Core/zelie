@@ -34,6 +34,7 @@ type Engine interface {
 	List(ctx context.Context) ([]engine.Status, error)
 	RemoveImage(ctx context.Context, name string) error
 	Wait(ctx context.Context, id string) (uint32, error)
+	Usage(id string) (engine.Usage, error)
 }
 
 // Limits a single request may ask for. They keep a confused or compromised
@@ -50,6 +51,8 @@ type Server struct {
 	Paths   engine.Paths
 	Log     *slog.Logger
 	Allowed peer.Policy
+	// Host describes the server; tests replace it.
+	Host func() (engine.Host, error)
 }
 
 func (s *Server) Handler() http.Handler {
@@ -60,6 +63,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /v1/containers/{id}", s.remove)
 	mux.HandleFunc("POST /v1/containers/{id}/wait", s.wait)
 	mux.HandleFunc("GET /v1/containers/{id}/logs", s.logs)
+	mux.HandleFunc("GET /v1/containers/{id}/usage", s.usage)
+	mux.HandleFunc("GET /v1/host", s.host)
 	mux.HandleFunc("POST /v1/builds", s.build)
 	mux.HandleFunc("DELETE /v1/images", s.removeImage)
 	mux.HandleFunc("GET /v1/secrets/key", s.secretKey)
@@ -204,6 +209,47 @@ func (s *Server) stop(w http.ResponseWriter, r *http.Request) {
 	}
 	s.Log.Info("container stopped", "id", id)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+type usageJSON struct {
+	MemoryBytes int64 `json:"memory_bytes"`
+	CPUUsec     int64 `json:"cpu_usec"`
+}
+
+// usage reports what a running container uses. A container that is not
+// running has no usage.
+func (s *Server) usage(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !engine.ValidID(id) {
+		writeError(w, http.StatusBadRequest, errors.New("invalid container id"))
+		return
+	}
+	u, err := s.Engine.Usage(id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, errors.New("the container is not running"))
+		return
+	}
+	writeJSON(w, http.StatusOK, usageJSON{MemoryBytes: u.MemoryBytes, CPUUsec: u.CPUUsec})
+}
+
+type hostJSON struct {
+	CPUs          int   `json:"cpus"`
+	MemoryBytes   int64 `json:"memory_bytes"`
+	DiskBytes     int64 `json:"disk_bytes"`
+	DiskFreeBytes int64 `json:"disk_free_bytes"`
+}
+
+func (s *Server) host(w http.ResponseWriter, r *http.Request) {
+	info := s.Host
+	if info == nil {
+		info = func() (engine.Host, error) { return engine.HostInfo(s.Paths.Root) }
+	}
+	h, err := info()
+	if err != nil {
+		s.fail(w, "host", "", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, hostJSON{CPUs: h.CPUs, MemoryBytes: h.MemoryBytes, DiskBytes: h.DiskBytes, DiskFreeBytes: h.DiskFreeBytes})
 }
 
 // wait answers once the container's process has exited, with its exit

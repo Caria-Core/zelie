@@ -9,6 +9,8 @@
 	import Button from '$lib/ui/Button.svelte';
 	import ErrorText from '$lib/ui/ErrorText.svelte';
 	import Field from '$lib/ui/Field.svelte';
+	import Resources from '$lib/ui/Resources.svelte';
+	import type { Usage } from '$lib/host.svelte';
 
 	const app = $derived(current.app!);
 	let form = $state({
@@ -17,8 +19,8 @@
 		image: '',
 		port: '',
 		domain: '',
-		memory: '',
-		cpus: '',
+		memory: 512,
+		cpus: 1,
 		autoDeploy: true,
 		restartPulls: false,
 		health: '/',
@@ -41,8 +43,8 @@
 			image: app.image ?? '',
 			port: String(app.port),
 			domain: app.domain ?? '',
-			memory: String(app.memory_mb),
-			cpus: String(app.cpus),
+			memory: app.memory_mb,
+			cpus: app.cpus,
 			autoDeploy: app.auto_deploy,
 			restartPulls: app.restart_pulls,
 			health: app.health_path,
@@ -61,8 +63,8 @@
 			const body: Record<string, unknown> = {
 				port: Number(form.port),
 				domain: form.domain,
-				memory_mb: Number(form.memory),
-				cpus: Number(form.cpus),
+				memory_mb: form.memory,
+				cpus: form.cpus,
 				health_path: form.health,
 				start_command: form.start
 			};
@@ -85,6 +87,20 @@
 			busy = false;
 		}
 	}
+
+	// What the app uses now, refreshed while the page is open.
+	let usage = $state<Usage | null>(null);
+	$effect(() => {
+		const id = app.id;
+		let stop = false;
+		const tick = async () => {
+			if (stop) return;
+			if (document.visibilityState === 'visible') usage = await api<Usage>('GET', `/apps/${id}/usage`).catch(() => null);
+			setTimeout(tick, 3000);
+		};
+		tick();
+		return () => (stop = true);
+	});
 
 	async function remove() {
 		if (!confirm(t('settings.deleteConfirm', { id: app.id }))) return;
@@ -163,10 +179,7 @@
 
 		<section class="flex flex-col gap-4">
 			{@render heading(t('new.more'), t('settings.resourcesLead'))}
-			<div class="grid grid-cols-2 gap-4">
-				<Field label={t('new.memory')} type="number" min="16" step="16" required bind:value={form.memory} />
-				<Field label={t('new.cpus')} type="number" min="0.1" step="0.1" required bind:value={form.cpus} />
-			</div>
+			<Resources bind:memory={form.memory} bind:cpus={form.cpus} app={app.id} {usage} />
 		</section>
 
 		<div class="sticky bottom-0 -mx-1 flex items-center gap-3 bg-bg/90 px-1 py-3 backdrop-blur">

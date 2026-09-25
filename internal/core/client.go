@@ -117,6 +117,20 @@ func (c *Client) Wait(ctx context.Context, id string) (int, error) {
 	return out.ExitCode, err
 }
 
+// Usage reports what a running container uses.
+func (c *Client) Usage(ctx context.Context, id string) (engine.Usage, error) {
+	var out usageJSON
+	err := c.do(ctx, http.MethodGet, "/v1/containers/"+url.PathEscape(id)+"/usage", nil, &out)
+	return engine.Usage{MemoryBytes: out.MemoryBytes, CPUUsec: out.CPUUsec}, err
+}
+
+// Host describes the server.
+func (c *Client) Host(ctx context.Context) (engine.Host, error) {
+	var out hostJSON
+	err := c.do(ctx, http.MethodGet, "/v1/host", nil, &out)
+	return engine.Host{CPUs: out.CPUs, MemoryBytes: out.MemoryBytes, DiskBytes: out.DiskBytes, DiskFreeBytes: out.DiskFreeBytes}, err
+}
+
 // RemoveImage deletes an image Zelie built.
 func (c *Client) RemoveImage(ctx context.Context, name string) error {
 	return c.do(ctx, http.MethodDelete, "/v1/images?"+url.Values{"name": {name}}.Encode(), nil, nil)

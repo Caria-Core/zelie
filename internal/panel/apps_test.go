@@ -39,6 +39,7 @@ type appCore struct {
 	suggest    string   // the test command builds find
 	buildEnv   []string // the variables the last build got, opened
 	args       map[string][]string
+	cpuUsec    int64
 	testExit   int
 	tests      []engine.Spec
 	failBuild  bool
@@ -95,7 +96,15 @@ func (c *appCore) RunApp(_ context.Context, s engine.Spec, sealed []string) erro
 	return nil
 }
 
-func (c *appCore) Stop(context.Context, string, int) error { return nil }
+func (c *appCore) Stop(_ context.Context, id string, _ int) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if st, ok := c.containers[id]; ok {
+		st.State = "stopped"
+		c.containers[id] = st
+	}
+	return nil
+}
 
 func (c *appCore) Remove(_ context.Context, id string) error {
 	c.mu.Lock()
@@ -145,6 +154,20 @@ func (c *appCore) RemoveImage(_ context.Context, name string) error {
 	defer c.mu.Unlock()
 	c.removed = append(c.removed, name)
 	return nil
+}
+
+func (c *appCore) Usage(_ context.Context, id string) (engine.Usage, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if st, ok := c.containers[id]; !ok || st.State != "running" {
+		return engine.Usage{}, errors.New("not running")
+	}
+	c.cpuUsec += 250_000
+	return engine.Usage{MemoryBytes: 84 << 20, CPUUsec: c.cpuUsec}, nil
+}
+
+func (c *appCore) Host(context.Context) (engine.Host, error) {
+	return engine.Host{CPUs: 2, MemoryBytes: 3 << 30, DiskBytes: 100 << 30, DiskFreeBytes: 60 << 30}, nil
 }
 
 func (c *appCore) SecretKey(context.Context) (secret.PublicKey, error) { return c.keys.Public(), nil }

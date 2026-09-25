@@ -11,6 +11,7 @@
 	import ErrorText from '$lib/ui/ErrorText.svelte';
 	import Field from '$lib/ui/Field.svelte';
 	import Lead from '$lib/ui/Lead.svelte';
+	import Resources from '$lib/ui/Resources.svelte';
 	import SourceChoice from '$lib/ui/SourceChoice.svelte';
 
 	const source = $derived(page.url.searchParams.get('source'));
@@ -22,8 +23,8 @@
 	let image = $state('');
 	let port = $state('');
 	let domain = $state('');
-	let memory = $state('512');
-	let cpus = $state('1');
+	let memory = $state(512);
+	let cpus = $state(1);
 	let error = $state('');
 	let busy = $state(false);
 
@@ -71,8 +72,8 @@
 				source,
 				port: Number(port || (github ? 3000 : 80)),
 				domain,
-				memory_mb: Number(memory),
-				cpus: Number(cpus)
+				memory_mb: memory,
+				cpus
 			};
 			if (github) Object.assign(body, { repo: cleanRepo, branch });
 			else body.image = image;
@@ -135,10 +136,7 @@
 			<p class="-mt-2 text-sm text-muted">{t('new.portHint')} {t('new.domainHint')}</p>
 			<details class="group rounded-xl border border-line px-4 py-3">
 				<summary class="cursor-pointer text-sm font-medium select-none">{t('new.more')}</summary>
-				<div class="mt-4 grid grid-cols-2 gap-4">
-					<Field label={t('new.memory')} type="number" min="16" step="16" required bind:value={memory} />
-					<Field label={t('new.cpus')} type="number" min="0.1" step="0.1" required bind:value={cpus} />
-				</div>
+				<div class="mt-4"><Resources bind:memory bind:cpus /></div>
 			</details>
 			<ErrorText message={error} />
 			<div class="mt-2 flex items-center gap-3">

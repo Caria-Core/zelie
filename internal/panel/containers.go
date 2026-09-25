@@ -29,6 +29,8 @@ type Core interface {
 	Remove(ctx context.Context, id string) error
 	Logs(ctx context.Context, id string, follow bool, tail int64, w io.Writer) error
 	RemoveImage(ctx context.Context, name string) error
+	Usage(ctx context.Context, id string) (engine.Usage, error)
+	Host(ctx context.Context) (engine.Host, error)
 }
 
 // Limits an app gets when the request does not say otherwise.
