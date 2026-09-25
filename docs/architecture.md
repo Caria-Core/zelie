@@ -104,9 +104,17 @@ over SFTP and in the panel, locked to the server's own volume.
 
 ## State and secrets
 
-The panel keeps its state in SQLite. Secrets such as environment variables and database
-passwords are encrypted at rest. The encryption key is shown once at install time so it
-can be backed up, because losing it would mean losing the secrets.
+The panel keeps its state in SQLite. An app's variables can be marked secret. The panel
+seals those with a public key whose private half only the core holds, and stores just
+the sealed value; the core opens it when it starts the app's container. A copy of the
+panel's database, or a bug that lets someone read it, therefore reveals no secret, and
+the interface never shows a secret again once it is saved. Someone in full control of
+the panel could still deploy a version of the app that prints its environment, so this
+protects the stored data, not against a taken-over panel.
+
+The sealed text names its app, so a value cannot be moved to another app. The core's key
+will be part of what the installer asks you to back up, because losing it would mean
+losing the secrets.
 
 ## Updates
 

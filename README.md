@@ -1,31 +1,74 @@
 # Zelie
 
-Zelie is a server panel you install with one command. Connect a GitHub repository and
-it builds and runs your app with a domain and HTTPS. Pick a game and it sets up the
+Zelie is a server panel you install with one command. Point it at a GitHub repository
+and it builds and runs your app with a domain and HTTPS. Pick a game and it sets up the
 server. Both live side by side on the same machine, managed from one place.
 
 It ships as a single file, runs on your own server, and stays out of the way.
 
-**Status:** early development. Nothing here is ready to use yet.
+**Status:** early development. The pieces below marked as working run on a test
+machine; there is no release yet and nothing here is ready for production.
 
-## What it will do
+Website, documentation and support: [zelie.cariacore.com](https://zelie.cariacore.com)
+(being built).
 
-- **Deploy from GitHub.** Push to your repository and the new version goes live once it
-  builds, its tests pass and it answers a health check. If anything fails, the old
-  version keeps running and you see why.
-- **Run game servers.** Import existing Pterodactyl and Pelican eggs, use the live
-  console, SFTP and a file manager.
-- **Set up databases for you.** MariaDB, PostgreSQL and Redis with one click. They are
-  never exposed to the internet, and connection details are passed to your app
-  automatically.
-- **Update without downtime.** Updating Zelie never restarts your apps or game servers.
+## What works today
+
+- **Apps from GitHub.** Give it a public repository and a branch. Zelie fetches the
+  code, builds it with the repository's Dockerfile or, when there is none, works out the
+  build on its own with [Railpack](https://github.com/railwayapp/railpack), which
+  knows Node, Python, Go, static sites and more.
+- **Apps from an image.** Run any public image, such as `nginx:alpine`.
+- **Deployments that fail safely.** A new version starts next to the old one and must
+  stay up before the domain moves over. If the build fails or the app crashes on start,
+  the old version keeps serving and the deployment's log shows why, including the app's
+  last output. Build logs stream to the browser while they run.
+- **Domains and HTTPS.** Give an app a domain and the proxy routes it and gets its
+  certificate from Let's Encrypt. So far this has been tried with self-signed
+  certificates only, not yet against Let's Encrypt itself.
+- **Environment variables, with secrets.** Mark a variable secret and it is sealed as
+  it is saved. Not even the panel can read it back: only the privileged core opens it,
+  when it starts the container. Paste a whole `.env` file to fill in the list.
+- **Live logs** of every app, in the browser.
+- **Careful logins.** The administrator needs a passkey or an authenticator app
+  as well as a password, with recovery codes as a fallback. Changing any of these, or
+  the password, asks for a fresh second step. The account page lists every browser
+  that is logged in, including ones that got the password but not the second step, and
+  logs them out.
+- **A calm interface.** Light and dark themes, works on a phone, and ships inside the
+  binary: no separate web server, no CDN, no tracking.
+
+## What is coming
+
+- **Push to deploy** and private repositories, through a GitHub App that Zelie creates
+  in your own account with access to the repositories you choose.
+- **Game servers.** Import existing Pterodactyl and Pelican eggs, with a live console,
+  SFTP, a file manager, startup settings, schedules and port management.
+- **Databases.** MariaDB, PostgreSQL and Redis with one click, never exposed to the
+  internet, with their connection details passed to your app. Backups on a schedule, to
+  the server's disk and to S3.
+- **One-command install and updates** that never restart your apps or game servers,
+  and reaching the panel through a Cloudflare Tunnel with no open web ports.
 
 ## How it is built
 
-Zelie is written in Go and runs every app and game server in its own container on
-containerd, with user namespaces turned on. The web panel runs as an unprivileged user
-and talks to a small privileged core over a local socket, so a bug in the web interface
-does not hand out root. [docs/architecture.md](docs/architecture.md) explains the design.
+Zelie is written in Go. Three processes run from the same binary, each with only the
+rights it needs:
+
+- The **core** runs as root and is the only part that can start containers. It listens
+  on a local socket, never on the network, and answers only root and the panel.
+- The **panel** serves the web interface as an unprivileged user. It has no network
+  port either: the proxy hands it web traffic over a socket. A bug in the web interface
+  gives an attacker that user, not root.
+- The **proxy** terminates HTTPS and may do nothing else. Updating or restarting the
+  panel does not drop a single connection.
+
+Every app runs in its own container on containerd, with a user namespace so that root
+inside is an ordinary user outside, a seccomp profile, dropped capabilities and limits
+on memory, CPU and processes. Each app gets its own network. Builds run inside such a
+container too, never directly on the host, and each build step gets a sandbox of its own.
+
+[docs/architecture.md](docs/architecture.md) explains each part and why it is that way.
 
 It runs on Debian and Ubuntu, on amd64 and arm64.
 

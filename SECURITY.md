@@ -27,7 +27,9 @@ covered by tests before the first release.
 - Every app and game server runs in its own container with user namespaces, a seccomp
   profile, dropped capabilities and resource limits. Nothing runs privileged.
 - Databases are never exposed to the internet.
-- Secrets are encrypted at rest and never written to logs.
+- Secret variables are sealed with a key only the core holds, so the panel's database
+  and its backups do not reveal them, and they are never written to logs.
+- Builds of your code run inside a confined container, never directly on the host.
 - The administrator account requires a passkey or a one-time code.
 - Releases are signed, and the installer and updater refuse anything with a bad
   signature.
