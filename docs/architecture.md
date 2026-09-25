@@ -12,7 +12,8 @@ Zelie ships as a single `zelie` binary. On a server it runs as three processes:
   typed requests, such as "start this container", over a Unix socket. The kernel tells it
   which user is on the other end, and only root and the panel get an answer.
 - **The panel** runs as an unprivileged user. It serves the web interface and the API,
-  handles logins, and receives webhooks from GitHub.
+  handles logins, and receives webhooks from GitHub. It does not listen on the network
+  either: the proxy hands it web traffic over a Unix socket.
 - **The proxy** runs as its own unprivileged user and may only bind ports 80 and 443. It
   terminates HTTPS and forwards each domain to the container that serves it.
 
@@ -20,6 +21,19 @@ Keeping these apart means a bug in the web interface gives an attacker an unpriv
 account and a short list of allowed requests, not root on the server. It also means the
 panel can restart or update while every site keeps serving: the proxy rarely restarts,
 and when its routes change it swaps them in without dropping connections.
+
+## Logging in
+
+Every account needs a second step besides its password: a passkey or an authenticator
+app. Until an account has one, logging in only lets it set one up. The first
+administrator is created from a one-time link that `zelie setup-link` prints on the
+server, so nobody who merely finds a fresh install can claim it.
+
+Passwords are hashed with argon2id. Sessions live on the server and the browser holds
+only a random token in a `__Host-` cookie; the database keeps a hash of it. Requests that
+change something are refused when a browser says they come from another site, and the
+interface runs under a Content-Security-Policy that allows no inline code except its
+own, by hash.
 
 ## Containers
 
