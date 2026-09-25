@@ -31,9 +31,10 @@ It runs on Debian and Ubuntu, on amd64 and arm64.
 
 ## License
 
-The core is free software under the [GNU AGPL v3](LICENSE). Running a single server is
-free, with every feature included. Managing several servers from one panel will be part
-of a paid edition.
+The core is free software under the [GNU AGPL v3](LICENSE). Everything on a single node
+is free, with no limit on how many apps, game servers or databases you run on it. Running
+across several nodes, for hosting companies and for scaling out, will be part of the paid
+Pro edition.
 
 Security issues: see [SECURITY.md](SECURITY.md). Contributing: see
 [CONTRIBUTING.md](CONTRIBUTING.md).
