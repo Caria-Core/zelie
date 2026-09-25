@@ -117,7 +117,7 @@ func TestRailpackGetsVariables(t *testing.T) {
 	b := newBuilder(t, connect(t))
 	var out bytes.Buffer
 	src := archive(t, map[string]string{
-		"package.json": `{"name":"it","version":"1.0.0","scripts":{"build":"node -e \"console.log('token-length=' + process.env.NPM_TOKEN.length)\"","start":"node -e 1","test":"node -e 1"}}`,
+		"package.json":      `{"name":"it","version":"1.0.0","scripts":{"build":"node -e \"console.log('token-length=' + process.env.NPM_TOKEN.length)\"","start":"node -e 1","test":"node -e 1"}}`,
 		"package-lock.json": `{"name":"it","version":"1.0.0","lockfileVersion":3,"requires":true,"packages":{"":{"name":"it","version":"1.0.0"}}}`,
 	})
 	res, err := b.Build(context.Background(), Request{App: "it-app", Version: "5", Source: src,
