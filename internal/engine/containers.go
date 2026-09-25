@@ -339,6 +339,10 @@ func (e *Engine) Run(ctx context.Context, s Spec) (err error) {
 
 	hosts := "127.0.0.1\tlocalhost\n::1\tlocalhost\n"
 	if s.Network != "" {
+		// A container with this name that was cut off mid-removal may still
+		// hold an address. No container of this name exists now, so any
+		// address it holds is stale.
+		e.networks.detach(ctx, s.Network, s.ID, ns.GetPath())
 		ip, err := e.networks.attach(ctx, s.Network, s.ID, ns.GetPath())
 		if err != nil {
 			return err
@@ -543,8 +547,10 @@ func (e *Engine) Stop(ctx context.Context, id string, grace time.Duration) error
 }
 
 // Remove stops the container if needed and deletes it with its snapshot and
-// its log.
+// its log. Once started it runs to the end even if ctx is cancelled: a
+// network plugin killed halfway leaves the container's address taken.
 func (e *Engine) Remove(ctx context.Context, id string) error {
+	ctx = context.WithoutCancel(ctx)
 	if err := e.Stop(ctx, id, 10*time.Second); err != nil && !errdefs.IsNotFound(err) {
 		return err
 	}
