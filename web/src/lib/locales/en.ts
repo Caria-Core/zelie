@@ -47,6 +47,7 @@ export default {
 	'nav.new': 'New app',
 	'nav.logout': 'Log out',
 	'nav.theme': 'Theme',
+	'nav.menu': 'Menu',
 	'theme.system': 'System',
 	'theme.light': 'Light',
 	'theme.dark': 'Dark',

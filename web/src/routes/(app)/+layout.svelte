@@ -12,6 +12,13 @@
 
 	let { children } = $props();
 	let ready = $state(false);
+	// On narrow screens the sidebar is a menu that opens over the page.
+	let menu = $state(false);
+
+	$effect(() => {
+		page.url.pathname;
+		menu = false;
+	});
 
 	onMount(() => {
 		let timer: ReturnType<typeof setInterval>;
@@ -36,9 +43,22 @@
 </script>
 
 {#if ready}
-	<div class="flex min-h-dvh">
-		<aside class="sticky top-0 flex h-dvh w-60 shrink-0 flex-col gap-6 border-r border-line bg-panel px-3 py-5">
-			<a href="/" class="flex items-center gap-2.5 px-2">
+	<div class="flex min-h-dvh flex-col md:flex-row">
+		<header class="flex items-center justify-between border-b border-line px-4 py-3 md:hidden">
+			<a href="/" class="flex items-center gap-2.5">
+				<Logo />
+				<span class="text-[17px]">{t('app.name')}</span>
+			</a>
+			<button class="rounded-lg px-2 py-1 text-sm text-muted hover:text-fg" aria-expanded={menu} onclick={() => (menu = !menu)}
+				>{t('nav.menu')}</button
+			>
+		</header>
+		<aside
+			class="{menu
+				? 'fixed inset-0 top-[53px] z-10 flex'
+				: 'hidden'} flex-col gap-6 bg-panel px-3 py-5 md:sticky md:top-0 md:flex md:h-dvh md:w-60 md:shrink-0 md:border-r md:border-line"
+		>
+			<a href="/" class="hidden items-center gap-2.5 px-2 md:flex">
 				<Logo />
 				<span class="text-[17px]">{t('app.name')}</span>
 			</a>
@@ -68,7 +88,7 @@
 				>
 			</div>
 		</aside>
-		<main class="min-w-0 flex-1 px-10 py-8">
+		<main class="min-w-0 flex-1 px-4 py-6 md:px-10 md:py-8">
 			{@render children()}
 		</main>
 	</div>
