@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"syscall"
 
+	"github.com/Caria-Core/zelie/internal/core"
 	"github.com/Caria-Core/zelie/internal/panel"
 	"github.com/Caria-Core/zelie/internal/proxy"
 	"github.com/Caria-Core/zelie/internal/store"
@@ -50,7 +51,7 @@ func runPanel(stderr io.Writer) int {
 		return 1
 	}
 
-	s := &panel.Server{Store: db, Sealer: sealer, Log: log, ProxyUID: proxyUID}
+	s := &panel.Server{Store: db, Sealer: sealer, Core: core.NewClient(core.DefaultSocket), Log: log, ProxyUID: proxyUID}
 	if err := s.Serve(ctx, panelSocket); err != nil {
 		log.Error("panel stopped", "err", err)
 		return 1

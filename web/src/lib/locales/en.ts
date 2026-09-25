@@ -49,5 +49,32 @@ export default {
 	'nav.theme': 'Theme',
 
 	'home.title': 'Nothing is running yet.',
-	'home.lead': 'Start a container from an image to see it here.'
+	'home.lead': 'Start a container from an image to see it here.',
+	'home.count': '{n} running.',
+	'home.countLead': 'Pick one on the left to see its output.',
+
+	'state.running': 'Running',
+	'state.stopped': 'Stopped',
+	'state.created': 'Starting',
+	'state.unknown': 'Unknown',
+
+	'new.title': 'New app.',
+	'new.lead': 'Start a container from any public image.',
+	'new.name': 'Name',
+	'new.nameHint': 'Lowercase letters, digits and dashes.',
+	'new.image': 'Image',
+	'new.imageHint': 'For example nginx:alpine or ghcr.io/owner/app:latest.',
+	'new.memory': 'Memory (MB)',
+	'new.cpus': 'CPUs',
+	'new.network': 'Network',
+	'new.networkHint': 'Containers on the same network can reach each other. Leave empty for none.',
+	'new.submit': 'Start',
+	'new.starting': 'Downloading and starting…',
+
+	'app.stop': 'Stop',
+	'app.remove': 'Remove',
+	'app.removeConfirm': 'Remove {id}? Its container and logs are deleted.',
+	'app.output': 'Output',
+	'app.noOutput': 'No output yet.',
+	'app.address': 'Address'
 } as const;
