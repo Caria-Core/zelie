@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"syscall"
 
+	"github.com/Caria-Core/zelie/internal/build"
 	"github.com/Caria-Core/zelie/internal/core"
 	"github.com/Caria-Core/zelie/internal/engine"
 )
@@ -37,7 +38,10 @@ func runCore(stderr io.Writer) int {
 	}
 	defer e.Close()
 
-	s := &core.Server{Engine: e, Paths: engine.DefaultPaths, Log: log, Allowed: policy}
+	s := &core.Server{
+		Engine: e, Paths: engine.DefaultPaths, Log: log, Allowed: policy,
+		Builder: build.New(e, engine.DefaultPaths, "/var/lib/zelie/build"),
+	}
 	if err := s.Serve(ctx, core.DefaultSocket); err != nil {
 		log.Error("core stopped", "err", err)
 		return 1

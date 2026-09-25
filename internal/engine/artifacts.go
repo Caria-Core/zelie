@@ -12,6 +12,7 @@ const (
 	ContainerdVersion = "2.4.1"
 	RuncVersion       = "1.5.1"
 	CNIVersion        = "1.9.1"
+	RailpackVersion   = "0.40.0"
 )
 
 type artifact struct {
@@ -49,6 +50,19 @@ var cniArtifacts = map[string]artifact{
 	"arm64": {
 		URL:    "https://github.com/containernetworking/plugins/releases/download/v1.9.1/cni-plugins-linux-arm64-v1.9.1.tgz",
 		SHA256: "56171987d3947707c3563db2f4001bccaf50fd63468611b9f3cbecb1375ee7ec",
+	},
+}
+
+// Railpack works out how to build a repository that has no Dockerfile. It
+// runs inside the build containers, never on the host itself.
+var railpackArtifacts = map[string]artifact{
+	"amd64": {
+		URL:    "https://github.com/railwayapp/railpack/releases/download/v0.40.0/railpack-v0.40.0-x86_64-unknown-linux-musl.tar.gz",
+		SHA256: "52e5558f830b7349386e9448e04351d0834df041d4c31c20b7ec4d539f0d66d7",
+	},
+	"arm64": {
+		URL:    "https://github.com/railwayapp/railpack/releases/download/v0.40.0/railpack-v0.40.0-arm64-unknown-linux-musl.tar.gz",
+		SHA256: "86c5a3db888c710b2014262de55fc87a56c85c4e96ba7cd10894e5df210a212b",
 	},
 }
 

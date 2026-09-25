@@ -23,6 +23,7 @@ Commands:
   rm <id>                              Stop and delete a container
   ps                                   List containers
   logs [-f] <id>                       Print a container's output, -f keeps following
+  build <app> <version> <dir>          Build a directory into an image
   route add <host> <id> <port>         Send a domain to a container's port
   route rm <host>                      Stop routing a domain
   route ls                             List routes
@@ -88,6 +89,12 @@ func debug(args []string, stdout, stderr io.Writer) int {
 		case "rm":
 			err = c.Remove(ctx, args[1])
 		}
+	case "build":
+		if len(args) != 4 {
+			fmt.Fprint(stderr, debugUsage)
+			return 2
+		}
+		err = debugBuild(ctx, c, args[1], args[2], args[3], stdout)
 	case "route", "tls", "panel":
 		err = debugProxy(ctx, c, args, stdout)
 		if err == errUsage {

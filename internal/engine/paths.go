@@ -33,3 +33,5 @@ var DefaultPaths = Paths{
 }
 
 func (p Paths) Runc() string { return filepath.Join(p.Bin, "runc") }
+
+func (p Paths) Railpack() string { return filepath.Join(p.Bin, "railpack") }

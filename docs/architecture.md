@@ -74,6 +74,13 @@ access only to the repositories you choose. On a push:
 If any step fails, the old version keeps serving traffic and the panel shows what went
 wrong.
 
+Builds run [BuildKit](https://github.com/moby/buildkit) inside an ordinary Zelie
+container, with its own user namespace and resource limits, not as a service on the
+host. Each build step then runs in a sandbox of its own inside that container. The
+source archive is unpacked in a separate container that has nothing else mounted, so an
+archive with crafted symlinks has nothing to reach. Package manager caches are kept per
+app, and builds run one at a time.
+
 ## Web traffic
 
 The proxy gets certificates from Let's Encrypt with

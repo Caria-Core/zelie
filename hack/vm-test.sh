@@ -16,7 +16,7 @@ trap 'rm -rf "$tmp"' EXIT
 
 cd "$(dirname "$0")/.."
 GOOS=linux GOARCH=$goarch CGO_ENABLED=0 go build -o "$tmp/zelie" ./cmd/zelie
-for pkg in engine core; do
+for pkg in engine core build; do
 	GOOS=linux GOARCH=$goarch CGO_ENABLED=0 go test -c -tags integration -o "$tmp/$pkg.test" "./internal/$pkg"
 done
 
@@ -27,7 +27,7 @@ for f in "$tmp"/*; do
 done
 
 limactl shell "$vm" -- sudo /tmp/zelie-test/zelie engine install
-for pkg in engine core; do
+for pkg in engine core build; do
 	echo "== $pkg"
 	limactl shell "$vm" -- sudo /tmp/zelie-test/$pkg.test -test.v -test.count=1 "$@"
 done

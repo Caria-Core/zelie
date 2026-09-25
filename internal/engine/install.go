@@ -46,6 +46,10 @@ func (in *Installer) Install(ctx context.Context) error {
 	if !ok {
 		return fmt.Errorf("no CNI plugin build for architecture %q", in.Arch)
 	}
+	rp, ok := railpackArtifacts[in.Arch]
+	if !ok {
+		return fmt.Errorf("no Railpack build for architecture %q", in.Arch)
+	}
 
 	changed := false
 
@@ -91,6 +95,20 @@ func (in *Installer) Install(ctx context.Context) error {
 		}
 	}
 
+	// Railpack is started fresh for every build, so it needs no restart
+	// either.
+	archive, err = in.download(ctx, rp)
+	if err != nil {
+		return fmt.Errorf("railpack: %w", err)
+	}
+	railpack, err := extract(archive, ".", []string{"railpack"})
+	if err != nil {
+		return fmt.Errorf("railpack: %w", err)
+	}
+	if _, err := writeIfChanged(in.Paths.Railpack(), railpack["railpack"], 0o755); err != nil {
+		return err
+	}
+
 	for file, content := range map[string]string{
 		in.Paths.Config: ConfigFile(in.Paths),
 		in.Paths.Unit:   UnitFile(in.Paths),
@@ -102,7 +120,7 @@ func (in *Installer) Install(ctx context.Context) error {
 		changed = changed || c
 	}
 
-	in.logf("containerd %s, runc %s and CNI plugins %s are installed", ContainerdVersion, RuncVersion, CNIVersion)
+	in.logf("containerd %s, runc %s, CNI plugins %s and Railpack %s are installed", ContainerdVersion, RuncVersion, CNIVersion, RailpackVersion)
 
 	systemctl := in.systemctl
 	if systemctl == nil {

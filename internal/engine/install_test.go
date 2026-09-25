@@ -49,6 +49,7 @@ func fakeRelease(t *testing.T, archive, runc []byte, runcSum string) *httptest.S
 	cni := tarGz(t, map[string]string{
 		"./bridge": "b", "./host-local": "h", "./loopback": "l", "./firewall": "f", "./portmap": "p", "./vlan": "not wanted",
 	})
+	railpack := tarGz(t, map[string]string{"railpack": "rp"})
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -58,6 +59,8 @@ func fakeRelease(t *testing.T, archive, runc []byte, runcSum string) *httptest.S
 			w.Write(runc)
 		case "/cni.tgz":
 			w.Write(cni)
+		case "/railpack.tar.gz":
+			w.Write(railpack)
 		default:
 			http.NotFound(w, r)
 		}
@@ -66,7 +69,9 @@ func fakeRelease(t *testing.T, archive, runc []byte, runcSum string) *httptest.S
 	containerdArtifacts["test"] = artifact{URL: srv.URL + "/containerd.tar.gz", SHA256: sum(archive)}
 	runcArtifacts["test"] = artifact{URL: srv.URL + "/runc", SHA256: runcSum}
 	cniArtifacts["test"] = artifact{URL: srv.URL + "/cni.tgz", SHA256: sum(cni)}
+	railpackArtifacts["test"] = artifact{URL: srv.URL + "/railpack.tar.gz", SHA256: sum(railpack)}
 	t.Cleanup(func() {
+		delete(railpackArtifacts, "test")
 		delete(containerdArtifacts, "test")
 		delete(runcArtifacts, "test")
 		delete(cniArtifacts, "test")
@@ -182,7 +187,7 @@ func TestUnitKeepsContainersOnRestart(t *testing.T) {
 
 func TestArtifactsCoverSupportedArchitectures(t *testing.T) {
 	for _, arch := range []string{"amd64", "arm64"} {
-		for name, set := range map[string]map[string]artifact{"containerd": containerdArtifacts, "runc": runcArtifacts, "cni": cniArtifacts} {
+		for name, set := range map[string]map[string]artifact{"containerd": containerdArtifacts, "runc": runcArtifacts, "cni": cniArtifacts, "railpack": railpackArtifacts} {
 			a, ok := set[arch]
 			if !ok {
 				t.Errorf("no %s artifact for %s", name, arch)

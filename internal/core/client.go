@@ -63,14 +63,7 @@ func (c *Client) do(ctx context.Context, method, path string, body any, out any)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
-		var e struct {
-			Error string `json:"error"`
-		}
-		json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&e)
-		if e.Error == "" {
-			e.Error = resp.Status
-		}
-		return &Error{Status: resp.StatusCode, Message: e.Error}
+		return readError(resp)
 	}
 	if out == nil {
 		return nil
@@ -95,6 +88,18 @@ func (c *Client) Stop(ctx context.Context, id string, graceSeconds int) error {
 
 func (c *Client) Remove(ctx context.Context, id string) error {
 	return c.do(ctx, http.MethodDelete, "/v1/containers/"+url.PathEscape(id), nil, nil)
+}
+
+// readError turns an error response into an *Error.
+func readError(resp *http.Response) error {
+	var e struct {
+		Error string `json:"error"`
+	}
+	json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&e)
+	if e.Error == "" {
+		e.Error = resp.Status
+	}
+	return &Error{Status: resp.StatusCode, Message: e.Error}
 }
 
 func (c *Client) List(ctx context.Context) ([]engine.Status, error) {

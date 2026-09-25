@@ -324,6 +324,7 @@ func TestBuilderBuildsAnImage(t *testing.T) {
 			{Source: dir + "/out", Target: "/out"},
 		},
 		Builder: true,
+		Nesting: true,
 	})
 	waitCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()

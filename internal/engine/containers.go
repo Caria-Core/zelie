@@ -81,9 +81,13 @@ type Spec struct {
 	// part of the core's API.
 	Mounts []Mount
 
-	// Builder prepares the container to build images: see builderOpts. Like
-	// Mounts, only the core sets it.
+	// Builder runs the container as the builder: in the builder's own ID
+	// block, so what it writes stays readable by the next build step. Only
+	// one builder container exists at a time. Like Mounts, only the core
+	// sets it.
 	Builder bool
+	// Nesting lets a builder run containers of its own: see nestingOpts.
+	Nesting bool
 }
 
 // Mount binds a host directory into a container.
@@ -107,6 +111,9 @@ func (s Spec) Validate() error {
 		return errors.New("a CPU limit is required")
 	case s.Pids <= 0:
 		return errors.New("a process limit is required")
+	}
+	if s.Nesting && !s.Builder {
+		return errors.New("only the builder may run nested containers")
 	}
 	for _, m := range s.Mounts {
 		if !filepath.IsAbs(m.Source) || !filepath.IsAbs(m.Target) || filepath.Clean(m.Target) != m.Target {
@@ -241,8 +248,8 @@ func (e *Engine) Run(ctx context.Context, s Spec) (err error) {
 		}
 		specOpts = append(specOpts, oci.WithMounts([]specs.Mount{{Destination: m.Target, Type: "bind", Source: m.Source, Options: opts}}))
 	}
-	if s.Builder {
-		specOpts = append(specOpts, builderOpts)
+	if s.Nesting {
+		specOpts = append(specOpts, nestingOpts)
 	}
 	if len(s.Args) > 0 {
 		specOpts = append(specOpts, oci.WithProcessArgs(s.Args...))
@@ -362,11 +369,11 @@ func (e *Engine) ImportImage(ctx context.Context, r io.Reader, name string) erro
 	return err
 }
 
-// builderOpts gives a builder what it needs to run build steps as containers
+// nestingOpts gives a builder what it needs to run build steps as containers
 // of its own. Everything added is confined to the container's user
 // namespace; none of it is a privilege on the host. With these BuildKit runs
 // each step in its own sandbox, where the step cannot see the builder.
-var builderOpts oci.SpecOpts = func(ctx context.Context, c oci.Client, ctr *containers.Container, s *specs.Spec) error {
+var nestingOpts oci.SpecOpts = func(ctx context.Context, c oci.Client, ctr *containers.Container, s *specs.Spec) error {
 	// Mounting the root file system and procfs of a nested container.
 	// MKNOD and NET_RAW are dropped from other containers but BuildKit
 	// hands them to build steps, which fails if the builder lacks them.

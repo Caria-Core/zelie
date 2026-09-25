@@ -40,6 +40,7 @@ const (
 
 type Server struct {
 	Engine  Engine
+	Builder Builder
 	Paths   engine.Paths
 	Log     *slog.Logger
 	Allowed peer.Policy
@@ -52,6 +53,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/containers/{id}/stop", s.stop)
 	mux.HandleFunc("DELETE /v1/containers/{id}", s.remove)
 	mux.HandleFunc("GET /v1/containers/{id}/logs", s.logs)
+	mux.HandleFunc("POST /v1/builds", s.build)
 	return peer.Require(s.Allowed, s.Log, mux)
 }
 

@@ -20,3 +20,10 @@ func TestMountPathsMustBeAbsolute(t *testing.T) {
 		t.Errorf("valid mount rejected: %v", err)
 	}
 }
+
+func TestOnlyTheBuilderNests(t *testing.T) {
+	s := Spec{ID: "web", Image: "busybox", MemoryBytes: 1, CPUs: 1, Pids: 1, Nesting: true}
+	if s.Validate() == nil {
+		t.Error("nesting allowed outside the builder")
+	}
+}
