@@ -32,7 +32,8 @@ func relyingParty(r *http.Request) (*webauthn.WebAuthn, error) {
 	return webauthn.New(&webauthn.Config{
 		RPID:          host,
 		RPDisplayName: "Zelie",
-		RPOrigins:     []string{"https://" + host},
+		// The origin keeps the port, if the visitor used one.
+		RPOrigins: []string{"https://" + strings.ToLower(r.Host)},
 	})
 }
 
