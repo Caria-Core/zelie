@@ -113,6 +113,29 @@ echo done; sleep 60`
 	}
 }
 
+func TestRemoveDeletesLog(t *testing.T) {
+	e := connect(t)
+	run(t, e, Spec{ID: "it-rmlog", Image: testImage, Args: []string{"echo", "old output"},
+		MemoryBytes: 32 << 20, CPUs: 0.1, Pids: 8})
+	waitForLog(t, "it-rmlog", "old output")
+	if err := e.Remove(context.Background(), "it-rmlog"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(LogPathFor(DefaultPaths, "it-rmlog")); !os.IsNotExist(err) {
+		t.Errorf("log still there after remove: %v", err)
+	}
+}
+
+// Images such as nginx log to files that are symlinks to /dev/stdout, and
+// opening one reopens the container's output pipe.
+func TestContainerCanReopenItsOutput(t *testing.T) {
+	e := connect(t)
+	run(t, e, Spec{ID: "it-reopen", Image: testImage, MemoryBytes: 64 << 20, CPUs: 0.5, Pids: 64,
+		Args: []string{"sh", "-c", "echo to-stdout > /dev/stdout && echo to-stderr > /dev/stderr && sleep 60"}})
+	waitForLog(t, "it-reopen", "to-stdout")
+	waitForLog(t, "it-reopen", "to-stderr")
+}
+
 func TestContainersGetSeparateIDRanges(t *testing.T) {
 	e := connect(t)
 	spec := Spec{Image: testImage, Args: []string{"sleep", "60"}, MemoryBytes: 32 << 20, CPUs: 0.1, Pids: 8}
@@ -169,8 +192,8 @@ func TestStopEscalatesToKill(t *testing.T) {
 	if took := time.Since(start); took > 10*time.Second {
 		t.Errorf("stop took %v with a one second grace period", took)
 	}
-	if s := status(t, e, "it-stop"); s.State == "running" {
-		t.Errorf("still running after stop: %+v", s)
+	if s := status(t, e, "it-stop"); s.State != "stopped" {
+		t.Errorf("state after stop: %+v", s)
 	}
 }
 

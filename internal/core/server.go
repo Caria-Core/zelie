@@ -4,6 +4,7 @@
 package core
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -14,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	"github.com/Caria-Core/zelie/internal/engine"
@@ -213,12 +215,44 @@ func (s *Server) logs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer f.Close()
+	if tail := r.URL.Query().Get("tail"); tail != "" {
+		n, err := strconv.ParseInt(tail, 10, 64)
+		if err != nil || n <= 0 {
+			writeError(w, http.StatusBadRequest, errors.New("tail must be a positive number of bytes"))
+			return
+		}
+		if err := seekTail(f, n); err != nil {
+			s.fail(w, "logs", id, err)
+			return
+		}
+	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	if r.URL.Query().Get("follow") != "1" {
 		io.Copy(w, f)
 		return
 	}
 	follow(r.Context(), f, w, 250*time.Millisecond)
+}
+
+// seekTail moves f to the start of the first whole line within the last n
+// bytes, so a long log can be shown from its end.
+func seekTail(f *os.File, n int64) error {
+	st, err := f.Stat()
+	if err != nil || st.Size() <= n {
+		return err
+	}
+	// Start one byte early: if that byte ends a line, the line after it is
+	// whole and is kept.
+	start := st.Size() - n - 1
+	if _, err := f.Seek(start, io.SeekStart); err != nil {
+		return err
+	}
+	skipped, err := bufio.NewReader(io.LimitReader(f, n+1)).ReadBytes('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return err
+	}
+	_, err = f.Seek(start+int64(len(skipped)), io.SeekStart)
+	return err
 }
 
 // fail maps engine errors to status codes. Internal details go to the log,

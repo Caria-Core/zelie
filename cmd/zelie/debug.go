@@ -73,7 +73,7 @@ func debug(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprint(stderr, debugUsage)
 			return 2
 		}
-		err = c.Logs(ctx, args[len(args)-1], follow, stdout)
+		err = c.Logs(ctx, args[len(args)-1], follow, 0, stdout)
 		if follow && ctx.Err() != nil {
 			err = nil // stopped with Ctrl-C
 		}

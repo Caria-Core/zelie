@@ -209,6 +209,12 @@ func (e *Engine) Run(ctx context.Context, s Spec) (err error) {
 		containerd.WithRuntime("io.containerd.runc.v2", &options.Options{
 			BinaryName:    e.paths.Runc(),
 			SystemdCgroup: true,
+			// The container's output goes through pipes the shim creates.
+			// Images such as nginx log to /dev/stdout, and opening that
+			// reopens the pipe, which only its owner may do. Owned by host
+			// root, that would fail for the container's root.
+			IoUid: base,
+			IoGid: base,
 		}),
 		containerd.WithContainerLabels(map[string]string{labelUsernsBase: strconv.FormatUint(uint64(base), 10)}),
 		containerd.WithNewSpec(specOpts...),
@@ -332,7 +338,8 @@ func (e *Engine) Stop(ctx context.Context, id string, grace time.Duration) error
 	return err
 }
 
-// Remove stops the container if needed and deletes it with its snapshot.
+// Remove stops the container if needed and deletes it with its snapshot and
+// its log.
 func (e *Engine) Remove(ctx context.Context, id string) error {
 	if err := e.Stop(ctx, id, 10*time.Second); err != nil && !errdefs.IsNotFound(err) {
 		return err
@@ -358,6 +365,11 @@ func (e *Engine) Remove(ctx context.Context, id string) error {
 		errs = append(errs, netns.LoadNetNS(path).Remove())
 	}
 	errs = append(errs, os.RemoveAll(e.containerDir(id)))
+	// A new container with the same name must not start with the old one's
+	// output.
+	if err := os.Remove(LogPathFor(e.paths, id)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		errs = append(errs, err)
+	}
 	return errors.Join(errs...)
 }
 
@@ -384,7 +396,9 @@ func (e *Engine) List(ctx context.Context) ([]Status, error) {
 		if err != nil {
 			return nil, err
 		}
-		st := Status{ID: c.ID(), Image: info.Image, State: "created"}
+		// A container without a task has been stopped: Stop deletes the
+		// task once the process has exited.
+		st := Status{ID: c.ID(), Image: info.Image, State: "stopped"}
 		if v, err := strconv.ParseUint(info.Labels[labelUsernsBase], 10, 32); err == nil {
 			st.Userns = uint32(v)
 		}

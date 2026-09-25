@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"strconv"
 
 	"github.com/Caria-Core/zelie/internal/engine"
 )
@@ -109,12 +110,20 @@ func (c *Client) List(ctx context.Context) ([]engine.Status, error) {
 	return out, nil
 }
 
-// Logs writes a container's output to w. With follow set it keeps streaming
-// new output until ctx is cancelled.
-func (c *Client) Logs(ctx context.Context, id string, follow bool, w io.Writer) error {
-	path := "/v1/containers/" + url.PathEscape(id) + "/logs"
+// Logs writes a container's output to w. With tail above zero it starts at
+// the first whole line within that many bytes of the end. With follow set it
+// keeps streaming new output until ctx is cancelled.
+func (c *Client) Logs(ctx context.Context, id string, follow bool, tail int64, w io.Writer) error {
+	q := url.Values{}
 	if follow {
-		path += "?follow=1"
+		q.Set("follow", "1")
+	}
+	if tail > 0 {
+		q.Set("tail", strconv.FormatInt(tail, 10))
+	}
+	path := "/v1/containers/" + url.PathEscape(id) + "/logs"
+	if len(q) > 0 {
+		path += "?" + q.Encode()
 	}
 	return c.do(ctx, http.MethodGet, path, nil, w)
 }
