@@ -8,6 +8,7 @@
 	import { refresh, session } from '$lib/session.svelte';
 	import Logo from '$lib/ui/Logo.svelte';
 	import StateDot from '$lib/ui/StateDot.svelte';
+	import ThemeSwitch from '$lib/ui/ThemeSwitch.svelte';
 
 	let { children } = $props();
 	let ready = $state(false);
@@ -60,6 +61,7 @@
 				>
 			</nav>
 			<div class="flex flex-col gap-0.5 text-sm">
+				<div class="px-1 pb-2"><ThemeSwitch /></div>
 				<p class="truncate px-2 text-muted">{session.me?.email}</p>
 				<button class="rounded-lg px-2 py-1.5 text-left text-muted hover:bg-hover hover:text-fg" onclick={logout}
 					>{t('nav.logout')}</button

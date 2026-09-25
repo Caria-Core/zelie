@@ -47,6 +47,9 @@ export default {
 	'nav.new': 'New app',
 	'nav.logout': 'Log out',
 	'nav.theme': 'Theme',
+	'theme.system': 'System',
+	'theme.light': 'Light',
+	'theme.dark': 'Dark',
 
 	'home.title': 'Nothing is running yet.',
 	'home.lead': 'Start a container from an image to see it here.',
