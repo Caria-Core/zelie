@@ -33,6 +33,11 @@ type network struct {
 
 func (n network) bridge() string { return fmt.Sprintf("zelie%d", n.Index) }
 
+// gateway is the host's address on the network, where its DNS server is.
+func (n network) gateway() netip.Addr {
+	return netip.MustParsePrefix(n.Subnet).Addr().Next()
+}
+
 // networks keeps the list of networks in a small JSON file. Only the core
 // touches it, and the mutex covers concurrent requests inside the core.
 type networks struct {
@@ -65,6 +70,20 @@ func (n *networks) load() (map[string]network, error) {
 		return nil, fmt.Errorf("read %s: %w", n.file(), err)
 	}
 	return m, nil
+}
+
+func (n *networks) all() ([]network, error) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	m, err := n.load()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]network, 0, len(m))
+	for _, nw := range m {
+		out = append(out, nw)
+	}
+	return out, nil
 }
 
 // ensure returns the named network, creating its entry on first use. The
@@ -105,9 +124,10 @@ func (n *networks) ensure(name string) (network, error) {
 
 // confList is the CNI configuration for a network.
 //
-// The firewall plugin's same-bridge policy drops traffic arriving from other
-// bridges, which is what keeps networks apart. ipMasq lets containers reach
-// the internet through the host.
+// Networks are kept apart by Zelie's own firewall rules (applyFirewall),
+// which let links through. The firewall plugin only makes sure a FORWARD
+// policy of DROP, as Docker sets, lets the containers out. ipMasq lets
+// containers reach the internet through the host.
 func (n *networks) confList(nw network) (*libcni.NetworkConfigList, error) {
 	conf := map[string]any{
 		"cniVersion": "1.0.0",
@@ -127,9 +147,8 @@ func (n *networks) confList(nw network) (*libcni.NetworkConfigList, error) {
 				},
 			},
 			map[string]any{
-				"type":          "firewall",
-				"backend":       "iptables",
-				"ingressPolicy": "same-bridge",
+				"type":    "firewall",
+				"backend": "iptables",
 			},
 		},
 	}
@@ -186,28 +205,24 @@ func (n *networks) detach(ctx context.Context, name, id, netnsPath string) error
 	return n.cni.DelNetworkList(ctx, list, &libcni.RuntimeConf{ContainerID: id, NetNS: netnsPath, IfName: "eth0"})
 }
 
-// resolvConf writes the DNS configuration containers get. The host often
-// points at a local stub resolver such as 127.0.0.53, which a container
-// cannot reach, so loopback servers are dropped and the upstream servers
+// upstreamDNS returns the DNS servers the host uses, which the containers'
+// DNS server passes names on to. The host often points at a local stub
+// resolver such as 127.0.0.53, which is left out: the upstream servers
 // behind systemd-resolved are used when they are known.
-func resolvConf(p Paths) (string, error) {
-	var servers []string
+func upstreamDNS() ([]string, error) {
 	for _, f := range []string{"/run/systemd/resolve/resolv.conf", "/etc/resolv.conf"} {
-		servers = nameservers(f)
-		if len(servers) > 0 {
-			break
+		if servers := nameservers(f); len(servers) > 0 {
+			return servers, nil
 		}
 	}
-	if len(servers) == 0 {
-		return "", errors.New("found no DNS server for containers: /etc/resolv.conf only lists loopback addresses")
-	}
-	var b strings.Builder
-	b.WriteString("# Written by Zelie.\n")
-	for _, s := range servers {
-		fmt.Fprintf(&b, "nameserver %s\n", s)
-	}
-	path := filepath.Join(p.Data, "resolv.conf")
-	if _, err := writeIfChanged(path, []byte(b.String()), 0o644); err != nil {
+	return nil, errors.New("found no DNS server for containers: /etc/resolv.conf only lists loopback addresses")
+}
+
+// resolvConf writes the DNS configuration of the containers on a network.
+func resolvConf(p Paths, nw network) (string, error) {
+	path := filepath.Join(p.Data, "resolv-"+nw.Name+".conf")
+	b := fmt.Sprintf("# Written by Zelie.\nnameserver %s\n", nw.gateway())
+	if _, err := writeIfChanged(path, []byte(b), 0o644); err != nil {
 		return "", err
 	}
 	return path, nil

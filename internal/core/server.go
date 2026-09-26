@@ -38,6 +38,8 @@ type Engine interface {
 	CreateVolume(name string) error
 	RemoveVolume(ctx context.Context, name string) error
 	VolumeSizes() (map[string]int64, error)
+	Links(app string) ([]engine.Link, error)
+	SetLinks(ctx context.Context, app string, links []engine.Link) error
 }
 
 // Limits a single request may ask for. They keep a confused or compromised
@@ -71,6 +73,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/volumes", s.volumes)
 	mux.HandleFunc("POST /v1/volumes", s.createVolume)
 	mux.HandleFunc("DELETE /v1/volumes/{name}", s.removeVolume)
+	mux.HandleFunc("GET /v1/links/{app}", s.links)
+	mux.HandleFunc("PUT /v1/links/{app}", s.setLinks)
 	mux.HandleFunc("POST /v1/builds", s.build)
 	mux.HandleFunc("DELETE /v1/images", s.removeImage)
 	mux.HandleFunc("GET /v1/secrets/key", s.secretKey)

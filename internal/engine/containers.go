@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -153,7 +154,8 @@ type Engine struct {
 	client   *containerd.Client
 	paths    Paths
 	networks *networks
-	resolv   string
+	peers    peers
+	dns      *dnsServer
 
 	// createMu makes creating containers one at a time, so two requests
 	// can never pick the same ID range or race on the same name.
@@ -165,16 +167,21 @@ func Connect(ctx context.Context, p Paths) (*Engine, error) {
 	if err != nil {
 		return nil, fmt.Errorf("connect to containerd at %s: %w", p.Socket, err)
 	}
-	resolv, err := resolvConf(p)
+	servers, err := upstreamDNS()
 	if err != nil {
 		c.Close()
 		return nil, err
 	}
-	if err := guardHost(); err != nil {
+	e := &Engine{client: c, paths: p, networks: newNetworks(p)}
+	e.dns = &dnsServer{lookup: e.lookup}
+	for _, s := range servers {
+		e.dns.upstream = append(e.dns.upstream, net.JoinHostPort(s, "53"))
+	}
+	if err := e.refresh(ctx); err != nil {
 		c.Close()
 		return nil, err
 	}
-	return &Engine{client: c, paths: p, networks: newNetworks(p), resolv: resolv}, nil
+	return e, nil
 }
 
 func (e *Engine) Close() error { return e.client.Close() }
@@ -235,9 +242,28 @@ func (e *Engine) Run(ctx context.Context, s Spec) (err error) {
 	if err := os.MkdirAll(e.containerDir(s.ID), 0o755); err != nil {
 		return err
 	}
+	// Runs last, once the container and its address are gone.
+	cleanup = append(cleanup, func() { e.refresh(context.WithoutCancel(ctx)) })
 	cleanup = append(cleanup, func() { os.RemoveAll(e.containerDir(s.ID)) })
 	if err := os.WriteFile(hostsFile, nil, 0o644); err != nil {
 		return err
+	}
+	// Without a network there is no one to ask.
+	resolv := filepath.Join(e.containerDir(s.ID), "resolv.conf")
+	if err := os.WriteFile(resolv, nil, 0o644); err != nil {
+		return err
+	}
+	if s.Network != "" {
+		nw, err := e.networks.ensure(s.Network)
+		if err != nil {
+			return err
+		}
+		if resolv, err = resolvConf(e.paths, nw); err != nil {
+			return err
+		}
+		if err := e.dns.listen(nw.gateway()); err != nil {
+			return fmt.Errorf("DNS server for network %s: %w", s.Network, err)
+		}
 	}
 
 	specOpts := []oci.SpecOpts{
@@ -262,7 +288,7 @@ func (e *Engine) Run(ctx context.Context, s Spec) (err error) {
 				Source:      "cgroup",
 				Options:     []string{"nosuid", "noexec", "nodev", "relatime", "ro"},
 			},
-			{Destination: "/etc/resolv.conf", Type: "bind", Source: e.resolv, Options: []string{"rbind", "ro"}},
+			{Destination: "/etc/resolv.conf", Type: "bind", Source: resolv, Options: []string{"rbind", "ro"}},
 			{Destination: "/etc/hosts", Type: "bind", Source: hostsFile, Options: []string{"rbind", "ro"}},
 		}),
 	}
@@ -358,6 +384,10 @@ func (e *Engine) Run(ctx context.Context, s Spec) (err error) {
 		return err
 	}
 	if _, err := container.SetLabels(ctx, labels); err != nil {
+		return err
+	}
+	// The firewall lets the container's links through before it starts.
+	if err := e.refresh(ctx); err != nil {
 		return err
 	}
 
@@ -575,6 +605,7 @@ func (e *Engine) Remove(ctx context.Context, id string) error {
 		errs = append(errs, netns.LoadNetNS(path).Remove())
 	}
 	errs = append(errs, os.RemoveAll(e.containerDir(id)))
+	errs = append(errs, e.refresh(ctx))
 	// A new container with the same name must not start with the old one's
 	// output.
 	if err := os.Remove(LogPathFor(e.paths, id)); err != nil && !errors.Is(err, os.ErrNotExist) {

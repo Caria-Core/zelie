@@ -45,6 +45,22 @@ func runCore(stderr io.Writer) int {
 		return 1
 	}
 
+	// Without DNS, apps cannot find their links or anything else, so the
+	// core stops with it.
+	dnsErrs, err := e.StartDNS(ctx)
+	if err != nil {
+		log.Error("start core", "err", err)
+		return 1
+	}
+	var dnsErr error
+	go func() {
+		select {
+		case dnsErr = <-dnsErrs:
+			stop()
+		case <-ctx.Done():
+		}
+	}()
+
 	s := &core.Server{
 		Engine: e, Paths: engine.DefaultPaths, Log: log, Allowed: policy,
 		Builder: build.New(e, engine.DefaultPaths, "/var/lib/zelie/build"),
@@ -52,6 +68,10 @@ func runCore(stderr io.Writer) int {
 	}
 	if err := s.Serve(ctx, core.DefaultSocket); err != nil {
 		log.Error("core stopped", "err", err)
+		return 1
+	}
+	if dnsErr != nil {
+		log.Error("DNS server stopped", "err", dnsErr)
 		return 1
 	}
 	return 0

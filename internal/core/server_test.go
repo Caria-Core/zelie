@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -24,6 +25,7 @@ type fakeEngine struct {
 
 	removedImages []string
 	volumes       []string
+	links         map[string][]engine.Link
 }
 
 func (f *fakeEngine) Run(_ context.Context, s engine.Spec) error {
@@ -64,6 +66,16 @@ func (f *fakeEngine) RemoveVolume(_ context.Context, name string) error {
 
 func (f *fakeEngine) VolumeSizes() (map[string]int64, error) {
 	return map[string]int64{"data": 4096}, nil
+}
+
+func (f *fakeEngine) Links(app string) ([]engine.Link, error) { return f.links[app], nil }
+
+func (f *fakeEngine) SetLinks(_ context.Context, app string, links []engine.Link) error {
+	if f.links == nil {
+		f.links = map[string][]engine.Link{}
+	}
+	f.links[app] = links
+	return nil
 }
 
 func (f *fakeEngine) Usage(id string) (engine.Usage, error) {
@@ -258,6 +270,33 @@ func TestUsageAndHost(t *testing.T) {
 	}
 	if rec := request(t, s, panel, "GET", "/v1/host", ""); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"cpus":2`) {
 		t.Errorf("host: %d %s", rec.Code, rec.Body)
+	}
+}
+
+func TestLinks(t *testing.T) {
+	s, f := newServer()
+	root := &peer.Peer{UID: 0}
+	for _, c := range []struct {
+		body string
+		want int
+	}{
+		{`[{"name":"db","to":"pg","port":5432}]`, http.StatusNoContent},
+		{`[{"name":"db","to":"web","port":5432}]`, http.StatusBadRequest},
+		{`[{"name":"db","to":"pg","port":0}]`, http.StatusBadRequest},
+		{`[{"name":"db.x","to":"pg","port":5432}]`, http.StatusBadRequest},
+		{`[{"name":"db","to":"pg","port":5432},{"name":"db","to":"redis","port":6379}]`, http.StatusBadRequest},
+	} {
+		if rec := request(t, s, root, "PUT", "/v1/links/web", c.body); rec.Code != c.want {
+			t.Errorf("%s: status %d, want %d: %s", c.body, rec.Code, c.want, rec.Body)
+		}
+	}
+	want := []engine.Link{{Name: "db", To: "pg", Port: 5432}}
+	if got := f.links["web"]; fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("links %v, want %v", got, want)
+	}
+	rec := request(t, s, root, "GET", "/v1/links/web", "")
+	if strings.TrimSpace(rec.Body.String()) != `[{"name":"db","to":"pg","port":5432}]` {
+		t.Errorf("list: %s", rec.Body)
 	}
 }
 

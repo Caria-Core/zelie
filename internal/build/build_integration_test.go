@@ -28,6 +28,11 @@ func connect(t *testing.T) *engine.Engine {
 		t.Skip("Zelie's containerd is not running")
 	}
 	t.Cleanup(func() { e.Close() })
+	// Containers ask their network's gateway for names. A running core
+	// already answers there, and then this fails harmlessly.
+	ctx, cancel := context.WithCancel(context.Background())
+	e.StartDNS(ctx)
+	t.Cleanup(cancel)
 	return e
 }
 
