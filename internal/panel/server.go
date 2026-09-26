@@ -16,6 +16,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"time"
@@ -48,6 +49,8 @@ type Server struct {
 	GitHubHTTP *http.Client
 	// HealthCheck replaces the HTTP request of the health check in tests.
 	HealthCheck func(ctx context.Context, url, host string) (int, error)
+	// PortCheck replaces the connection a database's health check makes.
+	PortCheck func(ctx context.Context, ip netip.Addr, port int) bool
 
 	guards  *guards
 	deploys deploys
@@ -120,6 +123,12 @@ func (s *Server) Handler() http.Handler {
 	web.HandleFunc("POST /api/apps/{app}/volumes", s.signedIn(s.addVolume))
 	web.HandleFunc("PATCH /api/apps/{app}/volumes/{id}", s.signedIn(s.updateVolume))
 	web.HandleFunc("DELETE /api/apps/{app}/volumes/{id}", s.signedIn(s.deleteVolume))
+	web.HandleFunc("GET /api/apps/{app}/links", s.signedIn(s.listLinks))
+	web.HandleFunc("POST /api/apps/{app}/links", s.signedIn(s.addLink))
+	web.HandleFunc("PATCH /api/apps/{app}/links/{db}", s.signedIn(s.updateLink))
+	web.HandleFunc("DELETE /api/apps/{app}/links/{db}", s.signedIn(s.deleteLink))
+	web.HandleFunc("GET /api/databases/engines", s.signedIn(s.listEngines))
+	web.HandleFunc("POST /api/databases", s.signedIn(s.createDatabase))
 	web.HandleFunc("GET /api/host", s.signedIn(s.hostInfo))
 	web.HandleFunc("GET /api/github", s.signedIn(s.githubStatus))
 	web.HandleFunc("POST /api/github/manifest", s.confirmed(s.githubManifest))
@@ -159,6 +168,7 @@ func (s *Server) Serve(ctx context.Context, socket string) error {
 	}
 	go s.supervise(ctx)
 	go s.watchVolumes(ctx)
+	go s.syncAllLinks(ctx)
 	l, err := net.Listen("unix", socket)
 	if err != nil {
 		return err

@@ -21,7 +21,8 @@ import (
 type Core interface {
 	List(ctx context.Context) ([]engine.Status, error)
 	Run(ctx context.Context, s engine.Spec) error
-	RunApp(ctx context.Context, s engine.Spec, sealedEnv []string) error
+	RunApp(ctx context.Context, s engine.Spec, sealedEnv []string, linked ...core.LinkedVar) error
+	SetLinks(ctx context.Context, app string, links []engine.Link) error
 	Build(ctx context.Context, app, version string, env, sealedEnv []string, source io.Reader, out io.Writer) (build.Result, error)
 	Wait(ctx context.Context, id string) (int, error)
 	SecretKey(ctx context.Context) (secret.PublicKey, error)

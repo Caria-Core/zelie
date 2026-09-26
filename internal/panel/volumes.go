@@ -135,6 +135,10 @@ func (s *Server) addVolume(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if a.IsDatabase() {
+		writeError(w, http.StatusBadRequest, errors.New("a database keeps its files in the one volume it has"))
+		return
+	}
 	var req volumeRequest
 	if !decode(w, r, &req) {
 		return
@@ -204,6 +208,10 @@ func (s *Server) updateVolume(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Path != nil {
+		if a.IsDatabase() {
+			writeError(w, http.StatusBadRequest, errors.New("a database's volume stays where its engine keeps its files"))
+			return
+		}
 		v.Path = strings.TrimSpace(*req.Path)
 	}
 	if req.LimitMB != nil {
@@ -236,6 +244,10 @@ func (s *Server) updateVolume(w http.ResponseWriter, r *http.Request) {
 func (s *Server) deleteVolume(w http.ResponseWriter, r *http.Request) {
 	a, v, ok := s.volumeFrom(w, r)
 	if !ok {
+		return
+	}
+	if a.IsDatabase() {
+		writeError(w, http.StatusBadRequest, errors.New("a database's volume goes when the database is deleted"))
 		return
 	}
 	// Finish once started, like deleting an app.

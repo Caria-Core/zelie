@@ -129,7 +129,10 @@ type runRequest struct {
 	Env   []string `json:"env,omitempty"`
 	// SealedEnv holds secret variables sealed for App with the core's key
 	// (see package secret). They are opened here and nowhere else.
-	SealedEnv   []string          `json:"sealed_env,omitempty"`
+	SealedEnv []string `json:"sealed_env,omitempty"`
+	// LinkedEnv holds variables made from a secret of an app that App is
+	// linked to, such as a database's password.
+	LinkedEnv   []linkedVarJSON   `json:"linked_env,omitempty"`
 	Network     string            `json:"network,omitempty"`
 	Volumes     []volumeMountJSON `json:"volumes,omitempty"`
 	MemoryBytes int64             `json:"memory_bytes"`
@@ -182,6 +185,12 @@ func (s *Server) run(w http.ResponseWriter, r *http.Request) {
 		}
 		spec.Env = append(spec.Env, v)
 	}
+	linked, err := s.openLinked(req)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	spec.Env = append(spec.Env, linked...)
 	if err := s.Engine.Run(r.Context(), spec); err != nil {
 		s.fail(w, "run", req.ID, err)
 		return

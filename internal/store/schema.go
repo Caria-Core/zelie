@@ -164,4 +164,21 @@ CREATE TABLE volumes (
 	UNIQUE (app_id, path)
 ) STRICT;
 `,
+	`
+-- A database is an app run from its engine's image. engine is empty for
+-- every other app.
+ALTER TABLE apps ADD COLUMN engine TEXT NOT NULL DEFAULT '';
+ALTER TABLE apps ADD COLUMN engine_version TEXT NOT NULL DEFAULT '';
+
+-- An app linked to a database reaches it and gets variables to connect
+-- with, their names starting with prefix.
+CREATE TABLE links (
+	app_id     TEXT NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
+	db_id      TEXT NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
+	prefix     TEXT NOT NULL DEFAULT '',
+	created_at INTEGER NOT NULL,
+	PRIMARY KEY (app_id, db_id)
+) STRICT;
+CREATE INDEX links_db ON links(db_id);
+`,
 }

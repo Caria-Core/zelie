@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Caria-Core/zelie/internal/build"
+	"github.com/Caria-Core/zelie/internal/core"
 	"github.com/Caria-Core/zelie/internal/engine"
 	"github.com/Caria-Core/zelie/internal/github"
 	"github.com/Caria-Core/zelie/internal/proxy"
@@ -363,7 +364,7 @@ func (s *Server) build(ctx context.Context, app store.App, src Source, commit st
 // variables, and fails if it exits with anything but 0.
 func (s *Server) runTests(ctx context.Context, app store.App, image string, deployment int64, out io.Writer) error {
 	fmt.Fprintf(out, "Running the tests: %s\n", app.TestCommand)
-	env, sealed, err := s.appEnv(ctx, app)
+	env, sealed, linked, err := s.appEnv(ctx, app)
 	if err != nil {
 		return err
 	}
@@ -373,7 +374,7 @@ func (s *Server) runTests(ctx context.Context, app store.App, image string, depl
 	err = s.Core.RunApp(ctx, engine.Spec{
 		ID: id, App: app.ID, Image: image, Args: []string{"sh", "-c", app.TestCommand}, Env: env, Network: app.ID,
 		MemoryBytes: app.MemoryMB << 20, CPUs: app.CPUs, Pids: defaultPids,
-	}, sealed)
+	}, sealed, linked...)
 	if err != nil {
 		return fmt.Errorf("start the tests: %w", err)
 	}
@@ -406,11 +407,16 @@ func (s *Server) runTests(ctx context.Context, app store.App, image string, depl
 }
 
 // appEnv returns the app's variables for a container: the plain ones with
-// PORT, and the sealed ones, which only the core can open.
-func (s *Server) appEnv(ctx context.Context, app store.App) (env, sealed []string, err error) {
+// PORT and those of its databases, the sealed ones, and the ones the core
+// makes from its databases' passwords.
+func (s *Server) appEnv(ctx context.Context, app store.App) (env, sealed []string, linked []core.LinkedVar, err error) {
 	env, sealed, err = s.vars(ctx, app)
+	if err != nil || app.IsDatabase() {
+		return env, sealed, nil, err
+	}
+	dbEnv, linked, err := s.linkedEnv(ctx, app)
 	// Most frameworks read the port to listen on from PORT.
-	return append([]string{"PORT=" + strconv.Itoa(app.Port)}, env...), sealed, err
+	return append(append([]string{"PORT=" + strconv.Itoa(app.Port)}, env...), dbEnv...), sealed, linked, err
 }
 
 // vars returns the app's own variables, plain and sealed.
@@ -433,7 +439,7 @@ func (s *Server) vars(ctx context.Context, app store.App) (env, sealed []string,
 // HTTP if the app has a domain, since that is what the proxy will send it,
 // or staying up for a while otherwise, like a bot with no web side.
 func (s *Server) start(ctx context.Context, app store.App, image, container string, vols []store.Volume, out io.Writer) error {
-	env, sealed, err := s.appEnv(ctx, app)
+	env, sealed, linked, err := s.appEnv(ctx, app)
 	if err != nil {
 		return err
 	}
@@ -443,14 +449,21 @@ func (s *Server) start(ctx context.Context, app store.App, image, container stri
 		fmt.Fprintf(out, "Start command: %s\n", app.StartCommand)
 		args = []string{"sh", "-c", app.StartCommand}
 	}
+	db, isDB := engineOf(app)
+	if isDB {
+		args = db.Args
+	}
 	err = s.Core.RunApp(ctx, engine.Spec{
 		ID: container, App: app.ID, Image: image, Args: args, Env: env, Network: app.ID, Volumes: volumeMounts(vols),
 		MemoryBytes: app.MemoryMB << 20, CPUs: app.CPUs, Pids: defaultPids,
-	}, sealed)
+	}, sealed, linked...)
 	if err != nil {
 		return err
 	}
 
+	if isDB {
+		fmt.Fprintf(out, "Waiting for it to accept connections on port %d.\n", app.Port)
+	}
 	if app.Domain != "" {
 		fmt.Fprintf(out, "Waiting for it to answer at %s on port %d.\n", app.HealthPath, app.Port)
 	}
@@ -463,6 +476,12 @@ func (s *Server) start(ctx context.Context, app store.App, image, container stri
 			return err
 		}
 		switch {
+		case st.State == "running" && isDB:
+			if s.portOpen(ctx, st.IP, app.Port) {
+				fmt.Fprintln(out, "It accepts connections.")
+				return nil
+			}
+			lastAnswer = "not accepting connections yet"
 		case st.State == "running" && app.Domain != "":
 			addr := netip.AddrPortFrom(st.IP, uint16(app.Port)).String()
 			code, err := s.healthCheck(ctx, "http://"+addr+app.HealthPath, app.Domain)
@@ -485,6 +504,11 @@ func (s *Server) start(ctx context.Context, app store.App, image, container stri
 			return errors.New("the app stopped right after starting")
 		}
 		if time.Now().After(deadline) {
+			if isDB {
+				fmt.Fprintln(out, "\nThe database's last output:")
+				s.Core.Logs(ctx, container, false, 4<<10, out)
+				return fmt.Errorf("the database did not accept connections on port %d within %s", app.Port, startupLimit)
+			}
 			if lastAnswer != "" {
 				fmt.Fprintln(out, "\nThe app's last output:")
 				s.Core.Logs(ctx, container, false, 4<<10, out)

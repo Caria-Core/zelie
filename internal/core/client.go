@@ -80,11 +80,15 @@ func (c *Client) Run(ctx context.Context, s engine.Spec) error {
 	return c.RunApp(ctx, s, nil)
 }
 
-// RunApp runs a container of s.App with secret variables sealed for it.
-func (c *Client) RunApp(ctx context.Context, s engine.Spec, sealedEnv []string) error {
+// RunApp runs a container of s.App with secret variables sealed for it,
+// and variables made from the secrets of apps it is linked to.
+func (c *Client) RunApp(ctx context.Context, s engine.Spec, sealedEnv []string, linked ...LinkedVar) error {
 	req := runRequest{
 		ID: s.ID, App: s.App, Image: s.Image, Args: s.Args, Env: s.Env, SealedEnv: sealedEnv, Network: s.Network,
 		MemoryBytes: s.MemoryBytes, CPUs: s.CPUs, Pids: s.Pids,
+	}
+	for _, v := range linked {
+		req.LinkedEnv = append(req.LinkedEnv, linkedVarJSON(v))
 	}
 	for _, v := range s.Volumes {
 		req.Volumes = append(req.Volumes, volumeMountJSON{Name: v.Name, Target: v.Target})

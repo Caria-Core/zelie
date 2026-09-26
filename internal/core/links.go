@@ -2,10 +2,14 @@ package core
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 
 	"github.com/Caria-Core/zelie/internal/engine"
+	"github.com/Caria-Core/zelie/internal/secret"
 )
 
 type linkJSON struct {
@@ -72,4 +76,58 @@ func (c *Client) SetLinks(ctx context.Context, app string, links []engine.Link) 
 		body = append(body, linkJSON(l))
 	}
 	return c.do(ctx, http.MethodPut, "/v1/links/"+url.PathEscape(app), body, nil)
+}
+
+// LinkedVar is a variable made from a secret of another app, such as a
+// database URL with the database's password in it.
+type LinkedVar struct {
+	Name string
+	// Template is the value, with {secret} where the secret goes.
+	Template string
+	// From is the app the secret belongs to, and Sealed the secret, sealed
+	// for it.
+	From, Sealed string
+}
+
+type linkedVarJSON struct {
+	Name     string `json:"name"`
+	Template string `json:"template"`
+	From     string `json:"from"`
+	Sealed   string `json:"sealed"`
+}
+
+// openLinked makes the linked variables of a run request. An app only gets
+// a secret of an app it is linked to: the panel cannot hand one app's
+// secrets to another by asking.
+func (s *Server) openLinked(req runRequest) ([]string, error) {
+	if len(req.LinkedEnv) == 0 {
+		return nil, nil
+	}
+	if s.Secrets == nil || req.App == "" {
+		return nil, errors.New("linked variables need an app and a core with a secret key")
+	}
+	links, err := s.Engine.Links(req.App)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, v := range req.LinkedEnv {
+		if !secret.ValidName(v.Name) {
+			return nil, fmt.Errorf("%q is not a valid variable name", v.Name)
+		}
+		linked := false
+		for _, l := range links {
+			linked = linked || l.To == v.From
+		}
+		if !linked {
+			return nil, fmt.Errorf("%s is not linked to %s", req.App, v.From)
+		}
+		opened, err := s.Secrets.Open(v.Sealed, v.From)
+		if err != nil {
+			return nil, err
+		}
+		_, value, _ := strings.Cut(opened, "=")
+		out = append(out, v.Name+"="+strings.ReplaceAll(v.Template, "{secret}", value))
+	}
+	return out, nil
 }

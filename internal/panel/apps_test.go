@@ -48,6 +48,8 @@ type appCore struct {
 	crashImage string // containers of this image stop right away
 	next       byte
 
+	links map[string][]engine.Link
+
 	volumes     map[string]bool
 	sizes       map[string]int64
 	mounts      map[string][]engine.VolumeMount // by container
@@ -74,7 +76,7 @@ func (c *appCore) List(context.Context) ([]engine.Status, error) {
 
 func (c *appCore) Run(ctx context.Context, s engine.Spec) error { return c.RunApp(ctx, s, nil) }
 
-func (c *appCore) RunApp(_ context.Context, s engine.Spec, sealed []string) error {
+func (c *appCore) RunApp(_ context.Context, s engine.Spec, sealed []string, linked ...core.LinkedVar) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	env := slices.Clone(s.Env)
@@ -84,6 +86,18 @@ func (c *appCore) RunApp(_ context.Context, s engine.Spec, sealed []string) erro
 			return err
 		}
 		env = append(env, opened)
+	}
+	// As the core does: only a linked app gets another app's secret.
+	for _, v := range linked {
+		if !slices.ContainsFunc(c.links[s.App], func(l engine.Link) bool { return l.To == v.From }) {
+			return &core.Error{Status: http.StatusBadRequest, Message: s.App + " is not linked to " + v.From}
+		}
+		opened, err := c.keys.Open(v.Sealed, v.From)
+		if err != nil {
+			return err
+		}
+		_, value, _ := strings.Cut(opened, "=")
+		env = append(env, v.Name+"="+strings.ReplaceAll(v.Template, "{secret}", value))
 	}
 	for _, v := range s.Volumes {
 		if !c.volumes[v.Name] {
@@ -114,6 +128,16 @@ func (c *appCore) RunApp(_ context.Context, s engine.Spec, sealed []string) erro
 		c.args = map[string][]string{}
 	}
 	c.args[s.ID] = s.Args
+	return nil
+}
+
+func (c *appCore) SetLinks(_ context.Context, app string, links []engine.Link) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.links == nil {
+		c.links = map[string][]engine.Link{}
+	}
+	c.links[app] = links
 	return nil
 }
 
@@ -292,6 +316,7 @@ func newAppEnv(t *testing.T) *appEnv {
 		e.checked = append(e.checked, host+" "+url)
 		return e.health, nil
 	}
+	s.PortCheck = func(context.Context, netip.Addr, int) bool { return true }
 	e.b = &browser{t: t, h: h, ip: "198.51.100.7"}
 	e.b.do("POST", "/api/setup", map[string]string{"token": setupToken(t, h), "email": "a@example.com", "password": "long enough pw"})
 	_, out := e.b.do("POST", "/api/2fa/totp/new", nil)

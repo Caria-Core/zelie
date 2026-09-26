@@ -273,6 +273,35 @@ func TestUsageAndHost(t *testing.T) {
 	}
 }
 
+func TestLinkedEnv(t *testing.T) {
+	s, f := newServer()
+	keys, err := secret.LoadOrCreate(filepath.Join(t.TempDir(), "secrets.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Secrets = keys
+	root := &peer.Peer{UID: 0}
+	sealed, _ := secret.Seal(keys.Public(), "pg", "POSTGRES_PASSWORD", "hunter2")
+	body := func(app string) string {
+		return `{"id":"` + app + `-1","app":"` + app + `","image":"busybox","memory_bytes":1,"cpus":1,"pids":1,
+			"linked_env":[{"name":"DATABASE_URL","template":"postgresql://app:{secret}@pg:5432/app","from":"pg","sealed":"` + sealed + `"}]}`
+	}
+	f.SetLinks(context.Background(), "web", []engine.Link{{Name: "pg", To: "pg", Port: 5432}})
+	if rec := request(t, s, root, "POST", "/v1/containers", body("web")); rec.Code != http.StatusCreated {
+		t.Fatalf("run: %d %s", rec.Code, rec.Body)
+	}
+	if env := strings.Join(f.ran[0].Env, " "); env != "DATABASE_URL=postgresql://app:hunter2@pg:5432/app" {
+		t.Errorf("env %q", env)
+	}
+	// An app that is not linked gets nothing, whatever the panel asks.
+	if rec := request(t, s, root, "POST", "/v1/containers", body("other")); rec.Code != http.StatusBadRequest || strings.Contains(rec.Body.String(), "hunter2") {
+		t.Errorf("unlinked app: %d %s", rec.Code, rec.Body)
+	}
+	if len(f.ran) != 1 {
+		t.Errorf("ran %d containers", len(f.ran))
+	}
+}
+
 func TestLinks(t *testing.T) {
 	s, f := newServer()
 	root := &peer.Peer{UID: 0}

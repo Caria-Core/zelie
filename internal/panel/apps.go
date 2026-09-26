@@ -60,6 +60,9 @@ type appJSON struct {
 	StartCommand string         `json:"start_command"`
 	Detected     store.Detected `json:"detected"`
 	RestartPulls bool           `json:"restart_pulls"`
+	// Engine and EngineVersion are set for a database.
+	Engine        string `json:"engine,omitempty"`
+	EngineVersion string `json:"engine_version,omitempty"`
 	// State is the live container's: running, stopped, or none when
 	// nothing has gone live yet.
 	State string `json:"state"`
@@ -76,7 +79,7 @@ type appJSON struct {
 // fetched once by the caller.
 func (s *Server) appOut(ctx context.Context, a store.App, containers []engine.Status) (appJSON, error) {
 	out := appJSON{ID: a.ID, Source: a.Source, Image: a.Image, Repo: a.Repo, Branch: a.Branch,
-		Port: a.Port, Domain: a.Domain, MemoryMB: a.MemoryMB, CPUs: a.CPUs, AutoDeploy: a.AutoDeploy, HealthPath: a.HealthPath, TestCommand: a.TestCommand, BuildCommand: a.BuildCommand, StartCommand: a.StartCommand, Detected: a.Detected, RestartPulls: a.RestartPulls, State: "none",
+		Port: a.Port, Domain: a.Domain, MemoryMB: a.MemoryMB, CPUs: a.CPUs, AutoDeploy: a.AutoDeploy, HealthPath: a.HealthPath, TestCommand: a.TestCommand, BuildCommand: a.BuildCommand, StartCommand: a.StartCommand, Detected: a.Detected, RestartPulls: a.RestartPulls, Engine: a.Engine, EngineVersion: a.EngineVersion, State: "none",
 		Stopped: a.Stopped, Crashing: s.crashes.gaveUp(a.ID)}
 	vols, err := s.Store.Volumes(ctx, a.ID)
 	if err != nil {
@@ -433,6 +436,11 @@ func (s *Server) updateApp(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, errors.New("volumes are changed one at a time"))
 		return
 	}
+	if a.IsDatabase() && (req.Image != nil || req.Repo != nil || req.Branch != nil || req.Port != nil || req.Domain != nil ||
+		req.AutoDeploy != nil || req.HealthPath != nil || req.TestCommand != nil || req.BuildCommand != nil || req.StartCommand != nil || req.RestartPulls != nil) {
+		writeError(w, http.StatusBadRequest, errors.New("only a database's memory and CPU can change"))
+		return
+	}
 	oldDomain := a.Domain
 	if err := req.apply(&a); err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -478,7 +486,24 @@ func (s *Server) setEnv(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, errors.New("too many variables"))
 		return
 	}
+	if a.IsDatabase() {
+		writeError(w, http.StatusBadRequest, errors.New("Zelie sets a database's variables"))
+		return
+	}
 	ctx := r.Context()
+	plain, linked, err := s.linkedEnv(ctx, a)
+	if err != nil {
+		s.fail(w, "load links", err)
+		return
+	}
+	fromLinks := map[string]bool{}
+	for _, v := range plain {
+		name, _, _ := strings.Cut(v, "=")
+		fromLinks[name] = true
+	}
+	for _, v := range linked {
+		fromLinks[v.Name] = true
+	}
 	old, err := s.Store.Env(ctx, a.ID)
 	if err != nil {
 		s.fail(w, "load variables", err)
@@ -500,6 +525,9 @@ func (s *Server) setEnv(w http.ResponseWriter, r *http.Request) {
 			return
 		case seen[v.Name]:
 			writeError(w, http.StatusBadRequest, fmt.Errorf("%s is set twice", v.Name))
+			return
+		case fromLinks[v.Name]:
+			writeError(w, http.StatusConflict, fmt.Errorf("%s comes from a linked database; change the link's prefix to set your own", v.Name))
 			return
 		case len(v.Value) > 32<<10:
 			writeError(w, http.StatusBadRequest, fmt.Errorf("the value of %s is too long", v.Name))
@@ -780,6 +808,10 @@ func (s *Server) deleteApp(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.removeAppVolumes(ctx, a.ID); err != nil {
 		s.coreFailed(w, "remove volumes", err)
+		return
+	}
+	if err := s.unlinkAll(ctx, a); err != nil {
+		s.coreFailed(w, "remove links", err)
 		return
 	}
 	if err := s.Store.DeleteApp(ctx, a.ID); err != nil {

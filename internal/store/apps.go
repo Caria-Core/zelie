@@ -44,8 +44,15 @@ type App struct {
 	Detected Detected
 	// RestartPulls makes a restart build the branch's newest commit.
 	RestartPulls bool
-	CreatedAt    time.Time
+	// Engine is set for a database: postgres, mariadb or redis, in the
+	// major version EngineVersion.
+	Engine        string
+	EngineVersion string
+	CreatedAt     time.Time
 }
+
+// IsDatabase reports whether the app is one of Zelie's databases.
+func (a App) IsDatabase() bool { return a.Engine != "" }
 
 // Detected is how the last build built an app.
 type Detected struct {
@@ -57,7 +64,7 @@ type Detected struct {
 // ErrExists is returned when a name or domain is already taken.
 var ErrExists = errors.New("already exists")
 
-const appColumns = "id, source, image, repo, branch, port, domain, memory_mb, cpus, auto_deploy, health_path, test_command, stopped, build_command, start_command, detected, restart_pulls, created_at"
+const appColumns = "id, source, image, repo, branch, port, domain, memory_mb, cpus, auto_deploy, health_path, test_command, stopped, build_command, start_command, detected, restart_pulls, engine, engine_version, created_at"
 
 func scanApp(row scanner) (App, error) {
 	var a App
@@ -65,7 +72,7 @@ func scanApp(row scanner) (App, error) {
 	var test sql.NullString
 	var detected string
 	err := row.Scan(&a.ID, &a.Source, &a.Image, &a.Repo, &a.Branch, &a.Port, &a.Domain, &a.MemoryMB, &a.CPUs, &a.AutoDeploy, &a.HealthPath, &test, &a.Stopped,
-		&a.BuildCommand, &a.StartCommand, &detected, &a.RestartPulls, &created)
+		&a.BuildCommand, &a.StartCommand, &detected, &a.RestartPulls, &a.Engine, &a.EngineVersion, &created)
 	a.CreatedAt = time.Unix(created, 0)
 	json.Unmarshal([]byte(detected), &a.Detected)
 	a.TestCommand, a.TestSet = test.String, test.Valid
@@ -76,9 +83,9 @@ func scanApp(row scanner) (App, error) {
 }
 
 func (s *Store) CreateApp(ctx context.Context, a App) error {
-	_, err := s.db.ExecContext(ctx, "INSERT INTO apps ("+appColumns+") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+	_, err := s.db.ExecContext(ctx, "INSERT INTO apps ("+appColumns+") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 		a.ID, a.Source, a.Image, a.Repo, a.Branch, a.Port, a.Domain, a.MemoryMB, a.CPUs, a.AutoDeploy, a.HealthPath, a.testColumn(), a.Stopped,
-		a.BuildCommand, a.StartCommand, "{}", a.RestartPulls, a.CreatedAt.Unix())
+		a.BuildCommand, a.StartCommand, "{}", a.RestartPulls, a.Engine, a.EngineVersion, a.CreatedAt.Unix())
 	return uniqueErr(err)
 }
 
