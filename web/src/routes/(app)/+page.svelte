@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { ArrowUpRight } from '@lucide/svelte';
-	import { apps, shortVersion } from '$lib/apps.svelte';
+	import { apps, shortVersion, shownState } from '$lib/apps.svelte';
 	import { ago } from '$lib/format';
 	import { t } from '$lib/i18n';
 	import AppIcon from '$lib/ui/AppIcon.svelte';
@@ -30,7 +30,7 @@
 								<a href="/a/{a.id}" class="block truncate font-medium after:absolute after:inset-0">{a.id}</a>
 								<p class="truncate text-sm text-muted">{a.source === 'github' ? a.repo : a.image}</p>
 							</div>
-							<StateDot state={a.state} />
+							<StateDot state={shownState(a)} />
 						</div>
 						<div class="flex items-center justify-between gap-2 text-sm text-muted">
 							{#if a.domain}

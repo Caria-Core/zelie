@@ -2,6 +2,7 @@
 	import { ArrowUpRight, Play, RotateCw, Rocket, Square } from '@lucide/svelte';
 	import { untrack } from 'svelte';
 	import { page } from '$app/state';
+	import { shownState } from '$lib/apps.svelte';
 	import { t } from '$lib/i18n';
 	import { busy, current, deploy, load, restart, start, stop } from '$lib/current.svelte';
 	import { messageOf } from '$lib/errors';
@@ -67,8 +68,7 @@
 				<div class="min-w-0">
 					<h1 class="truncate text-[22px] tracking-tight">{a.id}</h1>
 					<p class="flex flex-wrap items-center gap-x-2 text-sm text-muted">
-						<!-- Stopping waits for the app to exit, up to half a minute. -->
-						<StateDot state={a.stopped && a.state === 'running' ? 'stopping' : a.state} label />
+						<StateDot state={shownState(a)} label />
 						<span>·</span>
 						<span class="font-mono">{a.source === 'github' ? `${a.repo}@${a.branch}` : a.image}</span>
 						{#if a.domain}

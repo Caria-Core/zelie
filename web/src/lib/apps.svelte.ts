@@ -56,6 +56,9 @@ export async function reload(): Promise<void> {
 	apps.loaded = true;
 }
 
+// Stopping waits for the app to exit, up to half a minute.
+export const shownState = (a: App): string => (a.stopped && a.state === 'running' ? 'stopping' : a.state);
+
 export function inProgress(d?: Deployment): boolean {
 	return !!d && (d.state === 'queued' || d.state === 'building' || d.state === 'testing' || d.state === 'starting');
 }

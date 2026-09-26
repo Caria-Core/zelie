@@ -3,7 +3,7 @@
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { api } from '$lib/api';
-	import { apps, reload } from '$lib/apps.svelte';
+	import { apps, reload, shownState } from '$lib/apps.svelte';
 	import { t } from '$lib/i18n';
 	import { refresh, session } from '$lib/session.svelte';
 	import AppIcon from '$lib/ui/AppIcon.svelte';
@@ -74,7 +74,7 @@
 					>
 						<AppIcon source={a.source} size="sm" />
 						<span class="min-w-0 flex-1 truncate">{a.id}</span>
-						<StateDot state={a.state} />
+						<StateDot state={shownState(a)} />
 					</a>
 				{:else}
 					{#if apps.loaded}<p class="px-2 text-sm text-muted/70">{t('nav.empty')}</p>{/if}
