@@ -1,6 +1,9 @@
 <script lang="ts">
-	import { KeyRound, ShieldCheck } from '@lucide/svelte';
+	import { Archive, KeyRound, ShieldCheck } from '@lucide/svelte';
+	import { api } from '$lib/api';
 	import { engineLabel, type App } from '$lib/apps.svelte';
+	import type { Backup, Backups } from '$lib/backups';
+	import { ago } from '$lib/format';
 	import { t } from '$lib/i18n';
 	import Links from './Links.svelte';
 
@@ -18,6 +21,15 @@
 					{ label: t('db.database'), value: user }
 				])
 	]);
+
+	// The newest backup, made or tried, so a failing one is seen here too.
+	let last = $state<Backup | null | undefined>(undefined);
+	$effect(() => {
+		api<Backups>('GET', `/apps/${app.id}/backups`).then(
+			(b) => (last = b.backups.find((x) => x.state !== 'running') ?? null),
+			() => (last = undefined)
+		);
+	});
 </script>
 
 <div class="flex max-w-2xl flex-col gap-10">
@@ -37,6 +49,17 @@
 		<ul class="flex flex-col gap-2 text-sm text-muted">
 			<li class="flex gap-2.5"><ShieldCheck size={16} strokeWidth={1.75} class="mt-0.5 shrink-0 text-fg" />{t('db.private')}</li>
 			<li class="flex gap-2.5"><KeyRound size={16} strokeWidth={1.75} class="mt-0.5 shrink-0 text-fg" />{t('db.passwordShort')}</li>
+			{#if last !== undefined}
+				<li class="flex gap-2.5">
+					<Archive size={16} strokeWidth={1.75} class="mt-0.5 shrink-0 {last?.state === 'failed' ? 'text-danger' : 'text-fg'}" />
+					<a href="/a/{app.id}/backups" class="hover:text-fg {last?.state === 'failed' ? 'text-danger' : ''}"
+						>{#if !last}{t('backups.none')}{:else if last.state === 'failed'}{t('backups.lastFailed', { when: ago(last.created_at) })}{:else}{t(
+								'backups.last',
+								{ when: ago(last.created_at) }
+							)}{/if}</a
+					>
+				</li>
+			{/if}
 		</ul>
 	</section>
 	<Links {app} />

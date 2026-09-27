@@ -294,6 +294,8 @@ type backupsJSON struct {
 	// it the backups cannot be opened if the server is lost.
 	RecoverySavedAt *time.Time `json:"recovery_saved_at"`
 	TimeZone        string     `json:"time_zone"`
+	// Restore is how the last restore since the panel started went.
+	Restore *restoreJSON `json:"restore,omitempty"`
 }
 
 func (s *Server) databaseFrom(w http.ResponseWriter, r *http.Request) (store.App, bool) {
@@ -324,7 +326,10 @@ func (s *Server) listBackups(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out := backupsJSON{Plan: backupPlanJSON{plan.Enabled, plan.Minute, plan.KeepDays}, Backups: []backupJSON{},
-		Running: s.backupBusy.has(a.ID), TimeZone: s.now().Location().String()}
+		Running: s.backupBusy.has(a.ID), TimeZone: zoneLabel(s.now())}
+	if last, ok := s.restores.get(a.ID); ok {
+		out.Restore = &last
+	}
 	for _, b := range list {
 		out.Backups = append(out.Backups, backupOut(b))
 	}
@@ -360,15 +365,13 @@ func (s *Server) backUpNow(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, errBackupBusy)
 		return
 	}
-	defer s.backupBusy.done(a.ID)
-	// The backup finishes even if the browser goes away.
-	b, err := s.makeBackup(context.WithoutCancel(r.Context()), a, store.BackupManual)
-	if b.ID == 0 && err != nil {
-		s.fail(w, "back up", err)
-		return
-	}
-	// A failed backup is still a record the page shows.
-	writeJSON(w, http.StatusCreated, backupOut(b))
+	// The page follows along; the backup is on its list from the start.
+	ctx := context.WithoutCancel(r.Context())
+	s.jobs.Go(func() {
+		defer s.backupBusy.done(a.ID)
+		s.makeBackup(ctx, a, store.BackupManual)
+	})
+	w.WriteHeader(http.StatusAccepted)
 }
 
 func (s *Server) setBackupPlan(w http.ResponseWriter, r *http.Request) {
@@ -482,11 +485,55 @@ func (s *Server) recoveryFile(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(buf.String()))
 }
 
+// restoreJSON is how the last restore of a database went. Restores run in
+// the background, since a large database takes longer than a browser or a
+// proxy in front of the panel waits for an answer.
 type restoreJSON struct {
-	// Safety is the backup of what was there before.
-	Safety backupJSON `json:"safety"`
+	Backup int64  `json:"backup"`
+	State  string `json:"state"` // running, done or failed
+	Error  string `json:"error,omitempty"`
+	// Safety is when the backup of what was there before was made.
+	Safety *time.Time `json:"safety,omitempty"`
 	// Restarted are the linked apps that were stopped and started again.
-	Restarted []string `json:"restarted"`
+	Restarted []string  `json:"restarted"`
+	At        time.Time `json:"at"`
+}
+
+// restores keeps the last restore of each database, for its page.
+type restores struct {
+	mu   sync.Mutex
+	last map[string]restoreJSON
+}
+
+func (r *restores) set(app string, v restoreJSON) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.last == nil {
+		r.last = map[string]restoreJSON{}
+	}
+	r.last[app] = v
+}
+
+func (r *restores) get(app string) (restoreJSON, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	v, ok := r.last[app]
+	return v, ok
+}
+
+// zoneLabel names the server's time zone for people: its name when it has
+// one, and its offset from UTC.
+func zoneLabel(now time.Time) string {
+	_, off := now.Zone()
+	sign := "+"
+	if off < 0 {
+		sign, off = "-", -off
+	}
+	utc := fmt.Sprintf("UTC%s%02d:%02d", sign, off/3600, off%3600/60)
+	if name := now.Location().String(); name != "Local" && name != "UTC" {
+		return name + ", " + utc
+	}
+	return utc
 }
 
 // restoreBackup puts a backup back into its database. What is there now is
@@ -518,23 +565,39 @@ func (s *Server) restoreBackup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, errBackupBusy)
 		return
 	}
-	defer s.backupBusy.done(a.ID)
+	user := loginFrom(r.Context()).account.ID
+	s.restores.set(a.ID, restoreJSON{Backup: b.ID, State: "running", Restarted: []string{}, At: s.now()})
+	s.jobs.Go(func() {
+		defer s.backupBusy.done(a.ID)
+		out := s.runRestore(context.WithoutCancel(ctx), a, b, user)
+		s.restores.set(a.ID, out)
+	})
+	w.WriteHeader(http.StatusAccepted)
+}
 
+// runRestore backs up what is there, then puts the backup back.
+func (s *Server) runRestore(ctx context.Context, a store.App, b store.Backup, user int64) (out restoreJSON) {
+	out = restoreJSON{Backup: b.ID, State: "failed", Restarted: []string{}}
+	defer func() { out.At = s.now() }()
 	safety, err := s.makeBackup(ctx, a, store.BackupRestore)
 	if err != nil {
-		writeError(w, http.StatusConflict, fmt.Errorf("nothing was changed: the safety backup of what is there now failed: %s", backupFailure(err)))
-		return
+		out.Error = "Nothing was changed: the safety backup of what is there now failed: " + backupFailure(err)
+		return out
 	}
+	out.Safety = &safety.CreatedAt
 	restarted, err := s.restore(ctx, a, b)
+	if restarted != nil {
+		out.Restarted = restarted
+	}
 	if err != nil {
 		s.Log.Error("restore failed", "app", a.ID, "backup", b.File, "err", err)
-		writeError(w, http.StatusBadGateway, fmt.Errorf("the restore failed: %s. The safety backup from %s holds what was there before",
-			backupFailure(err), safety.CreatedAt.Format("15:04")))
-		return
+		out.Error = "The restore failed: " + backupFailure(err)
+		return out
 	}
 	s.Store.SetRestored(ctx, b.ID, s.now())
-	s.Log.Info("backup restored", "app", a.ID, "backup", b.File, "safety", safety.File, "user", loginFrom(r.Context()).account.ID)
-	writeJSON(w, http.StatusOK, restoreJSON{Safety: backupOut(safety), Restarted: restarted})
+	s.Log.Info("backup restored", "app", a.ID, "backup", b.File, "safety", safety.File, "user", user)
+	out.State = "done"
+	return out
 }
 
 // restore stops the apps linked to the database, puts the backup back and

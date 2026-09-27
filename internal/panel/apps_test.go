@@ -333,6 +333,8 @@ func newAppEnv(t *testing.T) *appEnv {
 		t.Fatalf("enrol: %d", code)
 	}
 	t.Cleanup(s.deploys.wg.Wait)
+	// Runs first: a restore starts deployments.
+	t.Cleanup(s.jobs.Wait)
 	return e
 }
 

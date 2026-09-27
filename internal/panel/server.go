@@ -19,6 +19,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/Caria-Core/zelie/internal/peer"
@@ -61,7 +62,10 @@ type Server struct {
 	// backupBusy holds the databases being backed up or restored.
 	backupBusy keyset
 	pauses     pauses
-	ctx        context.Context // lives as long as the server
+	restores   restores
+	// jobs are backups and restores running in the background.
+	jobs sync.WaitGroup
+	ctx  context.Context // lives as long as the server
 }
 
 // baseContext is for work that outlives the request that started it.

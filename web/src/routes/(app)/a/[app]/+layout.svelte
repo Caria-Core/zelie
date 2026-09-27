@@ -54,6 +54,7 @@
 			? [
 					{ href: `/a/${id}`, label: t('db.tab.overview') },
 					{ href: `/a/${id}/logs`, label: t('app.tab.logs') },
+					{ href: `/a/${id}/backups`, label: t('backups.tab') },
 					{ href: `/a/${id}/storage`, label: t('app.tab.storage') },
 					{ href: `/a/${id}/settings`, label: t('app.tab.settings') }
 				]

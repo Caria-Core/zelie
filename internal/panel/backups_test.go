@@ -103,6 +103,28 @@ func (e *appEnv) raw(method, path string) (int, string, http.Header) {
 	return rec.Code, rec.Body.String(), rec.Header()
 }
 
+// backUp makes a backup by hand and returns it, once it is done.
+func (e *appEnv) backUp(t *testing.T, app string) map[string]any {
+	t.Helper()
+	if code, out := e.b.do("POST", "/api/apps/"+app+"/backups", nil); code != http.StatusAccepted {
+		t.Fatalf("back up: %d %v", code, out)
+	}
+	e.s.jobs.Wait()
+	list, _ := e.backups(t, app)
+	return list[0]
+}
+
+// restore restores a backup and returns how it went.
+func (e *appEnv) restore(t *testing.T, app string, id int64) map[string]any {
+	t.Helper()
+	if code, out := e.b.do("POST", fmt.Sprintf("/api/backups/%d/restore", id), nil); code != http.StatusAccepted {
+		t.Fatalf("restore: %d %v", code, out)
+	}
+	e.s.jobs.Wait()
+	_, out := e.b.do("GET", "/api/apps/"+app+"/backups", nil)
+	return out["restore"].(map[string]any)
+}
+
 func (e *appEnv) backups(t *testing.T, app string) (list []map[string]any, plan map[string]any) {
 	t.Helper()
 	code, out := e.b.do("GET", "/api/apps/"+app+"/backups", nil)
@@ -131,9 +153,9 @@ func TestBackupAndRestore(t *testing.T) {
 		t.Errorf("an app's backups: %d", code)
 	}
 
-	code, out := e.b.do("POST", "/api/apps/pg/backups", nil)
-	if code != http.StatusCreated || out["state"] != "done" || out["reason"] != "manual" || out["bytes"] != 1000.0 {
-		t.Fatalf("back up: %d %v", code, out)
+	out := e.backUp(t, "pg")
+	if out["state"] != "done" || out["reason"] != "manual" || out["bytes"] != 1000.0 {
+		t.Fatalf("back up: %v", out)
 	}
 	first := int64(out["id"].(float64))
 
@@ -145,12 +167,9 @@ func TestBackupAndRestore(t *testing.T) {
 	// The live web container, before the restore.
 	webBefore := e.settle(t, "web")
 
-	code, out = e.b.do("POST", fmt.Sprintf("/api/backups/%d/restore", first), nil)
-	if code != http.StatusOK {
-		t.Fatalf("restore: %d %v", code, out)
-	}
-	if safety := out["safety"].(map[string]any); safety["reason"] != "restore" || safety["state"] != "done" {
-		t.Errorf("safety backup %v", safety)
+	out = e.restore(t, "pg", first)
+	if out["state"] != "done" || out["safety"] == nil || out["backup"] != float64(first) || out["at"] == "0001-01-01T00:00:00Z" {
+		t.Fatalf("restore: %v", out)
 	}
 	if r := out["restarted"].([]any); len(r) != 1 || r[0] != "web" {
 		t.Errorf("restarted %v", r)
@@ -170,14 +189,14 @@ func TestBackupAndRestore(t *testing.T) {
 
 	// No safety backup, no restore.
 	e.core.bk.failBackup, e.core.bk.failures = "pg_dump: error: connection refused", -1
-	code, out = e.b.do("POST", fmt.Sprintf("/api/backups/%d/restore", first), nil)
-	if code != http.StatusConflict || !strings.Contains(out["error"].(string), "nothing was changed") || len(e.core.bk.restored) != 1 {
-		t.Errorf("restore without a safety backup: %d %v, restored %v", code, out, e.core.bk.restored)
+	out = e.restore(t, "pg", first)
+	if out["state"] != "failed" || !strings.Contains(out["error"].(string), "Nothing was changed") || len(e.core.bk.restored) != 1 {
+		t.Errorf("restore without a safety backup: %v, restored %v", out, e.core.bk.restored)
 	}
 	// The failure is on the list, in the database's words.
-	code, out = e.b.do("POST", "/api/apps/pg/backups", nil)
-	if code != http.StatusCreated || out["state"] != "failed" || out["error"] != "pg_dump: error: connection refused" {
-		t.Errorf("failed backup: %d %v", code, out)
+	out = e.backUp(t, "pg")
+	if out["state"] != "failed" || out["error"] != "pg_dump: error: connection refused" {
+		t.Errorf("failed backup: %v", out)
 	}
 	e.core.bk.failBackup = ""
 
@@ -202,11 +221,10 @@ func TestRestoreRedis(t *testing.T) {
 	e := newAppEnv(t)
 	e.b.do("POST", "/api/databases", map[string]any{"id": "cache", "engine": "redis"})
 	before := e.settle(t, "cache")
-	_, out := e.b.do("POST", "/api/apps/cache/backups", nil)
-	id := int64(out["id"].(float64))
-	code, out := e.b.do("POST", fmt.Sprintf("/api/backups/%d/restore", id), nil)
-	if code != http.StatusOK || len(e.core.bk.restored) != 1 || !strings.HasSuffix(e.core.bk.restored[0], "into volume") {
-		t.Fatalf("restore: %d %v, restored %v", code, out, e.core.bk.restored)
+	id := int64(e.backUp(t, "cache")["id"].(float64))
+	out := e.restore(t, "cache", id)
+	if out["state"] != "done" || len(e.core.bk.restored) != 1 || !strings.HasSuffix(e.core.bk.restored[0], "into volume") {
+		t.Fatalf("restore: %v, restored %v", out, e.core.bk.restored)
 	}
 	if d := e.settle(t, "cache"); d.ID == before.ID || d.Cause != store.CauseRestore || d.State != store.DeployLive {
 		t.Errorf("redis after restore: %+v", d)
@@ -217,8 +235,7 @@ func TestBackupsNeedConfirming(t *testing.T) {
 	e := newAppEnv(t)
 	e.b.do("POST", "/api/databases", map[string]any{"id": "pg", "engine": "postgres"})
 	e.settle(t, "pg")
-	_, out := e.b.do("POST", "/api/apps/pg/backups", nil)
-	id := int64(out["id"].(float64))
+	id := int64(e.backUp(t, "pg")["id"].(float64))
 
 	code, body, h := e.raw("GET", "/api/backups/recovery")
 	if code != http.StatusOK || !strings.Contains(body, "AGE-SECRET-KEY-1") || !strings.Contains(body, "panel.example.com") || !strings.Contains(h.Get("Content-Disposition"), "zelie-recovery.txt") {
@@ -247,8 +264,7 @@ func TestDeletedDatabaseKeepsBackups(t *testing.T) {
 	e := newAppEnv(t)
 	e.b.do("POST", "/api/databases", map[string]any{"id": "pg", "engine": "postgres"})
 	e.settle(t, "pg")
-	_, out := e.b.do("POST", "/api/apps/pg/backups", nil)
-	id := int64(out["id"].(float64))
+	id := int64(e.backUp(t, "pg")["id"].(float64))
 	if code, _ := e.b.do("DELETE", "/api/apps/pg", nil); code != http.StatusNoContent {
 		t.Fatalf("delete: %d", code)
 	}
@@ -256,7 +272,7 @@ func TestDeletedDatabaseKeepsBackups(t *testing.T) {
 	if code != http.StatusOK || !strings.Contains(body, `"app":"pg"`) {
 		t.Errorf("deleted: %d %s", code, body)
 	}
-	code, out = e.b.do("POST", fmt.Sprintf("/api/backups/%d/restore", id), nil)
+	code, out := e.b.do("POST", fmt.Sprintf("/api/backups/%d/restore", id), nil)
 	if code != http.StatusConflict || !strings.Contains(out["error"].(string), "create a PostgreSQL database named pg") {
 		t.Errorf("restore into a deleted database: %d %v", code, out)
 	}
@@ -343,5 +359,15 @@ func TestLastSlot(t *testing.T) {
 	}
 	if got := lastSlot(at(2, 59), 180); !got.Equal(at(3, 0).AddDate(0, 0, -1)) {
 		t.Errorf("before: %v", got)
+	}
+}
+
+func TestZoneLabel(t *testing.T) {
+	at := time.Date(2027, 3, 10, 3, 0, 0, 0, time.FixedZone("x", 3*3600+1800))
+	if got := zoneLabel(at); got != "x, UTC+03:30" {
+		t.Errorf("fixed: %q", got)
+	}
+	if got := zoneLabel(at.UTC()); got != "UTC+00:00" {
+		t.Errorf("utc: %q", got)
 	}
 }
