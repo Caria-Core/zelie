@@ -2,7 +2,7 @@
 	import { ArrowUpRight, Play, RotateCw, Rocket, Square } from '@lucide/svelte';
 	import { untrack } from 'svelte';
 	import { page } from '$app/state';
-	import { shownState } from '$lib/apps.svelte';
+	import { engineLabel, shownState } from '$lib/apps.svelte';
 	import { t } from '$lib/i18n';
 	import { busy, current, deploy, load, restart, start, stop } from '$lib/current.svelte';
 	import { messageOf } from '$lib/errors';
@@ -48,13 +48,23 @@
 		}
 	}
 
-	const tabs = $derived([
-		{ href: `/a/${id}`, label: t('app.tab.deployments') },
-		{ href: `/a/${id}/logs`, label: t('app.tab.logs') },
-		{ href: `/a/${id}/env`, label: t('app.tab.env') },
-		{ href: `/a/${id}/storage`, label: t('app.tab.storage') },
-		{ href: `/a/${id}/settings`, label: t('app.tab.settings') }
-	]);
+	// A database has no deployments to speak of and variables Zelie sets.
+	const tabs = $derived(
+		current.app?.engine
+			? [
+					{ href: `/a/${id}`, label: t('db.tab.overview') },
+					{ href: `/a/${id}/logs`, label: t('app.tab.logs') },
+					{ href: `/a/${id}/storage`, label: t('app.tab.storage') },
+					{ href: `/a/${id}/settings`, label: t('app.tab.settings') }
+				]
+			: [
+					{ href: `/a/${id}`, label: t('app.tab.deployments') },
+					{ href: `/a/${id}/logs`, label: t('app.tab.logs') },
+					{ href: `/a/${id}/env`, label: t('app.tab.env') },
+					{ href: `/a/${id}/storage`, label: t('app.tab.storage') },
+					{ href: `/a/${id}/settings`, label: t('app.tab.settings') }
+				]
+	);
 </script>
 
 {#if current.missing}
@@ -64,13 +74,17 @@
 	<div class="flex flex-col gap-6">
 		<header class="flex flex-wrap items-start justify-between gap-4">
 			<div class="flex min-w-0 items-center gap-4">
-				<AppIcon source={a.source} size="lg" />
+				<AppIcon source={a.source} database={!!a.engine} size="lg" />
 				<div class="min-w-0">
 					<h1 class="truncate text-[22px] tracking-tight">{a.id}</h1>
 					<p class="flex flex-wrap items-center gap-x-2 text-sm text-muted">
 						<StateDot state={shownState(a)} label />
 						<span>·</span>
-						<span class="font-mono">{a.source === 'github' ? `${a.repo}@${a.branch}` : a.image}</span>
+						{#if a.engine}
+							<span>{engineLabel[a.engine]} {a.engine_version}</span>
+						{:else}
+							<span class="font-mono">{a.source === 'github' ? `${a.repo}@${a.branch}` : a.image}</span>
+						{/if}
 						{#if a.domain}
 							<span>·</span>
 							<a href="https://{a.domain}" target="_blank" rel="noopener noreferrer" class="inline-flex items-center gap-0.5 hover:text-fg"
@@ -93,9 +107,11 @@
 						<RotateCw size={16} strokeWidth={1.75} />{t('app.restart')}
 					</Button>
 				{/if}
-				<Button onclick={() => run(deploy)} busy={starting || busy()} disabled={!!a.volume_full} title={a.volume_full}>
-					<Rocket size={16} strokeWidth={1.75} />{busy() ? t('app.deploying') : t('app.deploy')}
-				</Button>
+				{#if !a.engine}
+					<Button onclick={() => run(deploy)} busy={starting || busy()} disabled={!!a.volume_full} title={a.volume_full}>
+						<Rocket size={16} strokeWidth={1.75} />{busy() ? t('app.deploying') : t('app.deploy')}
+					</Button>
+				{/if}
 			</div>
 		</header>
 		<ErrorText message={error} />

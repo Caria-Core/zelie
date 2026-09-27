@@ -42,8 +42,21 @@ export type App = {
 	crashing?: string;
 	// Which volume has grown past its limit, keeping the app down.
 	volume_full?: string;
+	// Set for a database: postgres, mariadb or redis, and its major version.
+	engine?: Engine;
+	engine_version?: string;
 	latest?: Deployment;
 };
+
+export type Engine = 'postgres' | 'mariadb' | 'redis';
+
+export const engineLabel: Record<Engine, string> = { postgres: 'PostgreSQL', mariadb: 'MariaDB', redis: 'Redis' };
+
+export const isDatabase = (a: App): boolean => !!a.engine;
+
+// A link between an app and a database. On an app's page db is the
+// database; on a database's page it is the app.
+export type Link = { db: string; engine: Engine; prefix: string; vars: string[]; created_at: string };
 
 export type EnvVar = { name: string; value: string; secret: boolean };
 

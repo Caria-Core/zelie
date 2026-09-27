@@ -13,6 +13,8 @@
 
 	const app = $derived(current.app!);
 	const running = $derived(app.state === 'running');
+	// A database has the one volume its engine keeps its files in.
+	const database = $derived(!!app.engine);
 	let volumes = $state<Volume[] | null>(null);
 	let error = $state('');
 	let busy = $state(false);
@@ -81,7 +83,7 @@
 <div class="flex max-w-xl flex-col gap-8">
 	<div>
 		<h2 class="font-medium">{t('storage.title')}</h2>
-		<p class="text-sm text-muted">{t('storage.lead')}</p>
+		<p class="text-sm text-muted">{database ? t('db.storageLead') : t('storage.lead')}</p>
 	</div>
 
 	{#if volumes && volumes.length === 0}
@@ -103,14 +105,16 @@
 								<p class="text-sm text-muted">{t('storage.created', { when: ago(v.created_at) })}</p>
 							</div>
 						</div>
-						<Button
-							kind="quiet"
-							class="!h-9 !px-2 hover:!text-danger"
-							disabled={busy || running}
-							title={running ? t('storage.stopFirst') : t('storage.delete')}
-							aria-label={t('storage.delete')}
-							onclick={() => remove(v)}><Trash size={16} /></Button
-						>
+						{#if !database}
+							<Button
+								kind="quiet"
+								class="!h-9 !px-2 hover:!text-danger"
+								disabled={busy || running}
+								title={running ? t('storage.stopFirst') : t('storage.delete')}
+								aria-label={t('storage.delete')}
+								onclick={() => remove(v)}><Trash size={16} /></Button
+							>
+						{/if}
 					</div>
 					<div class="flex flex-col gap-2">
 						<div class="relative h-2 overflow-hidden rounded-full bg-selected" aria-hidden="true">
@@ -148,7 +152,7 @@
 				</li>
 			{/each}
 		</ul>
-		{#if running}<p class="text-sm text-muted">{t('storage.stopFirst')}</p>{/if}
+		{#if running && !database}<p class="text-sm text-muted">{t('storage.stopFirst')}</p>{/if}
 	{/if}
 
 	{#if pending}
@@ -164,21 +168,25 @@
 		</div>
 	{/if}
 
-	<form class="flex flex-col gap-4" onsubmit={add}>
-		<h3 class="font-medium">{t('storage.add')}</h3>
-		<div class="grid gap-4 sm:grid-cols-[1fr_9rem]">
-			<Field label={t('storage.path')} placeholder="/data" required autocomplete="off" bind:value={path} />
-			<div class="flex flex-col gap-1.5">
-				<label for="volume-size" class="text-sm font-medium">{t('storage.limit')}</label>
-				<select id="volume-size" class="h-10 rounded-xl border border-line bg-bg px-3 text-[15px]" bind:value={size}>
-					{#each sizeSteps(diskMB) as mb (mb)}<option value={mb}>{megabytes(mb)}</option>{/each}
-				</select>
+	{#if !database}
+		<form class="flex flex-col gap-4" onsubmit={add}>
+			<h3 class="font-medium">{t('storage.add')}</h3>
+			<div class="grid gap-4 sm:grid-cols-[1fr_9rem]">
+				<Field label={t('storage.path')} placeholder="/data" required autocomplete="off" bind:value={path} />
+				<div class="flex flex-col gap-1.5">
+					<label for="volume-size" class="text-sm font-medium">{t('storage.limit')}</label>
+					<select id="volume-size" class="h-10 rounded-xl border border-line bg-bg px-3 text-[15px]" bind:value={size}>
+						{#each sizeSteps(diskMB) as mb (mb)}<option value={mb}>{megabytes(mb)}</option>{/each}
+					</select>
+				</div>
 			</div>
-		</div>
-		<p class="-mt-2 text-sm text-muted">{t('storage.pathHint')}</p>
+			<p class="-mt-2 text-sm text-muted">{t('storage.pathHint')}</p>
+			<ErrorText message={error} />
+			<Button type="submit" {busy} class="self-start"><Plus size={16} />{t('storage.addButton')}</Button>
+		</form>
+	{:else}
 		<ErrorText message={error} />
-		<Button type="submit" {busy} class="self-start"><Plus size={16} />{t('storage.addButton')}</Button>
-	</form>
+	{/if}
 
 	<p class="text-sm text-muted">{t('storage.gap')}</p>
 </div>

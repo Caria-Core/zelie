@@ -4,15 +4,16 @@
 	import AppIcon from './AppIcon.svelte';
 
 	const choices = [
-		{ source: 'github', title: t('source.github'), lead: t('source.githubLead') },
-		{ source: 'image', title: t('source.image'), lead: t('source.imageLead') }
+		{ source: 'github', href: '/new?source=github', title: t('source.github'), lead: t('source.githubLead') },
+		{ source: 'image', href: '/new?source=image', title: t('source.image'), lead: t('source.imageLead') },
+		{ source: 'database', href: '/new/database', title: t('source.database'), lead: t('source.databaseLead') }
 	] as const;
 </script>
 
 <div class="grid gap-3 sm:grid-cols-2">
 	{#each choices as c (c.source)}
-		<a href="/new?source={c.source}" class="group flex items-start gap-4 rounded-2xl border border-line p-5 transition hover:bg-hover">
-			<AppIcon source={c.source} size="lg" />
+		<a href={c.href} class="group flex items-start gap-4 rounded-2xl border border-line p-5 transition hover:bg-hover">
+			<AppIcon source={c.source === 'github' ? 'github' : 'image'} database={c.source === 'database'} size="lg" />
 			<div class="min-w-0 flex-1">
 				<p class="flex items-center gap-1 font-medium">
 					{c.title}<ChevronRight size={16} class="text-muted transition group-hover:translate-x-0.5" />

@@ -29,6 +29,8 @@
 		start: ''
 	});
 	const github = $derived(app.source === 'github');
+	// Only a database's resources can change; the rest is Zelie's.
+	const database = $derived(!!app.engine);
 	let error = $state('');
 	let saved = $state(false);
 	let busy = $state(false);
@@ -60,24 +62,20 @@
 		error = '';
 		saved = false;
 		try {
-			const body: Record<string, unknown> = {
-				port: Number(form.port),
-				domain: form.domain,
-				memory_mb: form.memory,
-				cpus: form.cpus,
-				health_path: form.health,
-				start_command: form.start
-			};
-			if (github)
-				Object.assign(body, {
-					repo: form.repo,
-					branch: form.branch,
-					auto_deploy: form.autoDeploy,
-					restart_pulls: form.restartPulls,
-					test_command: form.tests,
-					build_command: form.build
-				});
-			else body.image = form.image;
+			const body: Record<string, unknown> = { memory_mb: form.memory, cpus: form.cpus };
+			if (!database) {
+				Object.assign(body, { port: Number(form.port), domain: form.domain, health_path: form.health, start_command: form.start });
+				if (github)
+					Object.assign(body, {
+						repo: form.repo,
+						branch: form.branch,
+						auto_deploy: form.autoDeploy,
+						restart_pulls: form.restartPulls,
+						test_command: form.tests,
+						build_command: form.build
+					});
+				else body.image = form.image;
+			}
 			await api('PATCH', `/apps/${app.id}`, body);
 			await Promise.all([load(app.id), reload()]);
 			saved = true;
@@ -103,7 +101,7 @@
 	});
 
 	async function remove() {
-		if (!confirm(t('settings.deleteConfirm', { id: app.id }))) return;
+		if (!confirm(t(database ? 'settings.deleteDatabaseConfirm' : 'settings.deleteConfirm', { id: app.id }))) return;
 		busy = true;
 		try {
 			await api('DELETE', `/apps/${app.id}`);
@@ -132,17 +130,18 @@
 
 <div class="flex max-w-xl flex-col gap-10">
 	<form class="flex flex-col gap-10" onsubmit={save}>
-		<section class="flex flex-col gap-4">
-			{@render heading(t('settings.source'), github ? t('settings.sourceLeadGithub') : t('settings.sourceLeadImage'))}
-			{#if github}
-				<div class="grid gap-4 sm:grid-cols-[1fr_12rem]">
-					<Field label={t('new.repo')} required autocomplete="off" bind:value={form.repo} />
-					<Field label={t('new.branch')} required autocomplete="off" bind:value={form.branch} />
-				</div>
-				{@render check(t('settings.autoDeploy'), t('settings.autoDeployHint'), form.autoDeploy, (v) => (form.autoDeploy = v))}
-				{@render check(t('settings.restartPulls'), t('settings.restartPullsHint'), form.restartPulls, (v) => (form.restartPulls = v))}
-			{:else}
-				<Field label={t('new.image')} required autocomplete="off" bind:value={form.image} />
+		{#if !database}
+			<section class="flex flex-col gap-4">
+				{@render heading(t('settings.source'), github ? t('settings.sourceLeadGithub') : t('settings.sourceLeadImage'))}
+				{#if github}
+					<div class="grid gap-4 sm:grid-cols-[1fr_12rem]">
+						<Field label={t('new.repo')} required autocomplete="off" bind:value={form.repo} />
+						<Field label={t('new.branch')} required autocomplete="off" bind:value={form.branch} />
+					</div>
+					{@render check(t('settings.autoDeploy'), t('settings.autoDeployHint'), form.autoDeploy, (v) => (form.autoDeploy = v))}
+					{@render check(t('settings.restartPulls'), t('settings.restartPullsHint'), form.restartPulls, (v) => (form.restartPulls = v))}
+				{:else}
+					<Field label={t('new.image')} required autocomplete="off" bind:value={form.image} />
 			{/if}
 		</section>
 
@@ -176,9 +175,10 @@
 			</div>
 			<Field label={t('settings.health')} hint={t('settings.healthHint')} required autocomplete="off" bind:value={form.health} />
 		</section>
+		{/if}
 
 		<section class="flex flex-col gap-4">
-			{@render heading(t('new.more'), t('settings.resourcesLead'))}
+			{@render heading(t('new.more'), database ? t('db.resourcesLead') : t('settings.resourcesLead'))}
 			<Resources bind:memory={form.memory} bind:cpus={form.cpus} app={app.id} {usage} />
 		</section>
 

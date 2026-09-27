@@ -2,6 +2,7 @@
 	import { inProgress, shortVersion, type Deployment } from '$lib/apps.svelte';
 	import { current, load, rollback } from '$lib/current.svelte';
 	import { messageOf } from '$lib/errors';
+	import DatabaseOverview from '$lib/ui/DatabaseOverview.svelte';
 	import ErrorText from '$lib/ui/ErrorText.svelte';
 	import { ago } from '$lib/format';
 	import { t } from '$lib/i18n';
@@ -42,6 +43,10 @@
 	}
 </script>
 
+{#if app.engine}
+	<DatabaseOverview {app} />
+	<h2 class="-mb-2 font-medium">{t('db.history')}</h2>
+{/if}
 <ErrorText message={error} />
 {#if app.deployments.length === 0}
 	<p class="text-muted">{t('app.noDeployments')}</p>
