@@ -238,6 +238,7 @@ const (
 	CauseRestart  = "restart"  // the live image again, without a build
 	CauseRollback = "rollback" // an earlier deployment's image
 	CauseRecover  = "recover"  // the live image again, after it stopped by itself
+	CauseRestore  = "restore"  // the live image again, after a backup was put back
 )
 
 // Deployment is one attempt to put a version of an app live.

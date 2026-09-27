@@ -180,5 +180,40 @@ CREATE TABLE links (
 	PRIMARY KEY (app_id, db_id)
 ) STRICT;
 CREATE INDEX links_db ON links(db_id);
+`, `
+-- When an app is backed up and how long its backups are kept. Databases
+-- get one when they are made; without one an app is not backed up.
+CREATE TABLE backup_plans (
+	app_id    TEXT PRIMARY KEY REFERENCES apps(id) ON DELETE CASCADE,
+	enabled   INTEGER NOT NULL,
+	minute    INTEGER NOT NULL, -- of the day, server time
+	keep_days INTEGER NOT NULL
+) STRICT;
+INSERT INTO backup_plans SELECT id, 1, 180, 7 FROM apps WHERE engine != '';
+
+-- Each backup, made or tried. Not tied to the app: the backups of a
+-- deleted database stay until keep_until, in case it was deleted by
+-- mistake. file is the core's name for it, empty until it is made.
+CREATE TABLE backups (
+	id          INTEGER PRIMARY KEY,
+	app_id      TEXT NOT NULL,
+	engine      TEXT NOT NULL,
+	reason      TEXT NOT NULL, -- see store.Backup* constants
+	state       TEXT NOT NULL,
+	file        TEXT NOT NULL DEFAULT '',
+	bytes       INTEGER NOT NULL DEFAULT 0,
+	error       TEXT NOT NULL DEFAULT '',
+	created_at  INTEGER NOT NULL,
+	finished_at INTEGER,
+	keep_until  INTEGER NOT NULL,
+	restored_at INTEGER
+) STRICT;
+CREATE INDEX backups_app ON backups(app_id, id);
+
+-- When the recovery file for the backup key was last saved.
+CREATE TABLE backup_key (
+	one      INTEGER PRIMARY KEY CHECK (one = 1),
+	saved_at INTEGER NOT NULL
+) STRICT;
 `,
 }

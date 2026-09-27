@@ -35,6 +35,11 @@ type Core interface {
 	CreateVolume(ctx context.Context, name string) error
 	RemoveVolume(ctx context.Context, name string) error
 	VolumeSizes(ctx context.Context) (map[string]int64, error)
+	CreateBackup(ctx context.Context, app, container, kind string) (core.Backup, error)
+	DownloadBackup(ctx context.Context, app, name string, w io.Writer) error
+	RemoveBackup(ctx context.Context, app, name string) error
+	RestoreBackup(ctx context.Context, app, name, kind, container, volume string) error
+	RecoveryKey(ctx context.Context, host string, w io.Writer) error
 }
 
 // Limits an app gets when the request does not say otherwise.

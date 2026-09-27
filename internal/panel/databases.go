@@ -184,6 +184,11 @@ func (s *Server) createDatabase(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, "save variables", err)
 		return
 	}
+	if err := s.Store.SetBackupPlan(ctx, store.DefaultBackupPlan(a.ID)); err != nil {
+		undo()
+		s.fail(w, "save backup plan", err)
+		return
+	}
 	path, limit := e.DataPath, int64(defaultDatabaseMB)
 	if h, err := s.Core.Host(ctx); err == nil && limit > h.DiskBytes>>20/2 {
 		// A small disk still fits the database with room to spare.

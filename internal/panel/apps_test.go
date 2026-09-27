@@ -54,6 +54,8 @@ type appCore struct {
 	sizes       map[string]int64
 	mounts      map[string][]engine.VolumeMount // by container
 	overlapping bool                            // two containers had the same volume running
+
+	bk coreBackups
 }
 
 func newAppCore(t *testing.T) *appCore {

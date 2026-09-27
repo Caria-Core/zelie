@@ -30,6 +30,15 @@ type browser struct {
 
 func (b *browser) do(method, path string, body any) (int, map[string]any) {
 	b.t.Helper()
+	rec := b.record(method, path, body)
+	var out map[string]any
+	json.Unmarshal(rec.Body.Bytes(), &out)
+	return rec.Code, out
+}
+
+// record does a request and returns the response as it came.
+func (b *browser) record(method, path string, body any) *httptest.ResponseRecorder {
+	b.t.Helper()
 	var buf bytes.Buffer
 	if body != nil {
 		json.NewEncoder(&buf).Encode(body)
@@ -55,9 +64,7 @@ func (b *browser) do(method, path string, body any) (int, map[string]any) {
 			}
 		}
 	}
-	var out map[string]any
-	json.Unmarshal(rec.Body.Bytes(), &out)
-	return rec.Code, out
+	return rec
 }
 
 func newAuthServer(t *testing.T) (*Server, http.Handler, *time.Time) {

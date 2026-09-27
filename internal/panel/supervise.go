@@ -96,7 +96,8 @@ func (s *Server) superviseOnce(ctx context.Context) {
 		states[c.ID] = c.State
 	}
 	for _, a := range apps {
-		if a.Stopped {
+		// A restore stopped it, and starts it again when done.
+		if a.Stopped || s.pauses.paused(a.ID) {
 			continue
 		}
 		live, err := s.Store.LiveDeployment(ctx, a.ID)

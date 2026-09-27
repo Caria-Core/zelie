@@ -58,6 +58,9 @@ type Server struct {
 	crashes crashes
 	samples samples
 	sizes   volumeSizes
+	// backupBusy holds the databases being backed up or restored.
+	backupBusy keyset
+	pauses     pauses
 	ctx     context.Context // lives as long as the server
 }
 
@@ -129,6 +132,14 @@ func (s *Server) Handler() http.Handler {
 	web.HandleFunc("DELETE /api/apps/{app}/links/{db}", s.signedIn(s.deleteLink))
 	web.HandleFunc("GET /api/databases/engines", s.signedIn(s.listEngines))
 	web.HandleFunc("POST /api/databases", s.signedIn(s.createDatabase))
+	web.HandleFunc("GET /api/apps/{app}/backups", s.signedIn(s.listBackups))
+	web.HandleFunc("POST /api/apps/{app}/backups", s.signedIn(s.backUpNow))
+	web.HandleFunc("PUT /api/apps/{app}/backups/plan", s.signedIn(s.setBackupPlan))
+	web.HandleFunc("GET /api/backups/deleted", s.signedIn(s.listDeletedBackups))
+	web.HandleFunc("GET /api/backups/{id}/download", s.signedIn(s.downloadBackup))
+	web.HandleFunc("POST /api/backups/{id}/restore", s.confirmed(s.restoreBackup))
+	web.HandleFunc("DELETE /api/backups/{id}", s.confirmed(s.deleteBackup))
+	web.HandleFunc("GET /api/backups/recovery", s.confirmed(s.recoveryFile))
 	web.HandleFunc("GET /api/host", s.signedIn(s.hostInfo))
 	web.HandleFunc("GET /api/github", s.signedIn(s.githubStatus))
 	web.HandleFunc("POST /api/github/manifest", s.confirmed(s.githubManifest))
@@ -166,9 +177,13 @@ func (s *Server) Serve(ctx context.Context, socket string) error {
 	if err := s.Store.FailUnfinished(ctx, s.now()); err != nil {
 		return err
 	}
+	if err := s.Store.FailUnfinishedBackups(ctx, s.now()); err != nil {
+		return err
+	}
 	go s.supervise(ctx)
 	go s.watchVolumes(ctx)
 	go s.syncAllLinks(ctx)
+	go s.runBackups(ctx)
 	l, err := net.Listen("unix", socket)
 	if err != nil {
 		return err
