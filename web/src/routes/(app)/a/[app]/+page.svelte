@@ -34,7 +34,8 @@
 		restart: t('deploy.restart'),
 		rollback: t('deploy.rollback'),
 		recover: t('deploy.recover'),
-		restore: t('deploy.restore')
+		restore: t('deploy.restore'),
+		backup: t('deploy.backup')
 	};
 
 	function took(d: Deployment): string {

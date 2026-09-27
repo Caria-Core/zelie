@@ -3,6 +3,7 @@
 	import { page } from '$app/state';
 	import { api } from '$lib/api';
 	import { reload } from '$lib/apps.svelte';
+	import type { Backup } from '$lib/backups';
 	import { messageOf } from '$lib/errors';
 	import { repositories, status, type Repository } from '$lib/github';
 	import { t } from '$lib/i18n';
@@ -13,6 +14,7 @@
 	import Button from '$lib/ui/Button.svelte';
 	import ErrorText from '$lib/ui/ErrorText.svelte';
 	import Field from '$lib/ui/Field.svelte';
+	import DeletedBackups from '$lib/ui/DeletedBackups.svelte';
 	import Lead from '$lib/ui/Lead.svelte';
 	import Resources from '$lib/ui/Resources.svelte';
 	import SourceChoice from '$lib/ui/SourceChoice.svelte';
@@ -80,6 +82,20 @@
 			.replace(/^-+|-+$/g, '')
 			.slice(0, 40);
 	});
+
+	// A deleted app's backups come back under its name, into volumes at
+	// the same paths. The backup only knows the size of all its files, so
+	// each volume gets room for all of them: an app over a limit may not run.
+	let advanced = $state(false);
+	function takeBack(b: Backup) {
+		named = true;
+		id = b.app;
+		const paths = (b.volumes ?? []).map((v) => '/' + v);
+		const steps = sizeSteps(diskMB);
+		const size = Math.max(defaultSize, steps.find((mb) => mb * 2 ** 20 >= (b.size ?? 0) * 1.2) ?? steps[steps.length - 1]);
+		volumes = [...volumes.filter((v) => v.path.trim() && !paths.includes(v.path.trim())), ...paths.map((path) => ({ path, size }))];
+		advanced = true;
+	}
 
 	async function submit(e: SubmitEvent) {
 		e.preventDefault();
@@ -166,7 +182,7 @@
 				</div>
 				<Resources bind:memory bind:cpus />
 			</section>
-			<details class="group mt-2 rounded-xl border border-line">
+			<details class="group mt-2 rounded-xl border border-line" bind:open={advanced}>
 				<summary class="flex cursor-pointer items-center gap-2 px-4 py-3 text-[15px] font-medium select-none">
 					<Plus size={16} class="transition group-open:rotate-45" />{t('new.advanced')}
 					<span class="font-normal text-muted">{t('new.advancedLead')}</span>
@@ -225,5 +241,6 @@
 				<Button kind="quiet" type="button" onclick={() => goto('/new')}>{t('new.back')}</Button>
 			</div>
 		</form>
+		<DeletedBackups kind="app" onuse={takeBack} />
 	</div>
 {/if}

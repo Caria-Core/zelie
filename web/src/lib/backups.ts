@@ -5,7 +5,8 @@ import { sensitive } from './confirm.svelte';
 export type Backup = {
 	id: number;
 	app: string;
-	engine: Engine;
+	// Empty for a backup of an app's volumes.
+	engine: Engine | '';
 	reason: 'scheduled' | 'manual' | 'restore';
 	state: 'running' | 'done' | 'failed';
 	bytes: number;
@@ -14,9 +15,15 @@ export type Backup = {
 	finished_at?: string;
 	keep_until: string;
 	restored_at?: string;
+	// For a backup of volumes: the folders in it (where the app saw each
+	// volume, without the leading slash), how much its files take and how
+	// many changed while they were copied.
+	volumes?: string[];
+	size?: number;
+	changed?: number;
 };
 
-export type Plan = { enabled: boolean; minute: number; keep_days: number };
+export type Plan = { enabled: boolean; minute: number; keep_days: number; stop: boolean };
 
 export type Restore = {
 	backup: number;
@@ -30,6 +37,8 @@ export type Restore = {
 export type Backups = {
 	plan: Plan;
 	backups: Backup[];
+	// Where an app that is not a database sees its volumes now.
+	volumes: string[];
 	running: boolean;
 	recovery_saved_at: string | null;
 	time_zone: string;

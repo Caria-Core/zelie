@@ -63,6 +63,7 @@
 					{ href: `/a/${id}/logs`, label: t('app.tab.logs') },
 					{ href: `/a/${id}/env`, label: t('app.tab.env') },
 					{ href: `/a/${id}/storage`, label: t('app.tab.storage') },
+					{ href: `/a/${id}/backups`, label: t('backups.tab') },
 					{ href: `/a/${id}/settings`, label: t('app.tab.settings') }
 				]
 	);

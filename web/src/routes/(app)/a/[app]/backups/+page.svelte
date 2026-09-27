@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
-	import { Archive, CircleAlert, Download, KeyRound, LoaderCircle, RotateCcw, Trash } from '@lucide/svelte';
+	import { Archive, CircleAlert, Download, HardDrive, KeyRound, LoaderCircle, RotateCcw, Trash, TriangleAlert } from '@lucide/svelte';
 	import { api } from '$lib/api';
 	import type { Link } from '$lib/apps.svelte';
 	import { bytes, clock, saveRecovery, type Backup, type Backups, type Plan } from '$lib/backups';
@@ -17,7 +17,7 @@
 	let links = $state<Link[]>([]);
 	let error = $state('');
 	let busy = $state(false);
-	let plan = $state<Plan>({ enabled: true, minute: 180, keep_days: 7 });
+	let plan = $state<Plan>({ enabled: true, minute: 180, keep_days: 7, stop: false });
 	let planSaved = $state(true);
 
 	async function refresh(id: string) {
@@ -105,6 +105,22 @@
 	};
 	const apps = $derived(links.map((l) => l.db));
 	const redis = $derived(app.engine === 'redis');
+	// An app that is not a database: its backups hold its volumes.
+	const files = $derived(!app.engine);
+	const running = $derived(app.state === 'running');
+	const noVolumes = $derived(files && data?.volumes.length === 0);
+	const done = $derived(data?.backups.filter((b) => b.state === 'done') ?? []);
+	const total = $derived(done.reduce((n, b) => n + b.bytes, 0));
+	const dirs = (b: Backup) => (b.volumes ?? []).map((v) => '/' + v).join(', ');
+	// What a restore does to each volume, matched by path.
+	const plans = $derived.by(() => {
+		if (!chosen || !data) return [];
+		const inBackup = (chosen.volumes ?? []).map((v) => '/' + v);
+		return [
+			...data.volumes.map((path) => ({ path, key: inBackup.includes(path) ? ('backups.vol.replace' as const) : ('backups.vol.keep' as const) })),
+			...inBackup.filter((p) => !data!.volumes.includes(p)).map((path) => ({ path, key: 'backups.vol.skip' as const }))
+		];
+	});
 	const input = 'h-9 rounded-lg border border-line bg-bg px-2 text-[15px]';
 	const opener = $derived(
 		{ postgres: 'psql "$DATABASE_URL" < backup.sql', mariadb: 'mariadb … < backup.sql', redis: 'dump.rdb' }[app.engine ?? 'postgres']
@@ -116,20 +132,40 @@
 		<div class="max-w-xl">
 			<h2 class="font-medium">{t('backups.title')}</h2>
 			<p class="text-sm text-muted">
-				{#if data && data.plan.enabled}
-					{t('backups.lead', { at: clock(data.plan.minute), zone: data.time_zone, days: days(data.plan.keep_days) })}
+				{#if noVolumes}
+					{t('backups.encrypted')}
+				{:else if data && data.plan.enabled}
+					{t(files ? 'backups.leadApp' : 'backups.lead', { at: clock(data.plan.minute), zone: data.time_zone, days: days(data.plan.keep_days) })}
 				{:else if data}
-					{t('backups.leadOff')}
+					{t(files ? 'backups.leadAppOff' : 'backups.leadOff')}
 				{/if}
-				{t('backups.encrypted')}
+				{#if !noVolumes}{t('backups.encrypted')}{/if}
 			</p>
 		</div>
-		<Button onclick={backUp} busy={busy || !!data?.running} disabled={app.state !== 'running'} title={app.state !== 'running' ? t('backups.notRunning') : ''}
-			><Archive size={16} strokeWidth={1.75} />{t('backups.now')}</Button
-		>
+		{#if !noVolumes}
+			<Button
+				onclick={backUp}
+				busy={busy || !!data?.running}
+				disabled={!files && !running}
+				title={!files && !running ? t('backups.notRunning') : ''}><Archive size={16} strokeWidth={1.75} />{t('backups.now')}</Button
+			>
+		{/if}
 	</div>
 
-	{#if data && !data.recovery_saved_at}
+	{#if noVolumes}
+		<div class="flex flex-col items-start gap-3 rounded-2xl border border-dashed border-line p-5">
+			<span class="grid size-10 place-items-center rounded-xl bg-selected"><HardDrive size={20} strokeWidth={1.75} /></span>
+			<div>
+				<p class="text-[15px]">{t('backups.noVolumesTitle')}</p>
+				<p class="text-sm text-muted">{t('backups.noVolumes')}</p>
+			</div>
+			<a href="/a/{app.id}/storage" class="inline-flex h-9 items-center rounded-full border border-line px-4 text-sm hover:bg-hover"
+				>{t('backups.toStorage')}</a
+			>
+		</div>
+	{/if}
+
+	{#if data && !data.recovery_saved_at && !noVolumes}
 		<div class="flex flex-col gap-3 rounded-2xl border border-warn/40 bg-warn/5 p-5 sm:flex-row sm:items-start">
 			<span class="grid size-10 shrink-0 place-items-center rounded-xl bg-warn/15 text-warn"><KeyRound size={20} strokeWidth={1.75} /></span>
 			<div class="flex flex-1 flex-col gap-3">
@@ -145,7 +181,10 @@
 	<ErrorText message={error} />
 	{#if restoring?.state === 'running'}
 		<p class="flex items-center gap-2 rounded-xl bg-panel px-4 py-3 text-sm">
-			<LoaderCircle size={16} class="shrink-0 animate-spin" />{t('backups.restoring', { when: restored ? when(restored) : '' })}
+			<LoaderCircle size={16} class="shrink-0 animate-spin" />{t(files ? 'backups.restoringApp' : 'backups.restoring', {
+				when: restored ? when(restored) : '',
+				app: app.id
+			})}
 		</p>
 	{:else if restoring?.state === 'done'}
 		<p class="rounded-xl bg-ok/10 px-4 py-3 text-sm">
@@ -155,7 +194,9 @@
 		<p class="rounded-xl border border-danger/30 px-4 py-3 text-sm text-danger">{restoring.error}</p>
 	{/if}
 
-	{#if data && data.backups.length === 0}
+	{#if noVolumes}
+		<!-- nothing to list -->
+	{:else if data && data.backups.length === 0}
 		<div class="flex flex-col items-start gap-3 rounded-2xl border border-dashed border-line p-5">
 			<span class="grid size-10 place-items-center rounded-xl bg-selected"><Archive size={20} strokeWidth={1.75} /></span>
 			<p class="text-[15px]">{t('backups.empty')}</p>
@@ -164,58 +205,77 @@
 			</p>
 		</div>
 	{:else if data}
-		<ul class="flex flex-col divide-y divide-line rounded-2xl border border-line">
-			{#each data.backups as b (b.id)}
-				<li class="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
-					<div class="flex min-w-0 items-start gap-3">
-						<span
-							class="grid size-9 shrink-0 place-items-center rounded-xl {b.state === 'failed' ? 'bg-danger/10 text-danger' : 'bg-selected'}"
-						>
-							{#if b.state === 'running'}<LoaderCircle size={18} class="animate-spin" />{:else if b.state === 'failed'}<CircleAlert
-									size={18}
-									strokeWidth={1.75}
-								/>{:else}<Archive size={18} strokeWidth={1.75} />{/if}
-						</span>
-						<div class="min-w-0">
-							<p class="flex flex-wrap items-center gap-x-2 gap-y-1">
-								<span class="text-[15px]">{when(b)}</span>
-								<span class="rounded-md bg-selected px-1.5 py-0.5 text-xs text-muted">{reasons[b.reason]}</span>
-								{#if b.restored_at}<span class="rounded-md bg-ok/10 px-1.5 py-0.5 text-xs text-ok"
-										>{t('backups.restoredTag', { when: ago(b.restored_at) })}</span
-									>{/if}
-							</p>
-							{#if b.state === 'failed'}
-								<p class="text-sm break-words text-danger">{t('backups.failed', { why: b.error ?? '' })}</p>
-							{:else if b.state === 'running'}
-								<p class="text-sm text-muted">{t('backups.running')}</p>
-							{:else}
-								<p class="text-sm text-muted">{bytes(b.bytes)} · {t('backups.keptUntil', { when: date(b.keep_until) })}</p>
-							{/if}
+		<div class="flex flex-col gap-2">
+			{#if done.length}
+				<p class="text-sm text-muted">
+					{done.length === 1 ? t('backups.totalOne', { size: bytes(total) }) : t('backups.total', { n: done.length, size: bytes(total) })}
+				</p>
+			{/if}
+			<ul class="flex flex-col divide-y divide-line rounded-2xl border border-line">
+				{#each data.backups as b (b.id)}
+					<li class="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
+						<div class="flex min-w-0 items-start gap-3">
+							<span
+								class="grid size-9 shrink-0 place-items-center rounded-xl {b.state === 'failed' ? 'bg-danger/10 text-danger' : 'bg-selected'}"
+							>
+								{#if b.state === 'running'}<LoaderCircle size={18} class="animate-spin" />{:else if b.state === 'failed'}<CircleAlert
+										size={18}
+										strokeWidth={1.75}
+									/>{:else}<Archive size={18} strokeWidth={1.75} />{/if}
+							</span>
+							<div class="min-w-0">
+								<p class="flex flex-wrap items-center gap-x-2 gap-y-1">
+									<span class="text-[15px]">{when(b)}</span>
+									<span class="rounded-md bg-selected px-1.5 py-0.5 text-xs text-muted">{reasons[b.reason]}</span>
+									{#if b.restored_at}<span class="rounded-md bg-ok/10 px-1.5 py-0.5 text-xs text-ok"
+											>{t('backups.restoredTag', { when: ago(b.restored_at) })}</span
+										>{/if}
+								</p>
+								{#if b.state === 'failed'}
+									<p class="text-sm break-words text-danger">{t('backups.failed', { why: b.error ?? '' })}</p>
+								{:else if b.state === 'running'}
+									<p class="text-sm text-muted">{t('backups.running')}</p>
+								{:else}
+									<p class="text-sm break-words text-muted">
+										{bytes(b.bytes)}{#if b.volumes?.length}{' · '}<span class="font-mono text-[13px]">{dirs(b)}</span>{/if} · {t(
+											'backups.keptUntil',
+											{ when: date(b.keep_until) }
+										)}
+									</p>
+									{#if b.changed}
+										<p class="mt-1 flex items-start gap-1.5 text-sm text-warn">
+											<TriangleAlert size={14} class="mt-[3px] shrink-0" />{b.changed === 1
+												? t('backups.changedOne')
+												: t('backups.changed', { n: b.changed })}
+										</p>
+									{/if}
+								{/if}
+							</div>
 						</div>
-					</div>
-					{#if b.state === 'done'}
-						<div class="flex shrink-0 items-center gap-1 pl-12 sm:pl-0">
-							<Button kind="secondary" class="!h-8 !px-3 text-sm" disabled={busy || app.state !== 'running'} onclick={() => askRestore(b)}
-								><RotateCcw size={14} strokeWidth={1.75} />{t('backups.restore')}</Button
-							>
-							<a
-								href="/api/backups/{b.id}/download"
-								download
-								class="grid size-8 place-items-center rounded-full text-muted hover:bg-hover hover:text-fg"
-								title={t('backups.download')}
-								aria-label={t('backups.download')}><Download size={16} /></a
-							>
-							<Button kind="quiet" class="!size-8 !px-0 hover:!text-danger" disabled={busy} title={t('backups.delete')} aria-label={t('backups.delete')} onclick={() => remove(b)}
-								><Trash size={15} /></Button
-							>
-						</div>
-					{/if}
-				</li>
-			{/each}
-		</ul>
+						{#if b.state === 'done'}
+							<div class="flex shrink-0 items-center gap-1 pl-12 sm:pl-0">
+								<Button kind="secondary" class="!h-8 !px-3 text-sm" disabled={busy || (!files && !running)} onclick={() => askRestore(b)}
+									><RotateCcw size={14} strokeWidth={1.75} />{t('backups.restore')}</Button
+								>
+								<a
+									href="/api/backups/{b.id}/download"
+									download
+									class="grid size-8 place-items-center rounded-full text-muted hover:bg-hover hover:text-fg"
+									title={t('backups.download')}
+									aria-label={t('backups.download')}><Download size={16} /></a
+								>
+								<Button kind="quiet" class="!size-8 !px-0 hover:!text-danger" disabled={busy} title={t('backups.delete')} aria-label={t('backups.delete')} onclick={() => remove(b)}
+									><Trash size={15} /></Button
+								>
+							</div>
+						{/if}
+					</li>
+				{/each}
+			</ul>
+		</div>
 	{/if}
 
-	{#if data}
+	{#if data && !noVolumes}
 		<form class="flex flex-col gap-4 rounded-2xl bg-panel p-5" onsubmit={savePlan}>
 			<div>
 				<h3 class="font-medium">{t('backups.scheduleTitle')}</h3>
@@ -243,6 +303,12 @@
 					</select>
 				</label>
 			</div>
+			{#if files}
+				<label class="flex items-start gap-2.5 text-[15px]">
+					<input type="checkbox" class="mt-1 size-4 accent-[var(--fg)]" bind:checked={plan.stop} onchange={() => (planSaved = false)} />
+					<span>{t('backups.stop')}<span class="block text-sm text-muted">{t('backups.stopHint')}</span></span>
+				</label>
+			{/if}
 			<p class="text-sm text-muted">{t('backups.keepHint', { zone: data.time_zone })}</p>
 			<Button type="submit" kind="secondary" class="self-start" {busy} disabled={planSaved}>{t('backups.save')}</Button>
 		</form>
@@ -251,8 +317,13 @@
 			<summary class="cursor-pointer font-medium">{t('backups.openTitle')}</summary>
 			<div class="mt-3 flex flex-col gap-3 text-muted">
 				<p>{t('backups.openLead')}</p>
-				<pre class="overflow-x-auto rounded-lg bg-selected px-3 py-2 text-xs text-fg">age -d -i zelie-recovery.txt {app.id}-….zst.age | zstd -d &gt; {redis ? 'dump.rdb' : 'backup.sql'}</pre>
-				<p>{redis ? t('backups.openRedis') : t('backups.openSql', { cmd: opener })}</p>
+				{#if files}
+					<pre class="overflow-x-auto rounded-lg bg-selected px-3 py-2 text-xs text-fg">age -d -i zelie-recovery.txt {app.id}-….tar.zst.age | zstd -d | tar -x</pre>
+					<p>{t('backups.openTar')}</p>
+				{:else}
+					<pre class="overflow-x-auto rounded-lg bg-selected px-3 py-2 text-xs text-fg">age -d -i zelie-recovery.txt {app.id}-….zst.age | zstd -d &gt; {redis ? 'dump.rdb' : 'backup.sql'}</pre>
+					<p>{redis ? t('backups.openRedis') : t('backups.openSql', { cmd: opener })}</p>
+				{/if}
 				{#if data.recovery_saved_at}
 					<p>
 						{t('backups.recoverySaved', { when: date(data.recovery_saved_at) })}
@@ -273,31 +344,61 @@
 		<div class="flex flex-col gap-5">
 			<div>
 				<h2 class="text-[17px] font-medium">{t('backups.restoreTitle', { when: when(chosen) })}</h2>
-				<p class="text-sm text-muted">{t('backups.restoreLead', { db: app.id })}</p>
+				<p class="text-sm text-muted">{t(files ? 'backups.restoreLeadApp' : 'backups.restoreLead', { db: app.id, app: app.id })}</p>
 			</div>
-			<ol class="flex flex-col gap-3 text-sm">
-				<li class="flex gap-3">
-					<span class="grid size-6 shrink-0 place-items-center rounded-full bg-selected text-xs">1</span>
-					<span>{t('backups.step.safety', { db: app.id })}</span>
-				</li>
-				<li class="flex gap-3">
-					<span class="grid size-6 shrink-0 place-items-center rounded-full bg-selected text-xs">2</span>
-					<span
-						>{#if apps.length && redis}{t(apps.length === 1 ? 'backups.step.stopBothOne' : 'backups.step.stopBoth', {
-								apps: apps.join(', '),
-								db: app.id
-							})}{:else if apps.length}{t(apps.length === 1 ? 'backups.step.stopApp' : 'backups.step.stopApps', { apps: apps.join(', ') })}{:else if redis}{t('backups.step.stopDb', { db: app.id })}{:else}{t('backups.step.noApps')}{/if}</span
-					>
-				</li>
-				<li class="flex gap-3">
-					<span class="grid size-6 shrink-0 place-items-center rounded-full bg-selected text-xs">3</span>
-					<span>{t('backups.step.replace', { db: app.id, when: when(chosen) })}</span>
-				</li>
-				<li class="flex gap-3">
-					<span class="grid size-6 shrink-0 place-items-center rounded-full bg-selected text-xs">4</span>
-					<span>{t('backups.step.start')}</span>
-				</li>
-			</ol>
+			{#if files}
+				<ol class="flex flex-col gap-3 text-sm">
+					<li class="flex gap-3">
+						<span class="grid size-6 shrink-0 place-items-center rounded-full bg-selected text-xs">1</span>
+						<span>{t(running ? 'backups.step.stopSelf' : 'backups.step.stoppedSelf', { app: app.id })}</span>
+					</li>
+					<li class="flex gap-3">
+						<span class="grid size-6 shrink-0 place-items-center rounded-full bg-selected text-xs">2</span>
+						<span>{t('backups.step.safetyApp')}</span>
+					</li>
+					<li class="flex gap-3">
+						<span class="grid size-6 shrink-0 place-items-center rounded-full bg-selected text-xs">3</span>
+						<div class="flex min-w-0 flex-col gap-1.5">
+							<span>{t('backups.step.volumes')}</span>
+							<ul class="flex flex-col gap-1">
+								{#each plans as p (p.path)}
+									<li class="text-muted {p.key === 'backups.vol.replace' ? '' : 'italic'}">
+										<span class="font-mono text-[13px] text-fg not-italic">{p.path}</span>: {t(p.key, { app: app.id })}
+									</li>
+								{/each}
+							</ul>
+						</div>
+					</li>
+					<li class="flex gap-3">
+						<span class="grid size-6 shrink-0 place-items-center rounded-full bg-selected text-xs">4</span>
+						<span>{t(running ? 'backups.step.startApp' : 'backups.step.staysStopped', { app: app.id })}</span>
+					</li>
+				</ol>
+			{:else}
+				<ol class="flex flex-col gap-3 text-sm">
+					<li class="flex gap-3">
+						<span class="grid size-6 shrink-0 place-items-center rounded-full bg-selected text-xs">1</span>
+						<span>{t('backups.step.safety', { db: app.id })}</span>
+					</li>
+					<li class="flex gap-3">
+						<span class="grid size-6 shrink-0 place-items-center rounded-full bg-selected text-xs">2</span>
+						<span
+							>{#if apps.length && redis}{t(apps.length === 1 ? 'backups.step.stopBothOne' : 'backups.step.stopBoth', {
+									apps: apps.join(', '),
+									db: app.id
+								})}{:else if apps.length}{t(apps.length === 1 ? 'backups.step.stopApp' : 'backups.step.stopApps', { apps: apps.join(', ') })}{:else if redis}{t('backups.step.stopDb', { db: app.id })}{:else}{t('backups.step.noApps')}{/if}</span
+						>
+					</li>
+					<li class="flex gap-3">
+						<span class="grid size-6 shrink-0 place-items-center rounded-full bg-selected text-xs">3</span>
+						<span>{t('backups.step.replace', { db: app.id, when: when(chosen) })}</span>
+					</li>
+					<li class="flex gap-3">
+						<span class="grid size-6 shrink-0 place-items-center rounded-full bg-selected text-xs">4</span>
+						<span>{t('backups.step.start')}</span>
+					</li>
+				</ol>
+			{/if}
 			<div class="flex flex-wrap gap-3">
 				<Button onclick={restore}><RotateCcw size={16} strokeWidth={1.75} />{t('backups.restore')}</Button>
 				<Button kind="quiet" onclick={() => dialog?.close()}>{t('common.cancel')}</Button>

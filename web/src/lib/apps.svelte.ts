@@ -6,7 +6,7 @@ export type Deployment = {
 	image?: string;
 	state: 'queued' | 'building' | 'testing' | 'starting' | 'live' | 'failed' | 'replaced' | 'skipped';
 	error?: string;
-	cause: 'manual' | 'push' | 'restart' | 'rollback' | 'recover' | 'restore';
+	cause: 'manual' | 'push' | 'restart' | 'rollback' | 'recover' | 'restore' | 'backup';
 	// The image still exists, so it can be rolled back to.
 	kept: boolean;
 	// The first line of the pushed commit's message.
