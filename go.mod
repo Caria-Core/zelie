@@ -3,6 +3,7 @@ module github.com/Caria-Core/zelie
 go 1.27.1
 
 require (
+	filippo.io/age v1.3.2
 	github.com/caddyserver/certmagic v0.25.3
 	github.com/containerd/containerd/api v1.12.0
 	github.com/containerd/containerd/v2 v2.4.1
@@ -12,6 +13,7 @@ require (
 	github.com/distribution/reference v0.6.0
 	github.com/go-webauthn/webauthn v0.18.2
 	github.com/google/nftables v0.3.0
+	github.com/klauspost/compress v1.20.0
 	github.com/miekg/dns v1.1.72
 	github.com/opencontainers/runtime-spec v1.3.0
 	golang.org/x/crypto v0.57.0
@@ -21,7 +23,6 @@ require (
 )
 
 require (
-	filippo.io/age v1.3.2 // indirect
 	filippo.io/hpke v0.4.0 // indirect
 	github.com/Microsoft/go-winio v0.6.3-0.20251027160822-ad3df93bed29 // indirect
 	github.com/Microsoft/hcsshim v0.15.0-rc.4 // indirect
@@ -48,7 +49,6 @@ require (
 	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/google/go-tpm v0.9.8 // indirect
 	github.com/google/uuid v1.6.0 // indirect
-	github.com/klauspost/compress v1.20.0 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/libdns/libdns v1.1.1 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
