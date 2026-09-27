@@ -1,0 +1,143 @@
+package backup
+
+import (
+	"bytes"
+	"crypto/rand"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"filippo.io/age"
+	"github.com/klauspost/compress/zstd"
+)
+
+func newDir(t *testing.T) *Dir {
+	t.Helper()
+	root := t.TempDir()
+	k, err := LoadOrCreateKey(filepath.Join(root, "keys", "backup.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &Dir{Root: filepath.Join(root, "backups"), Key: k}
+}
+
+func TestKeyIsKept(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "backup.key")
+	a, err := LoadOrCreateKey(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := LoadOrCreateKey(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.id.String() != b.id.String() {
+		t.Error("a second load made a new key")
+	}
+	if st, _ := os.Stat(path); st.Mode().Perm() != 0o600 {
+		t.Errorf("key file mode %v", st.Mode().Perm())
+	}
+}
+
+func TestRoundTrip(t *testing.T) {
+	d := newDir(t)
+	data := make([]byte, 3<<20)
+	rand.Read(data[:1<<20]) // part random, part compressible
+	w, err := d.Create("db", "sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.Write(data)
+	info, err := w.Commit()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ValidName(info.Name) || !strings.HasSuffix(info.Name, ".sql.zst.age") || info.Bytes == 0 {
+		t.Fatalf("info %+v", info)
+	}
+	r, err := d.Open("db", info.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := io.ReadAll(r)
+	r.Close()
+	if err != nil || !bytes.Equal(got, data) {
+		t.Fatalf("read back %d bytes, %v", len(got), err)
+	}
+	list, err := d.List("db")
+	if err != nil || len(list) != 1 || list[0].Name != info.Name || list[0].Bytes != info.Bytes {
+		t.Fatalf("list %+v, %v", list, err)
+	}
+	if err := d.Remove("db", info.Name); err != nil {
+		t.Fatal(err)
+	}
+	if list, _ := d.List("db"); len(list) != 0 {
+		t.Errorf("still listed after remove: %+v", list)
+	}
+}
+
+// The recovery file must open a backup with age and zstd alone.
+func TestRecoveryOpensWithoutZelie(t *testing.T) {
+	d := newDir(t)
+	w, _ := d.Create("db", "sql")
+	io.WriteString(w, "select 1;\n")
+	info, err := w.Commit()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids, err := age.ParseIdentities(strings.NewReader(d.Key.Recovery("example.com", time.Now())))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, _ := d.OpenRaw("db", info.Name)
+	defer f.Close()
+	dec, err := age.Decrypt(f, ids...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	z, _ := zstd.NewReader(dec)
+	defer z.Close()
+	got, _ := io.ReadAll(z)
+	if string(got) != "select 1;\n" {
+		t.Errorf("got %q", got)
+	}
+}
+
+func TestAbortLeavesNothing(t *testing.T) {
+	d := newDir(t)
+	w, _ := d.Create("db", "sql")
+	io.WriteString(w, "half a dump")
+	w.Abort()
+	entries, _ := os.ReadDir(filepath.Join(d.Root, "db"))
+	if len(entries) != 0 {
+		t.Errorf("left %v", entries)
+	}
+}
+
+func TestNamesStayInside(t *testing.T) {
+	d := newDir(t)
+	for _, app := range []string{"..", "../x", "a/b", "", "A"} {
+		if _, err := d.List(app); err == nil {
+			t.Errorf("app %q accepted", app)
+		}
+	}
+	for _, name := range []string{"../../etc/passwd", "x.sql", "20260101T000000Z-ab.sql.zst.age/..", ".partial-1"} {
+		if _, err := d.Open("db", name); err == nil || ValidName(name) {
+			t.Errorf("name %q accepted", name)
+		}
+	}
+}
+
+func TestWrongKeyFails(t *testing.T) {
+	d, other := newDir(t), newDir(t)
+	w, _ := d.Create("db", "sql")
+	io.WriteString(w, "secret")
+	info, _ := w.Commit()
+	other.Root = d.Root
+	if _, err := other.Open("db", info.Name); err == nil {
+		t.Error("opened with another key")
+	}
+}

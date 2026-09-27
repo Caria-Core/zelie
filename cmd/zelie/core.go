@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"syscall"
 
+	"github.com/Caria-Core/zelie/internal/backup"
 	"github.com/Caria-Core/zelie/internal/build"
 	"github.com/Caria-Core/zelie/internal/core"
 	"github.com/Caria-Core/zelie/internal/engine"
@@ -45,6 +46,12 @@ func runCore(stderr io.Writer) int {
 		return 1
 	}
 
+	backupKey, err := backup.LoadOrCreateKey("/var/lib/zelie/backup.key")
+	if err != nil {
+		log.Error("start core", "err", err)
+		return 1
+	}
+
 	// Without DNS, apps cannot find their links or anything else, so the
 	// core stops with it.
 	dnsErrs, err := e.StartDNS(ctx)
@@ -65,6 +72,7 @@ func runCore(stderr io.Writer) int {
 		Engine: e, Paths: engine.DefaultPaths, Log: log, Allowed: policy,
 		Builder: build.New(e, engine.DefaultPaths, "/var/lib/zelie/build"),
 		Secrets: keys,
+		Backups: &backup.Dir{Root: "/var/lib/zelie/backups", Key: backupKey},
 	}
 	if err := s.Serve(ctx, core.DefaultSocket); err != nil {
 		log.Error("core stopped", "err", err)

@@ -20,6 +20,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Caria-Core/zelie/internal/backup"
 	"github.com/Caria-Core/zelie/internal/engine"
 	"github.com/Caria-Core/zelie/internal/peer"
 	"github.com/Caria-Core/zelie/internal/secret"
@@ -40,6 +41,8 @@ type Engine interface {
 	VolumeSizes() (map[string]int64, error)
 	Links(app string) ([]engine.Link, error)
 	SetLinks(ctx context.Context, app string, links []engine.Link) error
+	Exec(ctx context.Context, id string, args []string, stdin io.Reader, stdout, stderr io.Writer) (uint32, error)
+	OpenVolume(ctx context.Context, name string) (*os.Root, error)
 }
 
 // Limits a single request may ask for. They keep a confused or compromised
@@ -53,11 +56,14 @@ type Server struct {
 	Engine  Engine
 	Builder Builder
 	Secrets *secret.Keys
+	Backups *backup.Dir
 	Paths   engine.Paths
 	Log     *slog.Logger
 	Allowed peer.Policy
 	// Host describes the server; tests replace it.
 	Host func() (engine.Host, error)
+
+	busy busy
 }
 
 func (s *Server) Handler() http.Handler {
@@ -78,6 +84,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/builds", s.build)
 	mux.HandleFunc("DELETE /v1/images", s.removeImage)
 	mux.HandleFunc("GET /v1/secrets/key", s.secretKey)
+	mux.HandleFunc("POST /v1/backups", s.createBackup)
+	mux.HandleFunc("GET /v1/backups/{app}", s.listBackups)
+	mux.HandleFunc("GET /v1/backups/{app}/{name}", s.downloadBackup)
+	mux.HandleFunc("DELETE /v1/backups/{app}/{name}", s.removeBackup)
+	mux.HandleFunc("POST /v1/backups/{app}/{name}/restore", s.restoreBackup)
+	mux.HandleFunc("GET /v1/backups-key", s.recoveryKey)
 	return peer.Require(s.Allowed, s.Log, mux)
 }
 

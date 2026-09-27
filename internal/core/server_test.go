@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -26,6 +27,24 @@ type fakeEngine struct {
 	removedImages []string
 	volumes       []string
 	links         map[string][]engine.Link
+
+	containers []engine.Status // replaces List's answer when set
+	exec       func(args []string, stdin io.Reader, stdout io.Writer) uint32
+	volumeDir  string
+}
+
+func (f *fakeEngine) Exec(_ context.Context, _ string, args []string, stdin io.Reader, stdout, _ io.Writer) (uint32, error) {
+	if stdout == nil {
+		stdout = io.Discard
+	}
+	return f.exec(args, stdin, stdout), nil
+}
+
+func (f *fakeEngine) OpenVolume(_ context.Context, name string) (*os.Root, error) {
+	if name != "data" {
+		return nil, errdefs.ErrNotFound
+	}
+	return os.OpenRoot(f.volumeDir)
 }
 
 func (f *fakeEngine) Run(_ context.Context, s engine.Spec) error {
@@ -98,6 +117,9 @@ func (f *fakeEngine) RemoveImage(_ context.Context, name string) error {
 }
 
 func (f *fakeEngine) List(context.Context) ([]engine.Status, error) {
+	if f.containers != nil {
+		return f.containers, nil
+	}
 	return []engine.Status{{ID: "web", Image: "busybox", State: "running", Pid: 42, Userns: 1 << 30}}, nil
 }
 

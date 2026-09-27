@@ -7,9 +7,11 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 
+	containerd "github.com/containerd/containerd/v2/client"
 	"github.com/containerd/errdefs"
 	"github.com/opencontainers/runtime-spec/specs-go"
 )
@@ -178,4 +180,47 @@ func (e *Engine) volumeMounts(vols []VolumeMount, idmap []specs.LinuxIDMapping) 
 		})
 	}
 	return out, nil
+}
+
+// OpenVolume opens a volume for the core to change its files directly, as a
+// restore does. It is refused while a container using the volume runs. The
+// files came from a container and are not trusted: the root keeps every
+// path, symbolic links included, inside the volume.
+func (e *Engine) OpenVolume(ctx context.Context, name string) (*os.Root, error) {
+	if !validID.MatchString(name) {
+		return nil, fmt.Errorf("invalid volume name %q", name)
+	}
+	ctx = e.ctx(ctx)
+	containers, err := e.client.Containers(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, c := range containers {
+		labels, err := c.Labels(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if !slices.Contains(strings.Split(labels[labelVolumes], ","), name) {
+			continue
+		}
+		task, err := c.Task(ctx, nil)
+		if errdefs.IsNotFound(err) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		st, err := task.Status(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if st.Status != containerd.Stopped {
+			return nil, fmt.Errorf("volume %s is in use by running container %s: %w", name, c.ID(), errdefs.ErrFailedPrecondition)
+		}
+	}
+	root, err := os.OpenRoot(e.volumeDir(name))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, fmt.Errorf("volume %s: %w", name, errdefs.ErrNotFound)
+	}
+	return root, err
 }
