@@ -56,6 +56,9 @@ type appCore struct {
 	overlapping bool                            // two containers had the same volume running
 
 	bk coreBackups
+	// Containers another request removes first: removing them again finds
+	// nothing.
+	vanishing map[string]bool
 }
 
 func newAppCore(t *testing.T) *appCore {
@@ -157,6 +160,10 @@ func (c *appCore) Remove(_ context.Context, id string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	delete(c.containers, id)
+	if c.vanishing[id] {
+		// Someone else removed it between the list and now.
+		return &core.Error{Status: http.StatusNotFound, Message: "container not found"}
+	}
 	return nil
 }
 
@@ -514,4 +521,19 @@ func TestDomainChangeMovesTheRoute(t *testing.T) {
 func readFile(path string) (string, error) {
 	b, err := os.ReadFile(path)
 	return string(b), err
+}
+
+// A deployment cancelled by the delete may remove its old container at the
+// same time. The delete goes on.
+func TestDeleteWhileAContainerGoes(t *testing.T) {
+	e := newAppEnv(t)
+	e.b.do("POST", "/api/apps", map[string]any{"id": "web", "source": "image", "image": "nginx"})
+	d := e.settle(t, "web")
+	e.core.vanishing = map[string]bool{fmt.Sprintf("web-%d", d.ID): true}
+	if code, out := e.b.do("DELETE", "/api/apps/web", nil); code != http.StatusNoContent {
+		t.Fatalf("delete: %d %v", code, out)
+	}
+	if code, _ := e.b.do("GET", "/api/apps/web", nil); code != http.StatusNotFound {
+		t.Errorf("app still there: %d", code)
+	}
 }

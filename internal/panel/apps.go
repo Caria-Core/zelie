@@ -800,7 +800,8 @@ func (s *Server) deleteApp(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, c := range list {
 		if c.App == a.ID {
-			if err := s.Core.Remove(ctx, c.ID); err != nil {
+			// The cancelled deployment may be removing it too.
+			if err := s.Core.Remove(ctx, c.ID); err != nil && !isNotFound(err) {
 				s.coreFailed(w, "remove container", err)
 				return
 			}
