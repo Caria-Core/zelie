@@ -281,6 +281,10 @@ func (e *Engine) Run(ctx context.Context, s Spec) (err error) {
 		// from /sys/fs/cgroup. Runtimes such as the JVM size themselves from
 		// those files and would otherwise assume the whole machine.
 		oci.WithLinuxNamespace(specs.LinuxNamespace{Type: specs.CgroupNamespace}),
+		// containerd puts an empty tmpfs on /run, Docker does not. Images
+		// expect what their Dockerfile made there: MariaDB 10.11 stops at
+		// once without its /run/mysqld.
+		oci.WithoutRunMount,
 		oci.WithMounts([]specs.Mount{
 			{
 				Destination: "/sys/fs/cgroup",
