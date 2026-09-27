@@ -215,5 +215,14 @@ CREATE TABLE backup_key (
 	one      INTEGER PRIMARY KEY CHECK (one = 1),
 	saved_at INTEGER NOT NULL
 ) STRICT;
+`, `
+-- Backups of an app's volumes. stop is set when the app is stopped for its
+-- backup rather than copied while it runs. volumes lists the folders in the
+-- backup, one per line: where the app saw each volume. size is how much the
+-- files take unpacked, and changed how many changed while being copied.
+ALTER TABLE backup_plans ADD COLUMN stop INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE backups ADD COLUMN volumes TEXT NOT NULL DEFAULT '';
+ALTER TABLE backups ADD COLUMN size INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE backups ADD COLUMN changed INTEGER NOT NULL DEFAULT 0;
 `,
 }

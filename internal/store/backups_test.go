@@ -109,3 +109,37 @@ func TestBackups(t *testing.T) {
 		t.Errorf("recovery saved at %v", at)
 	}
 }
+
+func TestVolumeBackupRecord(t *testing.T) {
+	ctx := context.Background()
+	s := open(t)
+	now := time.Unix(1_800_000_000, 0)
+	if err := s.CreateApp(ctx, App{ID: "mc", Source: SourceImage, Image: "itzg/minecraft-server", Port: 25565, MemoryMB: 2048, CPUs: 2, CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	p := AppBackupPlan("mc")
+	p.Enabled, p.Stop = true, true
+	if err := s.SetBackupPlan(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.BackupPlan(ctx, "mc"); got != p {
+		t.Errorf("plan %+v, want %+v", got, p)
+	}
+	id, err := s.StartBackup(ctx, Backup{AppID: "mc", Reason: BackupManual, CreatedAt: now, KeepUntil: now.Add(time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetBackupContents(ctx, id, []string{"data", "srv/plugins"}, 5000, 2); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.FinishBackup(ctx, id, "x.tar.zst.age", 900, "", now); err != nil {
+		t.Fatal(err)
+	}
+	b, err := s.Backup(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(b.Volumes) != 2 || b.Volumes[1] != "srv/plugins" || b.Size != 5000 || b.Changed != 2 || b.Engine != "" {
+		t.Errorf("backup %+v", b)
+	}
+}

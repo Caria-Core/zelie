@@ -239,6 +239,7 @@ const (
 	CauseRollback = "rollback" // an earlier deployment's image
 	CauseRecover  = "recover"  // the live image again, after it stopped by itself
 	CauseRestore  = "restore"  // the live image again, after a backup was put back
+	CauseBackup   = "backup"   // the live image again, after the app was stopped for its backup
 )
 
 // Deployment is one attempt to put a version of an app live.

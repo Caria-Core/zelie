@@ -22,6 +22,61 @@ type coreBackups struct {
 	failBackup string   // the database refuses to be dumped
 	failures   int      // how many backups fail before one works; -1 is all
 	n          int
+	// Volume backups: whether each ran live, and while which of the
+	// app's containers ran.
+	live       []bool
+	runningFor []int
+}
+
+// running counts the app's running containers.
+func (c *appCore) running(app string) int {
+	n := 0
+	for _, st := range c.containers {
+		if st.App == app && st.State == "running" {
+			n++
+		}
+	}
+	return n
+}
+
+func (c *appCore) BackUpVolumes(_ context.Context, app string, vols []core.VolumeRef, live bool) (core.Backup, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !live && c.running(app) > 0 {
+		return core.Backup{}, &core.Error{Status: http.StatusConflict, Message: "volume in use by a running container"}
+	}
+	if c.bk.failBackup != "" && c.bk.failures != 0 {
+		if c.bk.failures > 0 {
+			c.bk.failures--
+		}
+		return core.Backup{}, &core.Error{Status: http.StatusUnprocessableEntity, Message: c.bk.failBackup}
+	}
+	if c.bk.files == nil {
+		c.bk.files = map[string][]string{}
+	}
+	c.bk.live = append(c.bk.live, live)
+	c.bk.runningFor = append(c.bk.runningFor, c.running(app))
+	c.bk.n++
+	name := fmt.Sprintf("20270101T00000%dZ-abcd.tar.zst.age", c.bk.n)
+	c.bk.files[app] = append(c.bk.files[app], name)
+	return core.Backup{Name: name, Bytes: 1000, Size: 5000, Changed: map[bool]int{true: 1}[live], Created: time.Now()}, nil
+}
+
+func (c *appCore) RestoreVolumes(_ context.Context, app, name string, vols []core.VolumeRef, size int64) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !slices.Contains(c.bk.files[app], name) {
+		return &core.Error{Status: http.StatusNotFound, Message: "backup, container or volume not found"}
+	}
+	if c.running(app) > 0 {
+		return &core.Error{Status: http.StatusConflict, Message: "volume in use by a running container"}
+	}
+	var dirs []string
+	for _, v := range vols {
+		dirs = append(dirs, v.Dir)
+	}
+	c.bk.restored = append(c.bk.restored, fmt.Sprintf("%s/%s into %v, %d bytes", app, name, dirs, size))
+	return nil
 }
 
 func (c *appCore) CreateBackup(_ context.Context, app, container, kind string) (core.Backup, error) {
@@ -149,8 +204,9 @@ func TestBackupAndRestore(t *testing.T) {
 	if len(list) != 0 || plan["enabled"] != true || plan["minute"] != 180.0 || plan["keep_days"] != 7.0 {
 		t.Fatalf("new database: %v %v", list, plan)
 	}
-	if code, _ := e.b.do("GET", "/api/apps/web/backups", nil); code != http.StatusBadRequest {
-		t.Errorf("an app's backups: %d", code)
+	// An app with no volumes has nothing to back up.
+	if code, _ := e.b.do("POST", "/api/apps/web/backups", nil); code != http.StatusConflict {
+		t.Errorf("back up an app without volumes: %d", code)
 	}
 
 	out := e.backUp(t, "pg")
@@ -369,5 +425,122 @@ func TestZoneLabel(t *testing.T) {
 	}
 	if got := zoneLabel(at.UTC()); got != "UTC+00:00" {
 		t.Errorf("utc: %q", got)
+	}
+}
+
+func TestVolumeBackups(t *testing.T) {
+	e := newAppEnv(t)
+	ctx := context.Background()
+	e.b.do("POST", "/api/apps", map[string]any{"id": "mc", "source": "image", "image": "itzg/minecraft-server",
+		"volumes": []map[string]any{{"path": "/data"}, {"path": "/srv/plugins"}}})
+	e.settle(t, "mc")
+	e.b.do("POST", "/api/apps", map[string]any{"id": "web", "source": "image", "image": "nginx"})
+	e.settle(t, "web")
+	causes := func() []string {
+		list, _ := e.s.Store.Deployments(ctx, "mc", 100)
+		var out []string
+		for _, d := range list {
+			out = append(out, d.Cause)
+		}
+		return out
+	}
+
+	_, plan := e.backups(t, "mc")
+	if plan["enabled"] != false || plan["stop"] != false || plan["keep_days"] != 7.0 {
+		t.Errorf("an app's plan starts off: %v", plan)
+	}
+	_, out := e.b.do("GET", "/api/apps/mc/backups", nil)
+	if fmt.Sprint(out["volumes"]) != "[/data /srv/plugins]" {
+		t.Errorf("volumes %v", out["volumes"])
+	}
+	if code, _ := e.b.do("PUT", "/api/apps/web/backups/plan", map[string]any{"enabled": true, "minute": 180, "keep_days": 7}); code != http.StatusConflict {
+		t.Errorf("turning on backups of an app without volumes: %d", code)
+	}
+
+	// By default the files are copied while the app runs.
+	before := len(causes())
+	b := e.backUp(t, "mc")
+	if b["state"] != "done" || fmt.Sprint(b["volumes"]) != "[data srv/plugins]" || b["size"] != 5000.0 || b["changed"] != 1.0 || b["engine"] != "" {
+		t.Fatalf("live backup: %v", b)
+	}
+	if !e.core.bk.live[0] || e.core.bk.runningFor[0] != 1 || len(causes()) != before {
+		t.Errorf("live backup stopped the app: live %v, running %v", e.core.bk.live, e.core.bk.runningFor)
+	}
+
+	// Stopped for its backup, then started again.
+	if code, out := e.b.do("PUT", "/api/apps/mc/backups/plan", map[string]any{"enabled": true, "minute": 180, "keep_days": 7, "stop": true}); code != http.StatusOK {
+		t.Fatalf("plan: %d %v", code, out)
+	}
+	e.backUp(t, "mc")
+	e.settle(t, "mc")
+	if e.core.bk.live[1] || e.core.bk.runningFor[1] != 0 {
+		t.Errorf("stopped backup: live %v, running %v", e.core.bk.live, e.core.bk.runningFor)
+	}
+	if c := causes(); c[0] != store.CauseBackup {
+		t.Errorf("started again with %v", c)
+	}
+	if e.core.running("mc") != 1 {
+		t.Error("the app is not running after its backup")
+	}
+
+	// A restore stops the app, backs up what is there, puts the files back
+	// and starts it again.
+	first := int64(b["id"].(float64))
+	res := e.restore(t, "mc", first)
+	e.settle(t, "mc")
+	if res["state"] != "done" || res["safety"] == nil {
+		t.Fatalf("restore: %v", res)
+	}
+	if want := "mc/" + e.core.bk.files["mc"][0] + " into [data srv/plugins], 5000 bytes"; fmt.Sprint(e.core.bk.restored) != "["+want+"]" {
+		t.Errorf("restored %v, want %s", e.core.bk.restored, want)
+	}
+	list, _ := e.backups(t, "mc")
+	if list[0]["reason"] != "restore" || e.core.bk.live[2] || e.core.bk.runningFor[2] != 0 {
+		t.Errorf("safety backup %v, live %v, running %v", list[0], e.core.bk.live, e.core.bk.runningFor)
+	}
+	if c := causes(); c[0] != store.CauseRestore || e.core.running("mc") != 1 {
+		t.Errorf("after the restore: causes %v, running %d", c, e.core.running("mc"))
+	}
+
+	// A stopped app stays stopped.
+	e.b.do("POST", "/api/apps/mc/stop", nil)
+	n := len(causes())
+	if res := e.restore(t, "mc", first); res["state"] != "done" {
+		t.Fatalf("restore of a stopped app: %v", res)
+	}
+	if len(causes()) != n || e.core.running("mc") != 0 {
+		t.Error("a stopped app was started by its restore")
+	}
+
+	// An app's backup does not go into a database of the same name.
+	e.s.Store.DeleteApp(ctx, "mc")
+	e.b.do("POST", "/api/databases", map[string]any{"id": "mc", "engine": "redis"})
+	if code, out := e.b.do("POST", fmt.Sprintf("/api/backups/%d/restore", first), nil); code != http.StatusConflict || !strings.Contains(fmt.Sprint(out), "volumes") {
+		t.Errorf("app backup into a database: %d %v", code, out)
+	}
+}
+
+func TestScheduledVolumeBackups(t *testing.T) {
+	e := newAppEnv(t)
+	ctx := context.Background()
+	e.b.do("POST", "/api/apps", map[string]any{"id": "mc", "source": "image", "image": "itzg/minecraft-server",
+		"volumes": []map[string]any{{"path": "/data"}}})
+	e.settle(t, "mc")
+	now := time.Unix(1_800_000_000, 0)
+	e.s.Now = func() time.Time { return now }
+	count := func() int {
+		list, _ := e.s.Store.Backups(ctx, "mc")
+		return len(list)
+	}
+	now = lastSlot(now, 180).AddDate(0, 0, 1).Add(time.Minute)
+	e.s.backupsOnce(ctx)
+	if count() != 0 {
+		t.Fatal("an app was backed up before its backups were turned on")
+	}
+	e.b.do("PUT", "/api/apps/mc/backups/plan", map[string]any{"enabled": true, "minute": 180, "keep_days": 7})
+	now = now.AddDate(0, 0, 1)
+	e.s.backupsOnce(ctx)
+	if count() != 1 {
+		t.Errorf("scheduled backups: %d", count())
 	}
 }

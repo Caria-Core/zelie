@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"time"
 )
 
@@ -29,6 +30,9 @@ type BackupPlan struct {
 	Enabled  bool
 	Minute   int // of the day, in the server's time zone
 	KeepDays int
+	// Stop stops an app for its volume backup instead of copying the
+	// files while it runs.
+	Stop bool
 }
 
 // DefaultBackupPlan is what a new database gets: every night at three,
@@ -37,11 +41,17 @@ func DefaultBackupPlan(app string) BackupPlan {
 	return BackupPlan{AppID: app, Enabled: true, Minute: 3 * 60, KeepDays: 7}
 }
 
+// AppBackupPlan is what an app has until its plan is changed: the same
+// hours, but off, since volumes such as game worlds can be large.
+func AppBackupPlan(app string) BackupPlan {
+	return BackupPlan{AppID: app, Minute: 3 * 60, KeepDays: 7}
+}
+
 // BackupPlan returns an app's plan, or ErrNotFound when it has none.
 func (s *Store) BackupPlan(ctx context.Context, app string) (BackupPlan, error) {
 	p := BackupPlan{AppID: app}
-	err := s.db.QueryRowContext(ctx, "SELECT enabled, minute, keep_days FROM backup_plans WHERE app_id = ?", app).
-		Scan(&p.Enabled, &p.Minute, &p.KeepDays)
+	err := s.db.QueryRowContext(ctx, "SELECT enabled, minute, keep_days, stop FROM backup_plans WHERE app_id = ?", app).
+		Scan(&p.Enabled, &p.Minute, &p.KeepDays, &p.Stop)
 	if errors.Is(err, sql.ErrNoRows) {
 		return p, ErrNotFound
 	}
@@ -56,9 +66,9 @@ func (s *Store) SetBackupPlan(ctx context.Context, p BackupPlan) error {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `INSERT INTO backup_plans (app_id, enabled, minute, keep_days) VALUES (?, ?, ?, ?)
-		ON CONFLICT (app_id) DO UPDATE SET enabled = excluded.enabled, minute = excluded.minute, keep_days = excluded.keep_days`,
-		p.AppID, p.Enabled, p.Minute, p.KeepDays); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO backup_plans (app_id, enabled, minute, keep_days, stop) VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT (app_id) DO UPDATE SET enabled = excluded.enabled, minute = excluded.minute, keep_days = excluded.keep_days, stop = excluded.stop`,
+		p.AppID, p.Enabled, p.Minute, p.KeepDays, p.Stop); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, "UPDATE backups SET keep_until = created_at + ? WHERE app_id = ?", p.KeepDays*86400, p.AppID); err != nil {
@@ -69,7 +79,7 @@ func (s *Store) SetBackupPlan(ctx context.Context, p BackupPlan) error {
 
 // BackupPlans returns every plan.
 func (s *Store) BackupPlans(ctx context.Context) ([]BackupPlan, error) {
-	rows, err := s.db.QueryContext(ctx, "SELECT app_id, enabled, minute, keep_days FROM backup_plans ORDER BY app_id")
+	rows, err := s.db.QueryContext(ctx, "SELECT app_id, enabled, minute, keep_days, stop FROM backup_plans ORDER BY app_id")
 	if err != nil {
 		return nil, err
 	}
@@ -77,7 +87,7 @@ func (s *Store) BackupPlans(ctx context.Context) ([]BackupPlan, error) {
 	var out []BackupPlan
 	for rows.Next() {
 		var p BackupPlan
-		if err := rows.Scan(&p.AppID, &p.Enabled, &p.Minute, &p.KeepDays); err != nil {
+		if err := rows.Scan(&p.AppID, &p.Enabled, &p.Minute, &p.KeepDays, &p.Stop); err != nil {
 			return nil, err
 		}
 		out = append(out, p)
@@ -89,12 +99,17 @@ func (s *Store) BackupPlans(ctx context.Context) ([]BackupPlan, error) {
 type Backup struct {
 	ID     int64
 	AppID  string
-	Engine string // what the app was when it was made
+	Engine string // what the app was when it was made; empty for volumes
 	Reason string
 	State  string
 	File   string // the core's name for it, once made
 	Bytes  int64
 	Error  string
+	// For a backup of volumes: the folders in it, how much its files take
+	// and how many changed while they were copied.
+	Volumes []string
+	Size    int64
+	Changed int
 
 	CreatedAt  time.Time
 	FinishedAt time.Time // zero while running
@@ -102,15 +117,20 @@ type Backup struct {
 	RestoredAt time.Time // zero if it was never put back
 }
 
-const backupColumns = "id, app_id, engine, reason, state, file, bytes, error, created_at, finished_at, keep_until, restored_at"
+const backupColumns = "id, app_id, engine, reason, state, file, bytes, error, created_at, finished_at, keep_until, restored_at, volumes, size, changed"
 
 func scanBackup(row scanner) (Backup, error) {
 	var b Backup
 	var created, keep int64
 	var finished, restored sql.NullInt64
-	err := row.Scan(&b.ID, &b.AppID, &b.Engine, &b.Reason, &b.State, &b.File, &b.Bytes, &b.Error, &created, &finished, &keep, &restored)
+	var volumes string
+	err := row.Scan(&b.ID, &b.AppID, &b.Engine, &b.Reason, &b.State, &b.File, &b.Bytes, &b.Error, &created, &finished, &keep, &restored,
+		&volumes, &b.Size, &b.Changed)
 	if errors.Is(err, sql.ErrNoRows) {
 		return b, ErrNotFound
+	}
+	if volumes != "" {
+		b.Volumes = strings.Split(volumes, "\n")
 	}
 	b.CreatedAt, b.KeepUntil = time.Unix(created, 0), time.Unix(keep, 0)
 	if finished.Valid {
@@ -140,6 +160,13 @@ func (s *Store) FinishBackup(ctx context.Context, id int64, file string, bytes i
 	}
 	res, err := s.db.ExecContext(ctx, "UPDATE backups SET state = ?, file = ?, bytes = ?, error = ?, finished_at = ? WHERE id = ?",
 		state, file, bytes, failure, at.Unix(), id)
+	return oneRow(res, err)
+}
+
+// SetBackupContents records what a volume backup holds.
+func (s *Store) SetBackupContents(ctx context.Context, id int64, volumes []string, size int64, changed int) error {
+	res, err := s.db.ExecContext(ctx, "UPDATE backups SET volumes = ?, size = ?, changed = ? WHERE id = ?",
+		strings.Join(volumes, "\n"), size, changed, id)
 	return oneRow(res, err)
 }
 

@@ -160,3 +160,71 @@ func TestRecoveryKey(t *testing.T) {
 		t.Errorf("%d %s", rec.Code, rec.Body)
 	}
 }
+
+func TestVolumeBackupAndRestore(t *testing.T) {
+	s, f, _ := backupServer(t)
+	root := &peer.Peer{UID: 0}
+	data, uploads := t.TempDir(), t.TempDir()
+	f.volumeDirs = map[string]string{"vol-a": data, "vol-b": uploads}
+	os.WriteFile(filepath.Join(data, "world.dat"), []byte("day one"), 0o644)
+	os.WriteFile(filepath.Join(uploads, "a.png"), []byte("png"), 0o644)
+
+	// Stopped app: the volumes are opened for writing, which a running
+	// container would refuse.
+	f.usedVolumes = map[string]bool{"vol-a": true}
+	body := `{"app":"web","kind":"volumes","volumes":[{"name":"vol-a","dir":"data"},{"name":"vol-b","dir":"srv/uploads"}]}`
+	if rec := request(t, s, root, "POST", "/v1/backups", body); rec.Code != http.StatusConflict {
+		t.Fatalf("backup of a volume in use: %d %s", rec.Code, rec.Body)
+	}
+	// A live copy reads it anyway.
+	live := strings.Replace(body, `"kind"`, `"live":true,"kind"`, 1)
+	rec := request(t, s, root, "POST", "/v1/backups", live)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("live backup: %d %s", rec.Code, rec.Body)
+	}
+	var info backup.Info
+	json.Unmarshal(rec.Body.Bytes(), &info)
+	if !strings.HasSuffix(info.Name, ".tar.zst.age") || info.Size != int64(len("day one")+len("png")) {
+		t.Fatalf("info %+v", info)
+	}
+
+	os.WriteFile(filepath.Join(data, "world.dat"), []byte("day two"), 0o644)
+	os.WriteFile(filepath.Join(data, "new.dat"), []byte("new"), 0o644)
+	restore := fmt.Sprintf(`{"kind":"volumes","size":%d,"volumes":[{"name":"vol-a","dir":"data"},{"name":"vol-b","dir":"srv/uploads"}]}`, info.Size)
+	if rec := request(t, s, root, "POST", "/v1/backups/web/"+info.Name+"/restore", restore); rec.Code != http.StatusConflict {
+		t.Fatalf("restore into a running app: %d %s", rec.Code, rec.Body)
+	}
+	f.usedVolumes = nil
+	if rec := request(t, s, root, "POST", "/v1/backups/web/"+info.Name+"/restore", restore); rec.Code != http.StatusNoContent {
+		t.Fatalf("restore: %d %s", rec.Code, rec.Body)
+	}
+	if b, _ := os.ReadFile(filepath.Join(data, "world.dat")); string(b) != "day one" {
+		t.Errorf("world.dat = %q", b)
+	}
+	if _, err := os.Stat(filepath.Join(data, "new.dat")); err == nil {
+		t.Error("a file made after the backup is still there")
+	}
+}
+
+func TestVolumeBackupRefusals(t *testing.T) {
+	s, f, _ := backupServer(t)
+	root := &peer.Peer{UID: 0}
+	f.volumeDirs = map[string]string{"vol-a": t.TempDir()}
+	for body, want := range map[string]int{
+		`{"app":"web","kind":"volumes"}`:                                                                     http.StatusBadRequest,
+		`{"app":"web","kind":"volumes","volumes":[{"name":"vol-a","dir":"/data"}]}`:                          http.StatusBadRequest,
+		`{"app":"web","kind":"volumes","volumes":[{"name":"vol-a","dir":"../x"}]}`:                           http.StatusBadRequest,
+		`{"app":"web","kind":"volumes","volumes":[{"name":"vol-a","dir":"a"},{"name":"vol-a","dir":"a/b"}]}`: http.StatusBadRequest,
+		`{"app":"web","kind":"volumes","volumes":[{"name":"vol-x","dir":"data"}]}`:                           http.StatusNotFound,
+	} {
+		if rec := request(t, s, root, "POST", "/v1/backups", body); rec.Code != want {
+			t.Errorf("%s: %d %s, want %d", body, rec.Code, rec.Body, want)
+		}
+	}
+	// A restore bigger than the disk is refused before anything changes.
+	rec := request(t, s, root, "POST", "/v1/backups/web/20260927T000000Z-abcd.tar.zst.age/restore",
+		`{"kind":"volumes","size":1000000000000000,"volumes":[{"name":"vol-a","dir":"data"}]}`)
+	if rec.Code != http.StatusUnprocessableEntity || !strings.Contains(rec.Body.String(), "Not enough disk space") {
+		t.Errorf("huge restore: %d %s", rec.Code, rec.Body)
+	}
+}

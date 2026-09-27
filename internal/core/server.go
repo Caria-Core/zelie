@@ -43,6 +43,8 @@ type Engine interface {
 	SetLinks(ctx context.Context, app string, links []engine.Link) error
 	Exec(ctx context.Context, id string, args []string, stdin io.Reader, stdout, stderr io.Writer) (uint32, error)
 	OpenVolume(ctx context.Context, name string) (*os.Root, error)
+	ReadVolume(name string) (*os.Root, error)
+	VolumeSize(name string) (int64, error)
 }
 
 // Limits a single request may ask for. They keep a confused or compromised

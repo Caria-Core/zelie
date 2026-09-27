@@ -76,8 +76,14 @@ func failed(format string, args ...any) error { return &Error{fmt.Sprintf(format
 // Kinds lists the kinds of backup a database can have.
 func Kinds() []string { return []string{"postgres", "mariadb", "redis"} }
 
+// KindVolumes is the backup of an app's volumes, as one tar archive.
+const KindVolumes = "volumes"
+
 // Ext is the extension of the files a kind makes.
 func Ext(k string) (string, bool) {
+	if k == KindVolumes {
+		return "tar", true
+	}
 	kd, ok := kinds[k]
 	return kd.ext, ok
 }

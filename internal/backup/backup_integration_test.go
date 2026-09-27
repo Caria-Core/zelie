@@ -193,3 +193,66 @@ func TestRedis(t *testing.T) {
 		t.Errorf("owner %q", got)
 	}
 }
+
+// TestVolumes backs up a running app's volume, changes it, and puts the
+// backup back while the app is stopped. The app sees its files as they
+// were, owned by the same users inside the container.
+func TestVolumes(t *testing.T) {
+	e := connect(t)
+	ctx := context.Background()
+	vol := "it-backup-files"
+	e.RemoveVolume(ctx, vol)
+	if err := e.CreateVolume(vol); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { e.RemoveVolume(context.Background(), vol) })
+	spec := engine.Spec{ID: "it-backup-files", Image: "alpine:3.22", Args: []string{"sleep", "infinity"},
+		Volumes: []engine.VolumeMount{{Name: vol, Target: "/srv/data"}}}
+	exec := start(t, e, spec, []string{"true"})
+	sh(t, exec, `cd /srv/data && mkdir -p world/region && head -c 3000000 /dev/urandom > world/region/r.0.0.mca &&
+echo level > world/level.dat && ln -s world/level.dat current && ln world/level.dat level-link &&
+chown -R 1000:1000 world && chown -h 1000:1000 current && chmod 640 world/level.dat`)
+	before := sh(t, exec, `cd /srv/data && find . | sort | xargs stat -c '%n %U:%G %a %s %F' && sha256sum world/region/r.0.0.mca`)
+
+	// Copied while it runs.
+	root, err := e.ReadVolume(vol)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := newDir(t)
+	w, _ := d.Create("files", "tar")
+	st, err := WriteTar(ctx, w, []Volume{{Dir: "srv/data", Root: root}})
+	root.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := w.Commit()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("volume backup: %d files, %d bytes in, %d bytes out, %d changed", st.Files, st.Bytes, info.Bytes, st.Changed)
+
+	sh(t, exec, `cd /srv/data && echo changed > world/level.dat && rm -r world/region && echo new > new.txt`)
+	if _, err := e.OpenVolume(ctx, vol); err == nil {
+		t.Fatal("opened a volume in use for a restore")
+	}
+	if err := e.Stop(ctx, spec.ID, 10*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	root, err = e.OpenVolume(ctx, vol)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, _ := d.Open("files", info.Name)
+	restored, err := RestoreTar(ctx, r, []Volume{{Dir: "srv/data", Root: root}})
+	r.Close()
+	root.Close()
+	if err != nil || len(restored) != 1 {
+		t.Fatalf("restore: %v %v", restored, err)
+	}
+	exec = start(t, e, spec, []string{"true"})
+	after := sh(t, exec, `cd /srv/data && find . | sort | xargs stat -c '%n %U:%G %a %s %F' && sha256sum world/region/r.0.0.mca`)
+	if after != before {
+		t.Errorf("after restore:\n%s\nwant:\n%s", after, before)
+	}
+}

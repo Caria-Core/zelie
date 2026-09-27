@@ -39,6 +39,8 @@ type Core interface {
 	DownloadBackup(ctx context.Context, app, name string, w io.Writer) error
 	RemoveBackup(ctx context.Context, app, name string) error
 	RestoreBackup(ctx context.Context, app, name, kind, container, volume string) error
+	BackUpVolumes(ctx context.Context, app string, vols []core.VolumeRef, live bool) (core.Backup, error)
+	RestoreVolumes(ctx context.Context, app, name string, vols []core.VolumeRef, size int64) error
 	RecoveryKey(ctx context.Context, host string, w io.Writer) error
 }
 

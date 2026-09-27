@@ -19,8 +19,12 @@ import (
 
 type backupRequest struct {
 	App       string `json:"app"`
-	Container string `json:"container"`
+	Container string `json:"container,omitempty"`
 	Kind      string `json:"kind"`
+	// Volumes and Live are for a backup of an app's volumes. Live copies
+	// them while the app runs; otherwise its containers must be stopped.
+	Volumes []VolumeRef `json:"volumes,omitempty"`
+	Live    bool        `json:"live,omitempty"`
 }
 
 type restoreRequest struct {
@@ -29,6 +33,10 @@ type restoreRequest struct {
 	Container string `json:"container,omitempty"`
 	// Volume holds a stopped database's files, for the others.
 	Volume string `json:"volume,omitempty"`
+	// Volumes are the stopped app's volumes, and Size how much the
+	// backup's files take, for a restore of a volume backup.
+	Volumes []VolumeRef `json:"volumes,omitempty"`
+	Size    int64       `json:"size,omitempty"`
 }
 
 // busy keeps a backup and a restore of the same app from running at once.
@@ -89,6 +97,10 @@ func (s *Server) createBackup(w http.ResponseWriter, r *http.Request) {
 	var req backupRequest
 	if err := decode(w, r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if req.Kind == backup.KindVolumes {
+		s.backUpVolumes(w, r, req)
 		return
 	}
 	ext, ok := backup.Ext(req.Kind)
@@ -174,6 +186,10 @@ func (s *Server) restoreBackup(w http.ResponseWriter, r *http.Request) {
 	ext, ok := backup.Ext(req.Kind)
 	if !ok || !strings.HasSuffix(name, "."+ext+".zst.age") {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("%s is not a %s backup", name, req.Kind))
+		return
+	}
+	if req.Kind == backup.KindVolumes {
+		s.restoreVolumes(w, r, app, name, req)
 		return
 	}
 	ctx := r.Context()
@@ -267,6 +283,21 @@ func (c *Client) RemoveBackup(ctx context.Context, app, name string) error {
 func (c *Client) RestoreBackup(ctx context.Context, app, name, kind, container, volume string) error {
 	return c.do(ctx, http.MethodPost, "/v1/backups/"+url.PathEscape(app)+"/"+url.PathEscape(name)+"/restore",
 		restoreRequest{Kind: kind, Container: container, Volume: volume}, nil)
+}
+
+// BackUpVolumes backs up an app's volumes into one archive. Live copies
+// them while the app runs; otherwise the app must be stopped.
+func (c *Client) BackUpVolumes(ctx context.Context, app string, vols []VolumeRef, live bool) (Backup, error) {
+	var info Backup
+	err := c.do(ctx, http.MethodPost, "/v1/backups", backupRequest{App: app, Kind: backup.KindVolumes, Volumes: vols, Live: live}, &info)
+	return info, err
+}
+
+// RestoreVolumes replaces the files of a stopped app's volumes with a
+// backup's. size is how much the backup's files take, from when it was made.
+func (c *Client) RestoreVolumes(ctx context.Context, app, name string, vols []VolumeRef, size int64) error {
+	return c.do(ctx, http.MethodPost, "/v1/backups/"+url.PathEscape(app)+"/"+url.PathEscape(name)+"/restore",
+		restoreRequest{Kind: backup.KindVolumes, Volumes: vols, Size: size}, nil)
 }
 
 // RecoveryKey returns the recovery file for the backups.

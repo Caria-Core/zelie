@@ -88,7 +88,7 @@ func (p *pauses) paused(id string) bool {
 	return p.n[id] > 0
 }
 
-var errBackupBusy = errors.New("a backup or restore of this database is already running")
+var errBackupBusy = errors.New("a backup or restore of this app is already running")
 
 // liveContainer returns the database's running container.
 func (s *Server) liveContainer(ctx context.Context, a store.App) (string, error) {
@@ -107,14 +107,25 @@ func (s *Server) liveContainer(ctx context.Context, a store.App) (string, error)
 	return id, nil
 }
 
-// makeBackup backs a database up now. The caller holds the app in
-// s.backupBusy. A failure is recorded as well as returned: nobody may think
-// there is a backup when there is not.
-func (s *Server) makeBackup(ctx context.Context, a store.App, reason string) (store.Backup, error) {
+// planFor returns an app's backup plan, or what it has by default.
+func (s *Server) planFor(ctx context.Context, a store.App) (store.BackupPlan, error) {
 	plan, err := s.Store.BackupPlan(ctx, a.ID)
 	if errors.Is(err, store.ErrNotFound) {
-		plan = store.DefaultBackupPlan(a.ID)
-	} else if err != nil {
+		if a.IsDatabase() {
+			return store.DefaultBackupPlan(a.ID), nil
+		}
+		return store.AppBackupPlan(a.ID), nil
+	}
+	return plan, err
+}
+
+// makeBackup backs an app up now: a database's dump, or another app's
+// volumes. The caller holds the app in s.backupBusy. A failure is recorded
+// as well as returned: nobody may think there is a backup when there is
+// not.
+func (s *Server) makeBackup(ctx context.Context, a store.App, reason string) (store.Backup, error) {
+	plan, err := s.planFor(ctx, a)
+	if err != nil {
 		return store.Backup{}, err
 	}
 	now := s.now()
@@ -123,11 +134,7 @@ func (s *Server) makeBackup(ctx context.Context, a store.App, reason string) (st
 	if b.ID, err = s.Store.StartBackup(ctx, b); err != nil {
 		return b, err
 	}
-	var info core.Backup
-	container, err := s.liveContainer(ctx, a)
-	if err == nil {
-		info, err = s.Core.CreateBackup(ctx, a.ID, container, a.Engine)
-	}
+	info, err := s.takeBackup(ctx, a, b.ID, plan, reason)
 	failure := ""
 	if err != nil {
 		failure = backupFailure(err)
@@ -180,8 +187,8 @@ func (s *Server) backupsOnce(ctx context.Context) {
 			continue
 		}
 		a, err := s.Store.App(ctx, p.AppID)
-		// A stopped database does not change; its last backup is current.
-		if err != nil || !a.IsDatabase() || a.Stopped {
+		// A stopped app does not change; its last backup is current.
+		if err != nil || a.Stopped {
 			continue
 		}
 		due, err := s.backupDue(ctx, a, p)
@@ -265,11 +272,14 @@ type backupJSON struct {
 	FinishedAt *time.Time `json:"finished_at,omitempty"`
 	KeepUntil  time.Time  `json:"keep_until"`
 	RestoredAt *time.Time `json:"restored_at,omitempty"`
+	Volumes    []string   `json:"volumes,omitempty"`
+	Size       int64      `json:"size,omitempty"`
+	Changed    int        `json:"changed,omitempty"`
 }
 
 func backupOut(b store.Backup) backupJSON {
 	out := backupJSON{ID: b.ID, App: b.AppID, Engine: b.Engine, Reason: b.Reason, State: b.State, Bytes: b.Bytes, Error: b.Error,
-		CreatedAt: b.CreatedAt, KeepUntil: b.KeepUntil}
+		CreatedAt: b.CreatedAt, KeepUntil: b.KeepUntil, Volumes: b.Volumes, Size: b.Size, Changed: b.Changed}
 	if !b.FinishedAt.IsZero() {
 		out.FinishedAt = &b.FinishedAt
 	}
@@ -283,11 +293,15 @@ type backupPlanJSON struct {
 	Enabled  bool `json:"enabled"`
 	Minute   int  `json:"minute"`
 	KeepDays int  `json:"keep_days"`
+	Stop     bool `json:"stop"`
 }
 
 type backupsJSON struct {
 	Plan    backupPlanJSON `json:"plan"`
 	Backups []backupJSON   `json:"backups"`
+	// Volumes are where the app sees its volumes now, for apps that are
+	// not databases.
+	Volumes []string `json:"volumes"`
 	// Running is set while a backup or restore of the database runs.
 	Running bool `json:"running"`
 	// RecoverySavedAt is when the recovery file was last saved; without
@@ -298,25 +312,14 @@ type backupsJSON struct {
 	Restore *restoreJSON `json:"restore,omitempty"`
 }
 
-func (s *Server) databaseFrom(w http.ResponseWriter, r *http.Request) (store.App, bool) {
-	a, ok := s.appFrom(w, r)
-	if ok && !a.IsDatabase() {
-		writeError(w, http.StatusBadRequest, errors.New("only databases have backups for now"))
-		return a, false
-	}
-	return a, ok
-}
-
 func (s *Server) listBackups(w http.ResponseWriter, r *http.Request) {
-	a, ok := s.databaseFrom(w, r)
+	a, ok := s.appFrom(w, r)
 	if !ok {
 		return
 	}
 	ctx := r.Context()
-	plan, err := s.Store.BackupPlan(ctx, a.ID)
-	if errors.Is(err, store.ErrNotFound) {
-		plan = store.BackupPlan{AppID: a.ID, Minute: 3 * 60, KeepDays: 7}
-	} else if err != nil {
+	plan, err := s.planFor(ctx, a)
+	if err != nil {
 		s.fail(w, "load backup plan", err)
 		return
 	}
@@ -325,8 +328,18 @@ func (s *Server) listBackups(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, "list backups", err)
 		return
 	}
-	out := backupsJSON{Plan: backupPlanJSON{plan.Enabled, plan.Minute, plan.KeepDays}, Backups: []backupJSON{},
-		Running: s.backupBusy.has(a.ID), TimeZone: zoneLabel(s.now())}
+	out := backupsJSON{Plan: backupPlanJSON{plan.Enabled, plan.Minute, plan.KeepDays, plan.Stop}, Backups: []backupJSON{},
+		Volumes: []string{}, Running: s.backupBusy.has(a.ID), TimeZone: zoneLabel(s.now())}
+	if !a.IsDatabase() {
+		vols, err := s.Store.Volumes(ctx, a.ID)
+		if err != nil {
+			s.fail(w, "list volumes", err)
+			return
+		}
+		for _, v := range vols {
+			out.Volumes = append(out.Volumes, v.Path)
+		}
+	}
 	if last, ok := s.restores.get(a.ID); ok {
 		out.Restore = &last
 	}
@@ -339,8 +352,8 @@ func (s *Server) listBackups(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// listDeletedBackups lists the backups of databases that were deleted.
-// They stay until their time is up, in case the database went by mistake.
+// listDeletedBackups lists the backups of apps and databases that were
+// deleted. They stay until their time is up, in case one went by mistake.
 func (s *Server) listDeletedBackups(w http.ResponseWriter, r *http.Request) {
 	list, err := s.Store.Backups(r.Context(), "")
 	if err != nil {
@@ -357,8 +370,8 @@ func (s *Server) listDeletedBackups(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) backUpNow(w http.ResponseWriter, r *http.Request) {
-	a, ok := s.databaseFrom(w, r)
-	if !ok {
+	a, ok := s.appFrom(w, r)
+	if !ok || !s.hasVolumes(w, r, a) {
 		return
 	}
 	if !s.backupBusy.take(a.ID) {
@@ -375,7 +388,7 @@ func (s *Server) backUpNow(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) setBackupPlan(w http.ResponseWriter, r *http.Request) {
-	a, ok := s.databaseFrom(w, r)
+	a, ok := s.appFrom(w, r)
 	if !ok {
 		return
 	}
@@ -391,12 +404,17 @@ func (s *Server) setBackupPlan(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, errors.New("backups are kept for 1 to 365 days"))
 		return
 	}
-	p := store.BackupPlan{AppID: a.ID, Enabled: req.Enabled, Minute: req.Minute, KeepDays: req.KeepDays}
+	if a.IsDatabase() {
+		req.Stop = false // a dump is consistent while the database runs
+	} else if req.Enabled && !s.hasVolumes(w, r, a) {
+		return
+	}
+	p := store.BackupPlan{AppID: a.ID, Enabled: req.Enabled, Minute: req.Minute, KeepDays: req.KeepDays, Stop: req.Stop}
 	if err := s.Store.SetBackupPlan(r.Context(), p); err != nil {
 		s.fail(w, "save backup plan", err)
 		return
 	}
-	s.Log.Info("backup plan changed", "app", a.ID, "enabled", p.Enabled, "minute", p.Minute, "keep_days", p.KeepDays, "user", loginFrom(r.Context()).account.ID)
+	s.Log.Info("backup plan changed", "app", a.ID, "enabled", p.Enabled, "minute", p.Minute, "keep_days", p.KeepDays, "stop", p.Stop, "user", loginFrom(r.Context()).account.ID)
 	writeJSON(w, http.StatusOK, req)
 }
 
@@ -429,7 +447,7 @@ func (s *Server) downloadBackup(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// What is inside, from the core's name: sql or rdb.
+	// What is inside, from the core's name: sql, rdb or tar.
 	ext := strings.SplitN(b.File, ".", 2)[1]
 	name := fmt.Sprintf("%s-%s.%s", b.AppID, b.CreatedAt.Format("2006-01-02-1504"), ext)
 	w.Header().Set("Content-Type", "application/octet-stream")
@@ -546,18 +564,33 @@ func (s *Server) restoreBackup(w http.ResponseWriter, r *http.Request) {
 	ctx := context.WithoutCancel(r.Context())
 	a, err := s.Store.App(ctx, b.AppID)
 	if errors.Is(err, store.ErrNotFound) {
+		if b.Engine == "" {
+			writeError(w, http.StatusConflict, fmt.Errorf("%s was deleted; create an app named %s with volumes at the same paths, then restore this backup into it", b.AppID, b.AppID))
+			return
+		}
 		writeError(w, http.StatusConflict, fmt.Errorf("%s was deleted; create a %s database named %s, then restore this backup into it", b.AppID, engineLabel(b.Engine), b.AppID))
 		return
 	}
 	if err != nil {
-		s.fail(w, "load database", err)
+		s.fail(w, "load app", err)
 		return
 	}
-	if a.Engine != b.Engine {
+	switch {
+	case a.Engine == b.Engine:
+	case b.Engine == "":
+		writeError(w, http.StatusConflict, fmt.Errorf("this is a backup of an app's volumes, and %s is a database", a.ID))
+		return
+	case !a.IsDatabase():
+		writeError(w, http.StatusConflict, fmt.Errorf("this is a backup of a %s database, and %s is an app", engineLabel(b.Engine), a.ID))
+		return
+	default:
 		writeError(w, http.StatusConflict, fmt.Errorf("this is a backup of a %s database, and %s is %s", engineLabel(b.Engine), a.ID, engineLabel(a.Engine)))
 		return
 	}
-	if a.Stopped {
+	if !a.IsDatabase() && !s.hasVolumes(w, r, a) {
+		return
+	}
+	if a.IsDatabase() && a.Stopped {
 		writeError(w, http.StatusConflict, errors.New("start the database first: what it holds now is backed up before the restore"))
 		return
 	}
@@ -577,6 +610,9 @@ func (s *Server) restoreBackup(w http.ResponseWriter, r *http.Request) {
 
 // runRestore backs up what is there, then puts the backup back.
 func (s *Server) runRestore(ctx context.Context, a store.App, b store.Backup, user int64) (out restoreJSON) {
+	if !a.IsDatabase() {
+		return s.runVolumeRestore(ctx, a, b, user)
+	}
 	out = restoreJSON{Backup: b.ID, State: "failed", Restarted: []string{}}
 	defer func() { out.At = s.now() }()
 	safety, err := s.makeBackup(ctx, a, store.BackupRestore)
@@ -628,7 +664,7 @@ func (s *Server) restore(ctx context.Context, db store.App, b store.Backup) (res
 	var stopped []string
 	defer func() {
 		for _, id := range stopped {
-			s.restartAfterRestore(ctx, id)
+			s.startAgain(ctx, id, store.CauseRestore)
 		}
 	}()
 
@@ -683,8 +719,8 @@ func stoppedApps(stopped []string, db string) []string {
 	return slices.DeleteFunc(slices.Clone(stopped), func(id string) bool { return id == db })
 }
 
-// restartAfterRestore starts an app's live version again.
-func (s *Server) restartAfterRestore(ctx context.Context, id string) {
+// startAgain starts an app's live version again after Zelie stopped it.
+func (s *Server) startAgain(ctx context.Context, id, cause string) {
 	a, err := s.Store.App(ctx, id)
 	if err != nil {
 		return
@@ -694,8 +730,8 @@ func (s *Server) restartAfterRestore(ctx context.Context, id string) {
 		return
 	}
 	s.crashes.reset(id)
-	if _, err := s.deploy(ctx, a, store.Deployment{Version: live.Version, Image: live.Image, Cause: store.CauseRestore, Message: live.Message}); err != nil {
-		s.Log.Error("start after restore", "app", id, "err", err)
+	if _, err := s.deploy(ctx, a, store.Deployment{Version: live.Version, Image: live.Image, Cause: cause, Message: live.Message}); err != nil {
+		s.Log.Error("start again", "app", id, "cause", cause, "err", err)
 	}
 }
 

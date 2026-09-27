@@ -224,3 +224,29 @@ func (e *Engine) OpenVolume(ctx context.Context, name string) (*os.Root, error) 
 	}
 	return root, err
 }
+
+// ReadVolume opens a volume to copy its files while its containers may
+// still run, for a backup that does not stop the app. The core only reads
+// through it.
+func (e *Engine) ReadVolume(name string) (*os.Root, error) {
+	if !validID.MatchString(name) {
+		return nil, fmt.Errorf("invalid volume name %q", name)
+	}
+	root, err := os.OpenRoot(e.volumeDir(name))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, fmt.Errorf("volume %s: %w", name, errdefs.ErrNotFound)
+	}
+	return root, err
+}
+
+// VolumeSize returns how much disk one volume takes.
+func (e *Engine) VolumeSize(name string) (int64, error) {
+	if !validID.MatchString(name) {
+		return 0, fmt.Errorf("invalid volume name %q", name)
+	}
+	dir := e.volumeDir(name)
+	if _, err := os.Lstat(dir); errors.Is(err, fs.ErrNotExist) {
+		return 0, fmt.Errorf("volume %s: %w", name, errdefs.ErrNotFound)
+	}
+	return diskUsage(dir)
+}

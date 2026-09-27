@@ -130,6 +130,10 @@ type Info struct {
 	Name    string    `json:"name"`
 	Bytes   int64     `json:"bytes"`
 	Created time.Time `json:"created"`
+	// For volume backups: the size of the files inside, and how many
+	// changed while they were copied.
+	Size    int64 `json:"size,omitempty"`
+	Changed int   `json:"changed,omitempty"`
 }
 
 var (

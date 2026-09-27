@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -31,6 +32,9 @@ type fakeEngine struct {
 	containers []engine.Status // replaces List's answer when set
 	exec       func(args []string, stdin io.Reader, stdout io.Writer) uint32
 	volumeDir  string
+	// More volumes by name, and those a running container holds.
+	volumeDirs  map[string]string
+	usedVolumes map[string]bool
 }
 
 func (f *fakeEngine) Exec(_ context.Context, _ string, args []string, stdin io.Reader, stdout, _ io.Writer) (uint32, error) {
@@ -40,11 +44,45 @@ func (f *fakeEngine) Exec(_ context.Context, _ string, args []string, stdin io.R
 	return f.exec(args, stdin, stdout), nil
 }
 
-func (f *fakeEngine) OpenVolume(_ context.Context, name string) (*os.Root, error) {
-	if name != "data" {
-		return nil, errdefs.ErrNotFound
+func (f *fakeEngine) volumePath(name string) (string, error) {
+	if name == "data" && f.volumeDir != "" {
+		return f.volumeDir, nil
 	}
-	return os.OpenRoot(f.volumeDir)
+	if d, ok := f.volumeDirs[name]; ok {
+		return d, nil
+	}
+	return "", errdefs.ErrNotFound
+}
+
+func (f *fakeEngine) OpenVolume(_ context.Context, name string) (*os.Root, error) {
+	if f.usedVolumes[name] {
+		return nil, fmt.Errorf("volume %s in use: %w", name, errdefs.ErrFailedPrecondition)
+	}
+	return f.ReadVolume(name)
+}
+
+func (f *fakeEngine) ReadVolume(name string) (*os.Root, error) {
+	dir, err := f.volumePath(name)
+	if err != nil {
+		return nil, err
+	}
+	return os.OpenRoot(dir)
+}
+
+func (f *fakeEngine) VolumeSize(name string) (int64, error) {
+	dir, err := f.volumePath(name)
+	if err != nil {
+		return 0, err
+	}
+	var n int64
+	err = filepath.WalkDir(dir, func(_ string, d fs.DirEntry, err error) error {
+		if err == nil && d.Type().IsRegular() {
+			fi, _ := d.Info()
+			n += fi.Size()
+		}
+		return err
+	})
+	return n, err
 }
 
 func (f *fakeEngine) Run(_ context.Context, s engine.Spec) error {
