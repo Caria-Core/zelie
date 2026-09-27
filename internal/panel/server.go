@@ -61,7 +61,7 @@ type Server struct {
 	// backupBusy holds the databases being backed up or restored.
 	backupBusy keyset
 	pauses     pauses
-	ctx     context.Context // lives as long as the server
+	ctx        context.Context // lives as long as the server
 }
 
 // baseContext is for work that outlives the request that started it.
