@@ -67,7 +67,7 @@ var dbEngines = []dbEngine{
 		// Nobody needs root: the app's user owns its database, backups
 		// included. Root gets a password no one keeps, made here because
 		// the image's own random one is printed to the log.
-		Env: []string{"MARIADB_USER=" + dbUser, "MARIADB_DATABASE=" + dbUser, "MARIADB_ROOT_HOST=localhost"},
+		Env:  []string{"MARIADB_USER=" + dbUser, "MARIADB_DATABASE=" + dbUser, "MARIADB_ROOT_HOST=localhost"},
 		Args: []string{"sh", "-c", `export MARIADB_ROOT_PASSWORD="$(head -c 24 /dev/urandom | base64)"; exec docker-entrypoint.sh mariadbd`},
 		vars: []linkedVar{
 			{"DATABASE_URL", "mysql://" + dbUser + ":{secret}@{host}:3306/" + dbUser},
