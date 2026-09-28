@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -66,6 +67,9 @@ func runInstall(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		},
 		SetupLink: func(ctx context.Context) (string, error) {
 			token, err := panel.NewClient(panelSocket).SetupLink(ctx)
+			if errors.Is(err, panel.ErrSetupDone) {
+				return "", install.ErrAdminExists
+			}
 			if err != nil {
 				return "", err
 			}

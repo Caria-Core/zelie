@@ -382,6 +382,9 @@ func NewClient(socket string) *Client {
 	}}}
 }
 
+// ErrSetupDone means an administrator exists, so there is no setup link.
+var ErrSetupDone = errors.New("an administrator exists already")
+
 // SetupLink asks the panel for a new setup token.
 func (c *Client) SetupLink(ctx context.Context) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://panel/local/setup-link", nil)
@@ -396,9 +399,13 @@ func (c *Client) SetupLink(ctx context.Context) (string, error) {
 	var out struct {
 		Token string `json:"token"`
 		Error string `json:"error"`
+		Code  string `json:"code"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&out); err != nil {
 		return "", fmt.Errorf("panel answered %s", resp.Status)
+	}
+	if out.Code == "setup.done" {
+		return "", ErrSetupDone
 	}
 	if resp.StatusCode != http.StatusOK {
 		return "", errors.New(out.Error)

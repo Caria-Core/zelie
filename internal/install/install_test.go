@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -91,6 +92,7 @@ type fakeServer struct {
 	token    string
 	active   bool // cloudflared runs already
 	running  bool // Zelie's services run
+	stale    bool // they run a binary that was replaced
 }
 
 func newFakeServer(t *testing.T) *fakeServer {
@@ -101,6 +103,19 @@ func newFakeServer(t *testing.T) *fakeServer {
 	os.WriteFile(filepath.Join(root, "etc/os-release"), []byte("PRETTY_NAME=\"Debian GNU/Linux 12 (bookworm)\"\nID=debian\n"), 0o644)
 	os.WriteFile(filepath.Join(root, "sys/fs/cgroup/cgroup.controllers"), []byte("cpu memory\n"), 0o644)
 	return &fakeServer{root: root, users: map[string]bool{}}
+}
+
+func (f *fakeServer) setStale(t *testing.T, stale bool) {
+	dir := filepath.Join(f.root, "proc/4242")
+	os.MkdirAll(dir, 0o755)
+	os.Remove(filepath.Join(dir, "exe"))
+	target := Binary
+	if stale {
+		target += " (deleted)"
+	}
+	if err := os.Symlink(target, filepath.Join(dir, "exe")); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func (f *fakeServer) installer(t *testing.T, opts Options, out *bytes.Buffer) *Installer {
@@ -123,6 +138,8 @@ func (f *fakeServer) installer(t *testing.T, opts Options, out *bytes.Buffer) *I
 					return "inactive", errors.New("exit status 3")
 				}
 				return "active\n", nil
+			case strings.HasPrefix(cmd, "systemctl show --property MainPID --value zelie-"):
+				return "4242\n", nil
 			case cmd == "systemctl is-active cloudflared":
 				if !f.active {
 					return "inactive", errors.New("exit status 3")
@@ -204,9 +221,33 @@ func TestInstallBehindTunnel(t *testing.T) {
 		t.Errorf("second run touched the connector:\n%s", out.String())
 	}
 
+	// Running services on the current binary and unchanged units: nothing
+	// restarts.
+	f.commands, f.running = nil, true
+	f.setStale(t, false)
+	if err := f.installer(t, opts, &out).Run(context.Background()); err != nil {
+		t.Fatalf("run on current binary: %v", err)
+	}
+	for _, c := range f.commands {
+		if strings.HasPrefix(c, "systemctl restart") {
+			t.Errorf("nothing changed, yet: %s", c)
+		}
+	}
+
+	// A new binary in place, as install.sh leaves it: all three restart.
+	f.commands = nil
+	f.setStale(t, true)
+	if err := f.installer(t, opts, &out).Run(context.Background()); err != nil {
+		t.Fatalf("run after an update: %v", err)
+	}
+	if !slices.Contains(f.commands, "systemctl restart zelie-core zelie-proxy zelie-panel") {
+		t.Errorf("after an update: %v", f.commands)
+	}
+
 	// A new port changes the proxy's unit only, and the running proxy
 	// restarts to take it.
-	f.commands, f.running = nil, true
+	f.commands = nil
+	f.setStale(t, false)
 	opts.Port = freePort(t)
 	if err := f.installer(t, opts, &out).Run(context.Background()); err != nil {
 		t.Fatalf("third run: %v", err)
@@ -219,6 +260,20 @@ func TestInstallBehindTunnel(t *testing.T) {
 	}
 	if strings.Join(restarts, "|") != "systemctl restart zelie-proxy" {
 		t.Errorf("restarts %v", restarts)
+	}
+}
+
+func TestReinstallWithAnAdministrator(t *testing.T) {
+	f := newFakeServer(t)
+	f.active = true
+	var out bytes.Buffer
+	in := f.installer(t, Options{Mode: ModeTunnel, Host: "ist.cariacore.com", Port: freePort(t)}, &out)
+	in.SetupLink = func(context.Context) (string, error) { return "", ErrAdminExists }
+	if err := in.Run(context.Background()); err != nil {
+		t.Fatalf("%v\n%s", err, out.String())
+	}
+	if !strings.Contains(out.String(), "Log in at https://ist.cariacore.com") || strings.Contains(out.String(), "setup#") {
+		t.Errorf("output:\n%s", out.String())
 	}
 }
 

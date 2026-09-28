@@ -33,6 +33,9 @@ const (
 	ModeTunnel Mode = "tunnel"
 )
 
+// ErrAdminExists is what SetupLink returns on a server set up before.
+var ErrAdminExists = errors.New("an administrator exists already")
+
 // DefaultTunnelPort is where the proxy listens behind a tunnel. It clashes
 // with neither the usual web ports nor Pterodactyl's and Pelican's 8080.
 const DefaultTunnelPort = 8480
@@ -87,7 +90,8 @@ type Installer struct {
 	Engine func(ctx context.Context) error
 	// Proxy applies the proxy's configuration once it runs.
 	Proxy func(ctx context.Context, cfg proxy.Config) error
-	// SetupLink makes the one-time link for the first administrator.
+	// SetupLink makes the one-time link for the first administrator. It
+	// returns ErrAdminExists once there is one.
 	SetupLink func(ctx context.Context) (string, error)
 	// Cloudflared installs the tunnel's connector; see cloudflared.go.
 	Cloudflared func(ctx context.Context, token string) error
@@ -132,7 +136,7 @@ func (in *Installer) Run(ctx context.Context) error {
 	var link string
 	var err error
 	for range 30 {
-		if link, err = in.SetupLink(ctx); err == nil {
+		if link, err = in.SetupLink(ctx); err == nil || errors.Is(err, ErrAdminExists) {
 			break
 		}
 		select {
@@ -141,11 +145,14 @@ func (in *Installer) Run(ctx context.Context) error {
 		case <-time.After(time.Second):
 		}
 	}
-	if err != nil {
-		in.summary()
+	in.summary()
+	switch {
+	case errors.Is(err, ErrAdminExists):
+		fmt.Fprintf(in.Out, "\nZelie is up to date and running. Log in at https://%s.\n", in.Opts.Host)
+		return nil
+	case err != nil:
 		return fmt.Errorf("make the setup link: %w", err)
 	}
-	in.summary()
 	fmt.Fprintf(in.Out, "\nZelie is installed. Open this link within 24 hours to create the administrator:\n\n  %s\n\n", link)
 	if in.Opts.Mode == ModeTunnel {
 		fmt.Fprintf(in.Out, "In Cloudflare, send %s, and every app domain you add later, to http://127.0.0.1:%d.\n", in.Opts.Host, in.Opts.Port)
@@ -264,16 +271,20 @@ func (in *Installer) services(ctx context.Context) (bool, string, error) {
 	// A service that runs and whose unit changes must restart to take the
 	// change. One that did not run starts fresh below, and restarting it
 	// right after would only race whoever talks to it next.
+	// So must one that runs an older binary than the one now in place.
 	var restart []string
 	for i, name := range unitNames() {
 		file := in.path(filepath.Join(UnitDir, name))
+		changed := true
 		if old, err := os.ReadFile(file); err == nil && string(old) == units[name] {
-			continue
-		}
-		if err := os.WriteFile(file, []byte(units[name]), 0o644); err != nil {
+			changed = false
+		} else if err := os.WriteFile(file, []byte(units[name]), 0o644); err != nil {
 			return false, "", err
 		}
-		if out, err := in.Exec(ctx, "systemctl", "is-active", services[i]); err == nil && strings.TrimSpace(out) == "active" {
+		if out, err := in.Exec(ctx, "systemctl", "is-active", services[i]); err != nil || strings.TrimSpace(out) != "active" {
+			continue
+		}
+		if changed || in.staleBinary(ctx, services[i]) {
 			restart = append(restart, services[i])
 		}
 	}
@@ -291,6 +302,19 @@ func (in *Installer) services(ctx context.Context) (bool, string, error) {
 		}
 	}
 	return true, strings.Join(services, ", "), nil
+}
+
+// staleBinary reports whether a running service's process runs a binary
+// that has since been replaced: the kernel marks the file it was started
+// from as deleted.
+func (in *Installer) staleBinary(ctx context.Context, service string) bool {
+	out, err := in.Exec(ctx, "systemctl", "show", "--property", "MainPID", "--value", service)
+	pid := strings.TrimSpace(out)
+	if err != nil || pid == "" || pid == "0" {
+		return false
+	}
+	exe, err := os.Readlink(in.path(filepath.Join("/proc", pid, "exe")))
+	return err == nil && (strings.HasSuffix(exe, " (deleted)") || exe != Binary)
 }
 
 func (in *Installer) proxy(ctx context.Context) (bool, string, error) {
