@@ -142,6 +142,8 @@ export default {
 	'app.usageCpu': '{used} of {limit} CPU',
 	'app.usageCpuOnly': '{used} CPU',
 	'app.usageIdle': 'CPU idle',
+	'app.uptime': 'up {time}',
+	'app.uptimeTitle': 'How long the live version has run',
 	'app.usageTitle': 'Memory and CPU in use now',
 	'app.rollback': 'Roll back',
 	'app.rollbackConfirm': 'Put {version} live again?',

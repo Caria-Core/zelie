@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { ArrowUpRight, Cpu, Ellipsis, MemoryStick, Play, RotateCw, Rocket, Square } from '@lucide/svelte';
+	import { ArrowUpRight, Clock, Cpu, Ellipsis, MemoryStick, Play, RotateCw, Rocket, Square } from '@lucide/svelte';
 	import { untrack } from 'svelte';
 	import { page } from '$app/state';
 	import { api } from '$lib/api';
@@ -55,6 +55,18 @@
 		tick();
 		return () => (stopped = true);
 	});
+	// How long the live version has run. A crash or a server restart starts
+	// a new deployment, and so the count again; an update of Zelie does not.
+	let now = $state(Date.now());
+	$effect(() => {
+		const timer = setInterval(() => (now = Date.now()), 1000);
+		return () => clearInterval(timer);
+	});
+	function uptime(since: string): string {
+		const s = Math.max(0, Math.floor((now - new Date(since).getTime()) / 1000));
+		const [d, h, m] = [Math.floor(s / 86400), Math.floor((s % 86400) / 3600), Math.floor((s % 3600) / 60)];
+		return t('app.uptime', { time: d ? `${d}d ${h}h` : h ? `${h}h ${m}m` : m ? `${m}m` : `${s}s` });
+	}
 	const cores = (c: number) => (Number.isInteger(c) ? String(c) : c.toFixed(2).replace(/0$/, ''));
 
 	// With pushes deploying on their own, deploying by hand is rare and goes
@@ -140,66 +152,68 @@
 							>
 						{/if}
 					</p>
+					{#if current.usage?.running && current.usage.memory_bytes !== undefined}
+						{@const u = current.usage}
+						{@const mb = megabytes((u.memory_bytes ?? 0) / 2 ** 20)}
+						{@const since = a.deployments.find((d) => d.state === 'live')?.finished_at}
+						<p class="mt-1.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted tabular-nums" title={t('app.usageTitle')}>
+							{#if since}
+								<span class="inline-flex items-center gap-1.5" title={t('app.uptimeTitle')}><Clock size={15} strokeWidth={1.75} />{uptime(since)}</span>
+							{/if}
+							<span class="inline-flex items-center gap-1.5"
+								><MemoryStick size={15} strokeWidth={1.75} />{a.memory_mb ? t('app.usageMemory', { used: mb, limit: megabytes(a.memory_mb) }) : mb}</span
+							>
+							{#if u.cpu !== undefined}
+								<span class="inline-flex items-center gap-1.5"
+									><Cpu size={15} strokeWidth={1.75} />{u.cpu < 0.01
+										? t('app.usageIdle')
+										: a.cpus
+											? t('app.usageCpu', { used: cores(u.cpu), limit: cores(a.cpus) })
+											: t('app.usageCpuOnly', { used: cores(u.cpu) })}</span
+								>
+							{/if}
+						</p>
+					{/if}
 				</div>
 			</div>
-			<div class="flex flex-wrap items-center justify-end gap-x-5 gap-y-2">
-				{#if current.usage?.running && current.usage.memory_bytes !== undefined}
-					{@const u = current.usage}
-					{@const mb = megabytes((u.memory_bytes ?? 0) / 2 ** 20)}
-					<p class="flex items-center gap-4 text-sm text-muted tabular-nums" title={t('app.usageTitle')}>
-						<span class="inline-flex items-center gap-1.5"
-							><MemoryStick size={15} strokeWidth={1.75} />{a.memory_mb ? t('app.usageMemory', { used: mb, limit: megabytes(a.memory_mb) }) : mb}</span
-						>
-						{#if u.cpu !== undefined}
-							<span class="inline-flex items-center gap-1.5"
-								><Cpu size={15} strokeWidth={1.75} />{u.cpu < 0.01
-									? t('app.usageIdle')
-									: a.cpus
-										? t('app.usageCpu', { used: cores(u.cpu), limit: cores(a.cpus) })
-										: t('app.usageCpuOnly', { used: cores(u.cpu) })}</span
-							>
-						{/if}
-					</p>
+			<div class="flex items-center gap-2">
+				{#if a.stopped}
+					<Button kind="secondary" onclick={() => run(start)} busy={starting || busy()} disabled={!!a.volume_full} title={a.volume_full ? say(a.volume_full) : undefined}>
+						<Play size={16} strokeWidth={1.75} />{t('app.start')}
+					</Button>
+				{:else if a.state !== 'none'}
+					<Button kind="quiet" onclick={askStop} busy={starting} title={t('app.stopHint')}>
+						<Square size={14} strokeWidth={1.75} />{t('app.stop')}
+					</Button>
+					<Button kind="secondary" onclick={askRestart} busy={starting || busy()} disabled={!!a.volume_full} title={a.volume_full ? say(a.volume_full) : t('app.restartHint')}>
+						<RotateCw size={16} strokeWidth={1.75} />{t('app.restart')}
+					</Button>
 				{/if}
-				<div class="flex items-center gap-2">
-					{#if a.stopped}
-						<Button kind="secondary" onclick={() => run(start)} busy={starting || busy()} disabled={!!a.volume_full} title={a.volume_full ? say(a.volume_full) : undefined}>
-							<Play size={16} strokeWidth={1.75} />{t('app.start')}
+				{#if !a.engine && a.source === 'github' && a.auto_deploy}
+					<div class="relative" bind:this={menu}>
+						<Button kind="secondary" class="!px-3" aria-label={t('app.more')} title={t('app.more')} aria-expanded={more} onclick={() => (more = !more)}>
+							<Ellipsis size={18} strokeWidth={1.75} />
 						</Button>
-					{:else if a.state !== 'none'}
-						<Button kind="quiet" onclick={askStop} busy={starting} title={t('app.stopHint')}>
-							<Square size={14} strokeWidth={1.75} />{t('app.stop')}
-						</Button>
-						<Button kind="secondary" onclick={askRestart} busy={starting || busy()} disabled={!!a.volume_full} title={a.volume_full ? say(a.volume_full) : t('app.restartHint')}>
-							<RotateCw size={16} strokeWidth={1.75} />{t('app.restart')}
-						</Button>
-					{/if}
-					{#if !a.engine && a.source === 'github' && a.auto_deploy}
-						<div class="relative" bind:this={menu}>
-							<Button kind="secondary" class="!px-3" aria-label={t('app.more')} title={t('app.more')} aria-expanded={more} onclick={() => (more = !more)}>
-								<Ellipsis size={18} strokeWidth={1.75} />
-							</Button>
-							{#if more}
-								<div class="absolute top-12 right-0 z-20 w-[min(20rem,calc(100vw-2rem))] rounded-2xl border border-line bg-bg p-1.5 shadow-lg">
-									<button
-										class="flex w-full flex-col items-start gap-1 rounded-xl px-3 py-2.5 text-left transition hover:bg-hover disabled:opacity-50"
-										disabled={starting || busy() || !!a.volume_full}
-										onclick={() => ((more = false), run(deploy))}
+						{#if more}
+							<div class="absolute top-12 right-0 z-20 w-[min(20rem,calc(100vw-2rem))] rounded-2xl border border-line bg-bg p-1.5 shadow-lg">
+								<button
+									class="flex w-full flex-col items-start gap-1 rounded-xl px-3 py-2.5 text-left transition hover:bg-hover disabled:opacity-50"
+									disabled={starting || busy() || !!a.volume_full}
+									onclick={() => ((more = false), run(deploy))}
+								>
+									<span class="flex items-center gap-2 text-[15px] font-medium"
+										><Rocket size={16} strokeWidth={1.75} />{busy() ? t('app.deploying') : t('app.deployLatest')}</span
 									>
-										<span class="flex items-center gap-2 text-[15px] font-medium"
-											><Rocket size={16} strokeWidth={1.75} />{busy() ? t('app.deploying') : t('app.deployLatest')}</span
-										>
-										<span class="text-sm text-muted">{a.volume_full ? say(a.volume_full) : t('app.deployLatestHint')}</span>
-									</button>
-								</div>
-							{/if}
-						</div>
-					{:else if !a.engine}
-						<Button onclick={() => run(deploy)} busy={starting || busy()} disabled={!!a.volume_full} title={a.volume_full ? say(a.volume_full) : undefined}>
-							<Rocket size={16} strokeWidth={1.75} />{busy() ? t('app.deploying') : t('app.deploy')}
-						</Button>
-					{/if}
-				</div>
+									<span class="text-sm text-muted">{a.volume_full ? say(a.volume_full) : t('app.deployLatestHint')}</span>
+								</button>
+							</div>
+						{/if}
+					</div>
+				{:else if !a.engine}
+					<Button onclick={() => run(deploy)} busy={starting || busy()} disabled={!!a.volume_full} title={a.volume_full ? say(a.volume_full) : undefined}>
+						<Rocket size={16} strokeWidth={1.75} />{busy() ? t('app.deploying') : t('app.deploy')}
+					</Button>
+				{/if}
 			</div>
 		</header>
 		<ErrorText message={error} />
