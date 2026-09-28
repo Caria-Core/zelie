@@ -851,6 +851,13 @@ func (s *Server) deleteApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.removeAppImages(ctx, a.ID)
+	if _, err := s.Store.ExternalAccess(ctx, a.ID); err == nil {
+		// Its containers are gone, and its user with them.
+		if err := s.Core.RemoveExternal(ctx, a.ID, a.Engine, ""); err != nil {
+			s.coreFailed(w, "remove outside access", err)
+			return
+		}
+	}
 	err = s.Store.DeleteApp(ctx, a.ID)
 	if errors.Is(err, store.ErrNotFound) {
 		// Another request deleted it meanwhile, as when a browser sends a

@@ -247,5 +247,13 @@ ALTER TABLE backups ADD COLUMN local INTEGER NOT NULL DEFAULT 1;
 -- For a dump someone uploaded: the statements taken out or changed so it
 -- loads here, as JSON counts by kind.
 ALTER TABLE backups ADD COLUMN adapted TEXT NOT NULL DEFAULT '';
+`, `
+-- A database desktop tools can reach through an SSH tunnel, on a loopback
+-- port of this server. The password is not kept: it is shown once.
+CREATE TABLE external_access (
+	app_id     TEXT PRIMARY KEY REFERENCES apps(id) ON DELETE CASCADE,
+	port       INTEGER NOT NULL UNIQUE,
+	created_at INTEGER NOT NULL
+) STRICT;
 `,
 }

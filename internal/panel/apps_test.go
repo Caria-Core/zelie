@@ -39,8 +39,11 @@ type appCore struct {
 	removed    []string // images
 	keep       []string // what the last sweep was told
 	caches     []string // apps whose build cache went
-	suggest    string   // the test command builds find
-	buildEnv   []string // the variables the last build got, opened
+	external   map[string]core.ExternalListener
+	extSets    []string     // "app port sealed?" of each SetExternal
+	takenPorts map[int]bool // ports something else on the server holds
+	suggest    string       // the test command builds find
+	buildEnv   []string     // the variables the last build got, opened
 	args       map[string][]string
 	cpuUsec    int64
 	testExit   int
@@ -218,6 +221,42 @@ func (c *appCore) SweepImages(_ context.Context, keep []string) ([]string, error
 	defer c.mu.Unlock()
 	c.keep = keep
 	return nil, nil
+}
+
+func (c *appCore) SetExternal(_ context.Context, app, engine, container string, port, target int, sealed string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if sealed != "" {
+		if _, err := c.keys.Open(sealed, app); err != nil {
+			return err
+		}
+	}
+	c.extSets = append(c.extSets, fmt.Sprintf("%s %d %v", app, port, sealed != ""))
+	if c.takenPorts[port] {
+		return &core.Error{Status: http.StatusConflict, Code: "external.port_taken", Message: "taken"}
+	}
+	if c.external == nil {
+		c.external = map[string]core.ExternalListener{}
+	}
+	c.external[app] = core.ExternalListener{App: app, Port: port, Target: target}
+	return nil
+}
+
+func (c *appCore) RemoveExternal(_ context.Context, app, engine, container string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.external, app)
+	return nil
+}
+
+func (c *appCore) SyncExternal(_ context.Context, list []core.ExternalListener) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.external = map[string]core.ExternalListener{}
+	for _, l := range list {
+		c.external[l.App] = l
+	}
+	return nil
 }
 
 func (c *appCore) RemoveBuildCache(_ context.Context, app string) error {

@@ -37,7 +37,10 @@ type dbEngine struct {
 	MemoryMB int64
 	// PasswordVar holds the password in the database's own container.
 	PasswordVar string
-	Env         []string
+	// RootPasswordVar, if set, holds a password for the engine's own
+	// administrator, which only the core uses.
+	RootPasswordVar string
+	Env             []string
 	// Args replace the image's command; empty keeps it.
 	Args []string
 	// vars are what a linked app gets, before its prefix. {host} is the
@@ -65,11 +68,12 @@ var dbEngines = []dbEngine{
 	{
 		Name: "mariadb", Label: "MariaDB", Versions: []string{"11.8", "10.11"}, Port: 3306,
 		DataPath: "/var/lib/mysql", MemoryMB: 512, PasswordVar: "MARIADB_PASSWORD",
-		// Nobody needs root: the app's user owns its database, backups
-		// included. Root gets a password no one keeps, made here because
-		// the image's own random one is printed to the log.
-		Env:  []string{"MARIADB_USER=" + dbUser, "MARIADB_DATABASE=" + dbUser, "MARIADB_ROOT_HOST=localhost"},
-		Args: []string{"sh", "-c", `export MARIADB_ROOT_PASSWORD="$(head -c 24 /dev/urandom | base64)"; exec docker-entrypoint.sh mariadbd`},
+		// The app's user owns its database, backups included. Root only
+		// makes the user for outside access, from inside the container;
+		// its password is sealed like the app's, since the image's own
+		// random one is printed to the log.
+		RootPasswordVar: "MARIADB_ROOT_PASSWORD",
+		Env:             []string{"MARIADB_USER=" + dbUser, "MARIADB_DATABASE=" + dbUser, "MARIADB_ROOT_HOST=localhost"},
 		vars: []linkedVar{
 			{"DATABASE_URL", "mysql://" + dbUser + ":{secret}@{host}:3306/" + dbUser},
 			{"MYSQL_HOST", "{host}"}, {"MYSQL_PORT", "3306"}, {"MYSQL_USER", dbUser}, {"MYSQL_PASSWORD", "{secret}"}, {"MYSQL_DATABASE", dbUser},
@@ -78,8 +82,14 @@ var dbEngines = []dbEngine{
 	{
 		Name: "redis", Label: "Redis", Versions: []string{"8"}, Port: 6379,
 		DataPath: "/data", MemoryMB: 256, PasswordVar: "REDIS_PASSWORD",
-		// Through the image's entrypoint, which drops root.
-		Args: []string{"sh", "-c", `exec docker-entrypoint.sh redis-server --appendonly yes --requirepass "$REDIS_PASSWORD"`},
+		// Through the image's entrypoint, which drops root. Users made
+		// with ACL SETUSER are gone after a restart, so the one for
+		// outside access comes from the command line too.
+		Args: []string{"sh", "-c", `set -- redis-server --appendonly yes --requirepass "$REDIS_PASSWORD"
+if [ -n "$` + externalPasswordVar + `" ]; then
+	set -- "$@" --user ` + core.ExternalUser + ` on ">$` + externalPasswordVar + `" '~*' '&*' '+@all'
+fi
+exec docker-entrypoint.sh "$@"`},
 		vars: []linkedVar{
 			{"REDIS_URL", "redis://default:{secret}@{host}:6379"},
 			{"REDIS_HOST", "{host}"}, {"REDIS_PORT", "6379"}, {"REDIS_PASSWORD", "{secret}"},
@@ -176,6 +186,14 @@ func (s *Server) createDatabase(w http.ResponseWriter, r *http.Request) {
 		s.Store.DeleteApp(ctx, a.ID)
 	}
 	vars := []store.EnvVar{{Name: e.PasswordVar, Value: sealed, Secret: true}}
+	if e.RootPasswordVar != "" {
+		root, err := secret.Seal(key, a.ID, e.RootPasswordVar, newPassword())
+		if err != nil {
+			s.fail(w, "seal password", err)
+			return
+		}
+		vars = append(vars, store.EnvVar{Name: e.RootPasswordVar, Value: root, Secret: true})
+	}
 	for _, v := range e.Env {
 		name, value, _ := strings.Cut(v, "=")
 		vars = append(vars, store.EnvVar{Name: name, Value: value})

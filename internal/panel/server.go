@@ -61,6 +61,8 @@ type Server struct {
 	crashes crashes
 	samples samples
 	sizes   volumeSizes
+	// externalMu keeps two requests from picking the same port.
+	externalMu sync.Mutex
 	// backupBusy holds the databases being backed up or restored.
 	backupBusy keyset
 	// uploading holds the ids of backups being sent off-site, and
@@ -150,6 +152,9 @@ func (s *Server) Handler() http.Handler {
 	web.HandleFunc("GET /api/apps/{app}/data/tables", s.signedIn(s.dataTables))
 	web.HandleFunc("POST /api/apps/{app}/data/rows", s.signedIn(s.dataRows))
 	web.HandleFunc("POST /api/apps/{app}/data/export", s.confirmed(s.startExport))
+	web.HandleFunc("GET /api/apps/{app}/external", s.signedIn(s.getExternal))
+	web.HandleFunc("POST /api/apps/{app}/external", s.confirmed(s.setExternal))
+	web.HandleFunc("DELETE /api/apps/{app}/external", s.signedIn(s.removeExternal))
 	web.HandleFunc("GET /api/apps/{app}/data/export/{token}", s.signedIn(s.downloadExport))
 	web.HandleFunc("POST /api/apps/{app}/data/keys", s.signedIn(s.dataKeys))
 	web.HandleFunc("POST /api/apps/{app}/data/key", s.signedIn(s.dataKey))
@@ -216,6 +221,7 @@ func (s *Server) Serve(ctx context.Context, socket string) error {
 	go s.runBackups(ctx)
 	go s.runUploads(ctx)
 	go s.runImageSweep(ctx)
+	go s.syncExternal(ctx)
 	l, err := net.Listen("unix", socket)
 	if err != nil {
 		return err
