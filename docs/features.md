@@ -1,8 +1,8 @@
 # Features
 
-What Zelie does today, one area at a time. Everything here runs on a test machine; none
-of it has been released. Where something has only been tried against a stand-in, it
-says so.
+What Zelie does today, one area at a time. It is pre-alpha: all of this works, but little
+of it has run on real servers yet. Where something has only been tried against a
+stand-in, it says so.
 
 ## Apps
 
@@ -77,6 +77,18 @@ So far this has run with self-signed certificates only, not against Let's Encryp
 - The build cache is kept to a tenth of the disk, at most 20 GB.
 - Images nothing has used for a week are deleted.
 
+## Install and updates
+
+- One command installs Zelie and asks how the panel is reached. The release's signature
+  is checked first. Running the command again finishes an install that stopped halfway,
+  and updates an older one.
+- Behind a Cloudflare Tunnel, Zelie opens no port to the internet: it listens on one
+  port of the server itself and the tunnel brings the traffic.
+- The Server page shows when a new release is out and what changed. Updating restarts
+  only Zelie's own services; apps and databases keep running. If the new version does not
+  come up within a minute and a half, the old one is put back.
+- Getting certificates from Let's Encrypt has not yet run against Let's Encrypt itself.
+
 ## Interface
 
 Light and dark themes, usable on a phone, and built into the binary: no separate web
@@ -86,6 +98,4 @@ server, no CDN, no tracking. Every sentence it shows can be translated.
 
 - Game servers from Pterodactyl and Pelican eggs, with a console, SFTP, a file manager,
   startup settings and schedules.
-- A one-command installer, updates that do not restart apps, and access through a
-  Cloudflare Tunnel.
 - Several servers managed from one panel.
