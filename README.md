@@ -29,7 +29,7 @@ one server is not enough, the same panel will run several.
 - Seals secrets as they are saved, so the web interface cannot read them back.
 - Asks for a passkey or an authenticator app at every login.
 
-![A PostgreSQL database's tables, browsed read-only in Zelie](docs/images/database.png)
+![A PostgreSQL database's tables, browsed read-only in Zelie](docs/images/data.png)
 
 Coming next: game servers from Pterodactyl and Pelican eggs, the one-command installer
 with updates, and several servers from one panel.
