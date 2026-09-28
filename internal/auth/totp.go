@@ -56,6 +56,10 @@ func CheckTOTP(secret []byte, code string, now time.Time) (step int64, ok bool) 
 	return 0, false
 }
 
+// TOTPCode is the code an authenticator app shows in a time step, for
+// tools that log in the way a person would.
+func TOTPCode(secret []byte, step int64) string { return totpCode(secret, step) }
+
 func totpCode(secret []byte, step int64) string {
 	mac := hmac.New(sha1.New, secret)
 	binary.Write(mac, binary.BigEndian, uint64(step))

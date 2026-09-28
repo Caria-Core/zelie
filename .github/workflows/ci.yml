@@ -50,6 +50,56 @@ jobs:
           path: internal/webui/build/ui
           if-no-files-found: error
 
+  # Installs the last release, gives it something to keep, and updates it to
+  # this commit the way the panel does. A release that would lose data or
+  # not come up on an existing server stops here.
+  upgrade:
+    needs: [test, web]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: web
+          path: internal/webui/build/ui
+      - name: Install the last release
+        run: |
+          # Behind a tunnel the installer wants a connector running; a
+          # stand-in does, since nothing here comes from outside.
+          printf '[Service]\nExecStart=/bin/sleep infinity\n' | sudo tee /etc/systemd/system/cloudflared.service
+          sudo systemctl daemon-reload
+          sudo systemctl start cloudflared
+          curl -fsSL "https://github.com/$GITHUB_REPOSITORY/releases/latest/download/install.sh" |
+            sudo sh -s -- --mode tunnel --host panel.upgrade.test
+      - name: Build this commit
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          old=$(zelie version | awk '{print $2}')
+          # Outside a release, the version after the installed one.
+          new=${VERSION:-${old%.*}.$((${old##*.} + 1))}
+          echo "OLD=$old" >> "$GITHUB_ENV"
+          echo "NEW=$new" >> "$GITHUB_ENV"
+          CGO_ENABLED=0 go build -trimpath -ldflags "-X github.com/Caria-Core/zelie/internal/version.Version=$new" -o zelie-new ./cmd/zelie
+          go build -o upgrade ./hack/upgrade
+      - name: Seed
+        run: sudo ./upgrade seed
+      - name: Update
+        # What the running version's core does once it has checked a release.
+        run: |
+          sudo cp /usr/local/bin/zelie /usr/local/bin/zelie.old
+          sudo install -m 755 zelie-new /usr/local/bin/zelie
+          sudo systemd-run --unit zelie-update --collect --wait --quiet \
+            /usr/local/bin/zelie.old update-finish --from "$OLD" --to "$NEW"
+      - name: Check
+        run: sudo ./upgrade check -want "$NEW"
+      - name: Logs
+        if: failure()
+        run: sudo journalctl -u zelie-core -u zelie-proxy -u zelie-panel -u zelie-update --no-pager | tail -n 300
+
   build:
     needs: [test, web]
     runs-on: ubuntu-latest
