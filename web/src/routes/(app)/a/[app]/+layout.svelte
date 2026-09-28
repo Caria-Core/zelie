@@ -53,6 +53,7 @@
 		current.app?.engine
 			? [
 					{ href: `/a/${id}`, label: t('db.tab.overview') },
+					{ href: `/a/${id}/data`, label: t('viewer.tab') },
 					{ href: `/a/${id}/logs`, label: t('app.tab.logs') },
 					{ href: `/a/${id}/backups`, label: t('backups.tab') },
 					{ href: `/a/${id}/storage`, label: t('app.tab.storage') },
