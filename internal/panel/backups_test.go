@@ -27,6 +27,8 @@ type coreBackups struct {
 	live       []bool
 	runningFor []int
 	uploads    map[string]*coreUpload // dumps being uploaded, by id
+	// The database refuses to load these files; "*" is every file.
+	failLoad map[string]bool
 }
 
 // running counts the app's running containers.
@@ -123,6 +125,10 @@ func (c *appCore) RestoreBackup(_ context.Context, app, name, kind, container, v
 	defer c.mu.Unlock()
 	if !slices.Contains(c.bk.files[app], name) {
 		return &core.Error{Status: http.StatusNotFound, Message: "backup, container or volume not found"}
+	}
+	if c.bk.failLoad[name] || c.bk.failLoad["*"] {
+		return &core.Error{Status: http.StatusUnprocessableEntity, Code: "restore.load_failed", Message: "Loading the backup failed",
+			Params: map[string]any{"code": 3, "detail": "database \"shop\" does not exist"}}
 	}
 	if kind == "redis" {
 		// Its volume is refused while it runs.
@@ -271,6 +277,41 @@ func TestBackupAndRestore(t *testing.T) {
 	}
 	if _, plan := e.backups(t, "pg"); plan["enabled"] != false || plan["minute"] != 90.0 || plan["keep_days"] != 30.0 {
 		t.Errorf("plan %v", plan)
+	}
+}
+
+// A backup that does not load leaves the database as it was: the safety
+// backup goes back in before the linked apps start again.
+func TestRestoreRollsBack(t *testing.T) {
+	e := newAppEnv(t)
+	e.b.do("POST", "/api/databases", map[string]any{"id": "pg", "engine": "postgres"})
+	e.settle(t, "pg")
+	e.b.do("POST", "/api/apps", map[string]any{"id": "web", "source": "image", "image": "nginx"})
+	e.settle(t, "web")
+	e.b.do("POST", "/api/apps/web/links", map[string]any{"db": "pg"})
+	bad := e.backUp(t, "pg")
+	e.core.bk.failLoad = map[string]bool{e.core.bk.files["pg"][0]: true}
+
+	out := e.restore(t, "pg", int64(bad["id"].(float64)))
+	if out["state"] != "failed" || out["rolled_back"] != true || out["error"].(map[string]any)["code"] != "restore.load_failed" {
+		t.Fatalf("restore: %v", out)
+	}
+	list, _ := e.backups(t, "pg")
+	if safety := e.core.bk.files["pg"][1]; len(e.core.bk.restored) != 1 || !strings.HasPrefix(e.core.bk.restored[0], "pg/"+safety) {
+		t.Errorf("restored %v, want the safety backup %s", e.core.bk.restored, safety)
+	}
+	if r := out["restarted"].([]any); len(r) != 1 || r[0] != "web" {
+		t.Errorf("restarted %v", r)
+	}
+	if list[1]["restored_at"] != nil {
+		t.Errorf("the failed backup counts as restored: %v", list[1])
+	}
+
+	// When the safety backup does not load either, it says so.
+	e.core.bk.failLoad = map[string]bool{"*": true}
+	out = e.restore(t, "pg", int64(bad["id"].(float64)))
+	if out["state"] != "failed" || out["rolled_back"] != nil || out["safety"] == nil {
+		t.Errorf("restore without a way back: %v", out)
 	}
 }
 

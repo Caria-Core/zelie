@@ -446,6 +446,8 @@ export default {
 	'backups.restored': 'The backup from {when} is back in place. The safety backup from {safety} holds what was there before.',
 	'backups.safetyFailed': 'Nothing was changed: the safety backup of what is there now failed. {why}',
 	'backups.restoreFailed': 'The restore failed. {why}',
+	'backups.restoreFailedBack': 'The restore failed, so {db} was put back as it was before. {why}',
+	'backups.restoreFailedEmpty': 'The restore failed, and putting back what was there failed too: {db} may be empty. Restore the safety backup from {safety}. {why}',
 	'backups.importing': 'Reading the uploaded file and keeping it as a backup. The restore starts right after.',
 	'backups.restoringUpload': 'Restoring the uploaded file. What is there now is backed up first; linked apps stop meanwhile.',
 	'backups.restoredUpload': 'The uploaded file is in place. The safety backup from {safety} holds what was there before.',

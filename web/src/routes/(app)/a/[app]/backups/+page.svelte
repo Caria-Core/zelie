@@ -229,7 +229,16 @@
 		</p>
 	{:else if restoring?.state === 'failed'}
 		<p class="rounded-xl border border-danger/30 px-4 py-3 text-sm text-danger">
-			{t(restoring.safety_failed ? 'backups.safetyFailed' : 'backups.restoreFailed', { why: restoring.error ? say(restoring.error) : '' })}
+			{t(
+				restoring.safety_failed
+					? 'backups.safetyFailed'
+					: restoring.rolled_back
+						? 'backups.restoreFailedBack'
+						: restoring.safety && !files
+							? 'backups.restoreFailedEmpty'
+							: 'backups.restoreFailed',
+				{ why: restoring.error ? say(restoring.error) : '', db: app.id, safety: restoring.safety ? time(restoring.safety) : '' }
+			)}
 		</p>
 	{/if}
 

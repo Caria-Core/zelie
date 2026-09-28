@@ -64,6 +64,8 @@ export type Restore = {
 	safety?: string;
 	// Set when the backup of what was there failed, so nothing changed.
 	safety_failed?: boolean;
+	// Set when the restore failed and the safety backup went back in.
+	rolled_back?: boolean;
 	restarted: string[];
 	at: string;
 };

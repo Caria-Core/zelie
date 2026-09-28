@@ -580,6 +580,9 @@ type restoreJSON struct {
 	SafetyFailed bool `json:"safety_failed,omitempty"`
 	// Safety is when the backup of what was there before was made.
 	Safety *time.Time `json:"safety,omitempty"`
+	// RolledBack is set when the restore failed and the safety backup was
+	// put back, so the database is as it was.
+	RolledBack bool `json:"rolled_back,omitempty"`
 	// Restarted are the linked apps that were stopped and started again.
 	Restarted []string  `json:"restarted"`
 	At        time.Time `json:"at"`
@@ -693,13 +696,13 @@ func (s *Server) runRestore(ctx context.Context, a store.App, b store.Backup, us
 		return out
 	}
 	out.Safety = &safety.CreatedAt
-	restarted, err := s.restore(ctx, a, b)
+	restarted, rolledBack, err := s.restore(ctx, a, b, &safety)
 	if restarted != nil {
 		out.Restarted = restarted
 	}
 	if err != nil {
-		s.Log.Error("restore failed", "app", a.ID, "backup", b.File, "err", err)
-		out.Error = new(backupFailure(err))
+		s.Log.Error("restore failed", "app", a.ID, "backup", b.File, "rolled_back", rolledBack, "err", err)
+		out.Error, out.RolledBack = new(backupFailure(err)), rolledBack
 		return out
 	}
 	s.Store.SetRestored(ctx, b.ID, s.now())
@@ -710,11 +713,13 @@ func (s *Server) runRestore(ctx context.Context, a store.App, b store.Backup, us
 
 // restore stops the apps linked to the database, puts the backup back and
 // starts them again. Redis is stopped too, since its files are replaced.
-// Whatever happens, what was running runs again at the end.
-func (s *Server) restore(ctx context.Context, db store.App, b store.Backup) (restarted []string, err error) {
+// Whatever happens, what was running runs again at the end. When the
+// backup does not load, a loader may have emptied the database first, so
+// the safety backup goes back in before anything starts.
+func (s *Server) restore(ctx context.Context, db store.App, b store.Backup, safety *store.Backup) (restarted []string, rolledBack bool, err error) {
 	links, err := s.Store.Links(ctx, "", db.ID)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	inPlace := backup.LoadsInPlace(db.Engine)
 	held := []string{}
@@ -742,7 +747,7 @@ func (s *Server) restore(ctx context.Context, db store.App, b store.Backup) (res
 
 	list, err := s.Core.List(ctx)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	stop := func(app string) error {
 		for _, c := range list {
@@ -760,31 +765,38 @@ func (s *Server) restore(ctx context.Context, db store.App, b store.Backup) (res
 	if !inPlace {
 		// First in stopped: it starts again before its apps.
 		if err := stop(db.ID); err != nil {
-			return nil, err
+			return nil, false, err
 		}
 	}
 	for _, l := range links {
 		if err := stop(l.AppID); err != nil {
-			return nil, err
+			return nil, false, err
 		}
 	}
+	var container, volume string
 	if inPlace {
-		container, err := s.liveContainer(ctx, db)
-		if err != nil {
-			return nil, err
+		if container, err = s.liveContainer(ctx, db); err != nil {
+			return nil, false, err
 		}
-		err = s.Core.RestoreBackup(ctx, db.ID, b.File, db.Engine, container, "")
-		return stoppedApps(stopped, db.ID), err
+	} else {
+		vols, err := s.Store.Volumes(ctx, db.ID)
+		if err != nil {
+			return nil, false, err
+		}
+		if len(vols) != 1 {
+			return nil, false, fmt.Errorf("%s has %d volumes, not one", db.ID, len(vols))
+		}
+		volume = vols[0].Name
 	}
-	vols, err := s.Store.Volumes(ctx, db.ID)
-	if err != nil {
-		return nil, err
+	err = s.Core.RestoreBackup(ctx, db.ID, b.File, db.Engine, container, volume)
+	if err != nil && safety != nil {
+		if rerr := s.Core.RestoreBackup(ctx, db.ID, safety.File, db.Engine, container, volume); rerr != nil {
+			s.Log.Error("restore: put the safety backup back", "app", db.ID, "backup", safety.File, "err", rerr)
+		} else {
+			rolledBack = true
+		}
 	}
-	if len(vols) != 1 {
-		return nil, fmt.Errorf("%s has %d volumes, not one", db.ID, len(vols))
-	}
-	err = s.Core.RestoreBackup(ctx, db.ID, b.File, db.Engine, "", vols[0].Name)
-	return stoppedApps(stopped, db.ID), err
+	return stoppedApps(stopped, db.ID), rolledBack, err
 }
 
 func stoppedApps(stopped []string, db string) []string {
