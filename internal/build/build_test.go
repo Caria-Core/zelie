@@ -23,6 +23,7 @@ type fakeEngine struct {
 	specs      []engine.Spec
 	imported   string
 	secrets    map[string]string // what the build step found in /secrets
+	pruned     []engine.Spec     // cache trims, kept apart from the build's steps
 }
 
 func mount(s engine.Spec, target string) string {
@@ -35,10 +36,14 @@ func mount(s engine.Spec, target string) string {
 }
 
 func (f *fakeEngine) Run(_ context.Context, s engine.Spec) error {
-	f.specs = append(f.specs, s)
 	step := strings.TrimPrefix(s.ID, "zelie-build-")
 	os.MkdirAll(f.paths.Logs, 0o700)
 	os.WriteFile(engine.LogPathFor(f.paths, s.ID), []byte(step+" output\n"), 0o600)
+	if step == "prune" {
+		f.pruned = append(f.pruned, s)
+		return nil
+	}
+	f.specs = append(f.specs, s)
 	switch step {
 	case "unpack":
 		if f.dockerfile {
@@ -315,5 +320,36 @@ func TestVariablesReachTheBuild(t *testing.T) {
 	req.Vars = []Var{{Name: "../x", Value: "y"}}
 	if _, err := newTestBuilder(t, &fakeEngine{}).Build(context.Background(), req, io.Discard); err == nil {
 		t.Error("a variable name with a path in it was accepted")
+	}
+}
+
+func TestPruneAfterEveryBuild(t *testing.T) {
+	for _, fail := range []string{"", "build"} {
+		f := &fakeEngine{fail: fail}
+		b := newTestBuilder(t, f)
+		var out bytes.Buffer
+		_, err := b.Build(context.Background(), request(), &out)
+		if (err != nil) != (fail != "") {
+			t.Fatalf("fail %q: %v", fail, err)
+		}
+		if len(f.pruned) != 1 {
+			t.Fatalf("fail %q: pruned %d times", fail, len(f.pruned))
+		}
+		p := f.pruned[0]
+		args := strings.Join(p.Args, " ")
+		if !strings.Contains(args, "prune --all --keep-storage ") || p.Network != "" || !p.Nesting ||
+			mount(p, "/cache") != b.cacheDir("buildkit") {
+			t.Errorf("prune step %+v", p)
+		}
+		if strings.Contains(out.String(), "prune output") {
+			t.Errorf("the prune's output is in the build log:\n%s", out.String())
+		}
+	}
+}
+
+func TestCacheLimit(t *testing.T) {
+	limit, err := cacheLimit(t.TempDir())
+	if err != nil || limit <= 0 || limit > maxCache {
+		t.Fatalf("limit %d, %v", limit, err)
 	}
 }

@@ -11,6 +11,8 @@
 //  3. build: BuildKit builds the image, each step in a sandbox of its own.
 //     Only this container may run nested containers.
 //
+// After every build, a last container trims the build cache.
+//
 // Keeping unpack apart matters: an archive can hold symlinks, and a
 // container that extracts one must not have anything worth reaching through
 // them.
@@ -27,10 +29,12 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/Caria-Core/zelie/internal/engine"
+	"golang.org/x/sys/unix"
 )
 
 const (
@@ -48,6 +52,16 @@ const (
 
 	// A build that runs longer than this is stopped.
 	timeout = 30 * time.Minute
+
+	// The build cache may take a tenth of the disk it is on, up to
+	// maxCache. Past that, what was used longest ago goes.
+	maxCache     = 20 << 30
+	pruneTimeout = 5 * time.Minute
+
+	// buildkitdFlags are the same for every BuildKit that opens the cache.
+	// Without nesting, BuildKit falls back to another snapshotter and finds
+	// the cache empty.
+	buildkitdFlags = "BUILDKITD_FLAGS=--root /cache --oci-worker-net=host"
 )
 
 // Engine is what a build needs from the container engine.
@@ -163,6 +177,9 @@ func (b *Builder) build(ctx context.Context, req Request, out io.Writer, res *Re
 		return err
 	}
 	defer os.RemoveAll(job.root)
+	// Failed builds fill the cache too. The prune still holds the slot:
+	// two BuildKit daemons must not share a cache.
+	defer b.prune(ctx, out)
 
 	if err := b.step(ctx, out, "unpack", engine.Spec{
 		Args: []string{"tar", "-xzof", "/in/source.tar.gz", "--strip-components=1", "-C", "/src"},
@@ -255,7 +272,7 @@ func (b *Builder) build(ctx context.Context, req Request, out io.Writer, res *Re
 
 	if err := b.step(ctx, out, "build", engine.Spec{
 		Args:    buildArgs,
-		Env:     []string{"BUILDKITD_FLAGS=--root /cache --oci-worker-net=host"},
+		Env:     []string{buildkitdFlags},
 		Network: Network,
 		Mounts:  mounts,
 		Nesting: true,
@@ -356,6 +373,36 @@ func (b *Builder) builderDir(dir string) error {
 		return err
 	}
 	return b.chown(dir, engine.BuilderHostID, engine.BuilderHostID)
+}
+
+// prune trims the build cache to its limit. A failure is not the build's:
+// it is noted in the log and the next build tries again.
+func (b *Builder) prune(ctx context.Context, out io.Writer) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), pruneTimeout)
+	defer cancel()
+	limit, err := cacheLimit(b.cacheDir("buildkit"))
+	if err == nil {
+		// --all takes the frontend and the base images along; they are
+		// pulled again when a build needs them.
+		err = b.step(ctx, io.Discard, "prune", engine.Spec{
+			Args:    []string{"buildctl-daemonless.sh", "prune", "--all", "--keep-storage", strconv.FormatInt(limit>>20, 10)},
+			Env:     []string{buildkitdFlags},
+			Mounts:  []engine.Mount{{Source: b.cacheDir("buildkit"), Target: "/cache"}},
+			Nesting: true,
+		})
+	}
+	if err != nil {
+		fmt.Fprintf(out, "Could not trim the build cache: %v\n", err)
+	}
+}
+
+// cacheLimit is how large the cache in dir may grow.
+func cacheLimit(dir string) (int64, error) {
+	var st unix.Statfs_t
+	if err := unix.Statfs(dir, &st); err != nil {
+		return 0, err
+	}
+	return min(int64(st.Blocks)*int64(st.Bsize)/10, maxCache), nil
 }
 
 // step runs one build step to completion, copying its output to out.
