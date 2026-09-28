@@ -45,9 +45,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
+        # The tag's message is what changed; the Server page in the panel
+        # shows it before an update.
         run: |
-          gh release create "$TAG" dist/* --title "$TAG" --notes "Pre-alpha. Not ready for production.
-
-          Install on Debian or Ubuntu, as root:
-
-              curl -fsSL https://github.com/${{ github.repository }}/releases/download/$TAG/install.sh | ZELIE_VERSION=$TAG sh"
+          git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG"
+          git tag -l --format='%(contents)' "$TAG" > notes.md
+          gh release create "$TAG" dist/* --title "$TAG" --notes-file notes.md
