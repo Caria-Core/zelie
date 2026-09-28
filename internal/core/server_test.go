@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -33,6 +34,7 @@ type fakeEngine struct {
 	links         map[string][]engine.Link
 
 	containers []engine.Status // replaces List's answer when set
+	listMu     sync.Mutex      // for tests that change containers while the core reads them
 	exec       func(args []string, stdin io.Reader, stdout io.Writer) uint32
 	volumeDir  string
 	// More volumes by name, and those a running container holds.
@@ -173,8 +175,10 @@ func (f *fakeEngine) SetUnused(_ context.Context, name string, since time.Time) 
 }
 
 func (f *fakeEngine) List(context.Context) ([]engine.Status, error) {
+	f.listMu.Lock()
+	defer f.listMu.Unlock()
 	if f.containers != nil {
-		return f.containers, nil
+		return slices.Clone(f.containers), nil
 	}
 	return []engine.Status{{ID: "web", Image: "busybox", State: "running", Pid: 42, Userns: 1 << 30}}, nil
 }

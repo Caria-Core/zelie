@@ -170,6 +170,27 @@ func (c *Client) RemoveBuildCache(ctx context.Context, app string) error {
 	return c.do(ctx, http.MethodDelete, "/v1/builds/"+url.PathEscape(app)+"/cache", nil, nil)
 }
 
+// SetExternal opens a database's loopback port. With a sealed password it
+// also makes the external user, or gives it the new password.
+func (c *Client) SetExternal(ctx context.Context, app, engine, container string, port, target int, sealedPassword string) error {
+	return c.do(ctx, http.MethodPut, "/v1/external/"+url.PathEscape(app),
+		externalRequest{Engine: engine, Container: container, Port: port, Target: target, Password: sealedPassword}, nil)
+}
+
+// RemoveExternal closes a database's loopback port and, if container is
+// running, drops the external user.
+func (c *Client) RemoveExternal(ctx context.Context, app, engine, container string) error {
+	return c.do(ctx, http.MethodDelete, "/v1/external/"+url.PathEscape(app), externalRequest{Engine: engine, Container: container}, nil)
+}
+
+// SyncExternal makes the core's loopback ports exactly these.
+func (c *Client) SyncExternal(ctx context.Context, list []ExternalListener) error {
+	if list == nil {
+		list = []ExternalListener{}
+	}
+	return c.do(ctx, http.MethodPut, "/v1/external", externalSync{Listeners: list}, nil)
+}
+
 // readError turns an error response into an *Error.
 func readError(resp *http.Response) error {
 	var e errorJSON

@@ -58,6 +58,12 @@ func runCore(stderr io.Writer) int {
 		return 1
 	}
 
+	external, listeners, err := core.LoadExternal("/var/lib/zelie/external.json")
+	if err != nil {
+		log.Error("start core", "err", err)
+		return 1
+	}
+
 	// Without DNS, apps cannot find their links or anything else, so the
 	// core stops with it.
 	dnsErrs, err := e.StartDNS(ctx)
@@ -76,11 +82,13 @@ func runCore(stderr io.Writer) int {
 
 	s := &core.Server{
 		Engine: e, Paths: engine.DefaultPaths, Log: log, Allowed: policy,
-		Builder: build.New(e, engine.DefaultPaths, "/var/lib/zelie/build"),
-		Secrets: keys,
-		Backups: &backup.Dir{Root: "/var/lib/zelie/backups", Key: backupKey},
-		Offsite: offsite,
+		Builder:  build.New(e, engine.DefaultPaths, "/var/lib/zelie/build"),
+		Secrets:  keys,
+		Backups:  &backup.Dir{Root: "/var/lib/zelie/backups", Key: backupKey},
+		Offsite:  offsite,
+		External: external,
 	}
+	s.StartExternal(listeners)
 	if err := s.Serve(ctx, core.DefaultSocket); err != nil {
 		log.Error("core stopped", "err", err)
 		return 1

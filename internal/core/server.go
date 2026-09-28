@@ -63,9 +63,11 @@ type Server struct {
 	Secrets *secret.Keys
 	Backups *backup.Dir
 	Offsite *Offsite
-	Paths   engine.Paths
-	Log     *slog.Logger
-	Allowed peer.Policy
+	// External holds the loopback ports of databases open to desktop tools.
+	External *External
+	Paths    engine.Paths
+	Log      *slog.Logger
+	Allowed  peer.Policy
 	// Host describes the server; tests replace it.
 	Host func() (engine.Host, error)
 
@@ -91,6 +93,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /v1/builds/{app}/cache", s.removeBuildCache)
 	mux.HandleFunc("DELETE /v1/images", s.removeImage)
 	mux.HandleFunc("POST /v1/images/sweep", s.sweepImages)
+	mux.HandleFunc("PUT /v1/external", s.syncExternal)
+	mux.HandleFunc("PUT /v1/external/{app}", s.setExternal)
+	mux.HandleFunc("DELETE /v1/external/{app}", s.removeExternal)
 	mux.HandleFunc("GET /v1/secrets/key", s.secretKey)
 	mux.HandleFunc("POST /v1/backups", s.createBackup)
 	mux.HandleFunc("GET /v1/backups/{app}", s.listBackups)
