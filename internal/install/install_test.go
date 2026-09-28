@@ -90,6 +90,7 @@ type fakeServer struct {
 	proxy    proxy.Config
 	token    string
 	active   bool // cloudflared runs already
+	running  bool // Zelie's services run
 }
 
 func newFakeServer(t *testing.T) *fakeServer {
@@ -117,6 +118,11 @@ func (f *fakeServer) installer(t *testing.T, opts Options, out *bytes.Buffer) *I
 				}
 			case name == "useradd":
 				f.users[args[len(args)-1]] = true
+			case strings.HasPrefix(cmd, "systemctl is-active zelie-"):
+				if !f.running {
+					return "inactive", errors.New("exit status 3")
+				}
+				return "active\n", nil
 			case cmd == "systemctl is-active cloudflared":
 				if !f.active {
 					return "inactive", errors.New("exit status 3")
@@ -159,6 +165,13 @@ func TestInstallBehindTunnel(t *testing.T) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
+	for _, c := range f.commands {
+		// Fresh services start once; restarting them would race the
+		// setup link.
+		if strings.HasPrefix(c, "systemctl restart") {
+			t.Errorf("first run: %s", c)
+		}
+	}
 	if f.proxy.TLS != proxy.TLSTunnel || f.proxy.Panel != "ist.cariacore.com" {
 		t.Errorf("proxy %+v", f.proxy)
 	}
@@ -183,12 +196,29 @@ func TestInstallBehindTunnel(t *testing.T) {
 		t.Fatalf("second run: %v\n%s", err, out.String())
 	}
 	for _, c := range f.commands {
-		if strings.HasPrefix(c, "useradd") {
+		if strings.HasPrefix(c, "useradd") || strings.HasPrefix(c, "systemctl restart") {
 			t.Errorf("second run: %s", c)
 		}
 	}
 	if f.token != "" || !strings.Contains(out.String(), "a connector already runs") {
 		t.Errorf("second run touched the connector:\n%s", out.String())
+	}
+
+	// A new port changes the proxy's unit only, and the running proxy
+	// restarts to take it.
+	f.commands, f.running = nil, true
+	opts.Port = freePort(t)
+	if err := f.installer(t, opts, &out).Run(context.Background()); err != nil {
+		t.Fatalf("third run: %v", err)
+	}
+	var restarts []string
+	for _, c := range f.commands {
+		if strings.HasPrefix(c, "systemctl restart") {
+			restarts = append(restarts, c)
+		}
+	}
+	if strings.Join(restarts, "|") != "systemctl restart zelie-proxy" {
+		t.Errorf("restarts %v", restarts)
 	}
 }
 

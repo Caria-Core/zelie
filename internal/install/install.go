@@ -128,7 +128,19 @@ func (in *Installer) Run(ctx context.Context) error {
 		}
 		in.results = append(in.results, result{s.name, note, done})
 	}
-	link, err := in.SetupLink(ctx)
+	// The panel may still be starting.
+	var link string
+	var err error
+	for range 30 {
+		if link, err = in.SetupLink(ctx); err == nil {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Second):
+		}
+	}
 	if err != nil {
 		in.summary()
 		return fmt.Errorf("make the setup link: %w", err)
@@ -249,9 +261,20 @@ func (in *Installer) engine(ctx context.Context) (bool, string, error) {
 
 func (in *Installer) services(ctx context.Context) (bool, string, error) {
 	units := Units(in.Opts)
-	for _, name := range unitNames() {
-		if err := os.WriteFile(in.path(filepath.Join(UnitDir, name)), []byte(units[name]), 0o644); err != nil {
+	// A service that runs and whose unit changes must restart to take the
+	// change. One that did not run starts fresh below, and restarting it
+	// right after would only race whoever talks to it next.
+	var restart []string
+	for i, name := range unitNames() {
+		file := in.path(filepath.Join(UnitDir, name))
+		if old, err := os.ReadFile(file); err == nil && string(old) == units[name] {
+			continue
+		}
+		if err := os.WriteFile(file, []byte(units[name]), 0o644); err != nil {
 			return false, "", err
+		}
+		if out, err := in.Exec(ctx, "systemctl", "is-active", services[i]); err == nil && strings.TrimSpace(out) == "active" {
+			restart = append(restart, services[i])
 		}
 	}
 	if out, err := in.Exec(ctx, "systemctl", "daemon-reload"); err != nil {
@@ -261,10 +284,11 @@ func (in *Installer) services(ctx context.Context) (bool, string, error) {
 	if out, err := in.Exec(ctx, "systemctl", args...); err != nil {
 		return false, "", fmt.Errorf("systemctl enable: %v: %s", err, out)
 	}
-	// A unit that changed only takes effect after a restart.
-	args = append([]string{"try-restart"}, services...)
-	if out, err := in.Exec(ctx, "systemctl", args...); err != nil {
-		return false, "", fmt.Errorf("systemctl try-restart: %v: %s", err, out)
+	if len(restart) > 0 {
+		args = append([]string{"restart"}, restart...)
+		if out, err := in.Exec(ctx, "systemctl", args...); err != nil {
+			return false, "", fmt.Errorf("systemctl restart: %v: %s", err, out)
+		}
 	}
 	return true, strings.Join(services, ", "), nil
 }
