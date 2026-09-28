@@ -217,8 +217,8 @@
 			{#if chosen}
 				<div class="flex flex-wrap items-center justify-between gap-2">
 					<p class="min-w-0 text-sm text-muted">
-						<span class="font-mono text-[13px] text-fg">{label(chosen)}</span> · {rowsLabel(chosen)}{#if !chosen.view && chosen.bytes > 0}
-							· {bytes(chosen.bytes)}{/if}
+						<span class="font-mono text-[13px] text-fg">{label(chosen)}</span> · {rowsLabel(chosen)}{#if !chosen.view && chosen.bytes > 0}{' '}·
+							{bytes(chosen.bytes)}{/if}
 					</p>
 					<div class="flex flex-wrap gap-2">
 						<form class="relative" onsubmit={find}>

@@ -1,14 +1,21 @@
-# Zelie
+# Zelie Panel
 
-A server panel for your own machine. Zelie deploys apps from GitHub and runs their
-databases, and game servers are next. It installs as a single file and is managed from
-the browser.
+Zelie is a server panel for your own machine. Give it a Node.js, Python or Go app from
+GitHub, a Docker image, or soon a game server, and it builds it, runs it and puts it
+online with HTTPS. You skip the setup: no reverse proxy to configure, no certificates to
+renew, no Dockerfile unless you want one.
+
+It is meant to replace the older panels, such as Pterodactyl, Pelican and cPanel, with
+something lighter and safer. Zelie is a single binary, with no web server, PHP or
+database server of its own to look after. Every app runs in its own locked-down
+container, and a setup wizard asks a few questions and gets you to your first app. When
+one server is not enough, the same panel will run several.
 
 > [!WARNING]
 > **Pre-alpha.** Zelie is in early development. There is no release yet, and it is not
 > ready for production or for any server you care about.
 
-![A database in Zelie: how apps reach it, and the apps linked to it](docs/images/database.png)
+![Zelie's home page: three apps and two databases, all live](docs/images/overview.png)
 
 ## What it does
 
@@ -22,10 +29,10 @@ the browser.
 - Seals secrets as they are saved, so the web interface cannot read them back.
 - Asks for a passkey or an authenticator app at every login.
 
-![An app's deployments, with its status, image and domain](docs/images/app.png)
+![A PostgreSQL database's tables, browsed read-only in Zelie](docs/images/database.png)
 
-Coming next: game servers from Pterodactyl and Pelican eggs, a one-command installer with
-updates, and several servers from one panel.
+Coming next: game servers from Pterodactyl and Pelican eggs, the one-command installer
+with updates, and several servers from one panel.
 
 [docs/features.md](docs/features.md) describes each feature, and
 [docs/architecture.md](docs/architecture.md) explains how Zelie is built and why.
