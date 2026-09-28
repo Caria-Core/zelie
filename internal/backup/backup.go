@@ -299,6 +299,8 @@ type Info struct {
 	// changed while they were copied.
 	Size    int64 `json:"size,omitempty"`
 	Changed int   `json:"changed,omitempty"`
+	// For a dump someone uploaded: what was changed so it loads here.
+	Adapted Adapted `json:"adapted,omitempty"`
 }
 
 var (
