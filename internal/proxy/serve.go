@@ -20,7 +20,7 @@ import (
 // Addrs says where the proxy listens.
 type Addrs struct {
 	HTTP   string // e.g. ":80"
-	HTTPS  string // e.g. ":443"
+	HTTPS  string // e.g. ":443"; empty behind a tunnel
 	Socket string // control socket for the panel
 }
 
@@ -93,17 +93,19 @@ func (p *Proxy) Serve(ctx context.Context, a Addrs, allowed peer.Policy) error {
 		cl.Close()
 		return fmt.Errorf("listen on %s: %w", a.HTTP, err)
 	}
-	sl, err := net.Listen("tcp", a.HTTPS)
-	if err != nil {
-		cl.Close()
-		wl.Close()
-		return fmt.Errorf("listen on %s: %w", a.HTTPS, err)
-	}
-
 	errs := make(chan error, 3)
+	// Behind a tunnel there is no HTTPS port.
+	if a.HTTPS != "" {
+		sl, err := net.Listen("tcp", a.HTTPS)
+		if err != nil {
+			cl.Close()
+			wl.Close()
+			return fmt.Errorf("listen on %s: %w", a.HTTPS, err)
+		}
+		go func() { errs <- secure.ServeTLS(sl, "", "") }()
+	}
 	go func() { errs <- control.Serve(cl) }()
 	go func() { errs <- web.Serve(wl) }()
-	go func() { errs <- secure.ServeTLS(sl, "", "") }()
 	p.Log.Info("proxy listening", "http", a.HTTP, "https", a.HTTPS, "socket", a.Socket)
 
 	var first error

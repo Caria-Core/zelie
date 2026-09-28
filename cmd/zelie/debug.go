@@ -28,7 +28,8 @@ Commands:
   route rm <host>                      Stop routing a domain
   route ls                             List routes
   panel <host>                         Serve the panel on a domain or IP address
-  tls acme <email> | tls self-signed   Choose how the proxy gets certificates
+  tls acme <email> | self-signed | tunnel
+                                       Choose how the proxy gets certificates
 `
 
 func debug(args []string, stdout, stderr io.Writer) int {

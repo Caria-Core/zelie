@@ -18,6 +18,10 @@ import (
 const (
 	TLSACME       = "acme"        // certificates from Let's Encrypt
 	TLSSelfSigned = "self-signed" // for machines no certificate authority can reach
+	// TLSTunnel is for a proxy behind a Cloudflare Tunnel: Cloudflare holds
+	// the certificates, and the proxy serves plain HTTP on a loopback port
+	// that only the tunnel's connector reaches.
+	TLSTunnel = "tunnel"
 )
 
 // Route sends requests for Host to Upstream, a container address.
@@ -50,7 +54,7 @@ func (c *Config) Validate() error {
 	switch c.TLS {
 	case "":
 		c.TLS = TLSACME
-	case TLSACME, TLSSelfSigned:
+	case TLSACME, TLSSelfSigned, TLSTunnel:
 	default:
 		return fmt.Errorf("unknown tls mode %q", c.TLS)
 	}

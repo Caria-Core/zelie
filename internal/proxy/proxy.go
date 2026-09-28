@@ -145,6 +145,9 @@ func (p *Proxy) Apply(ctx context.Context, cfg Config) error {
 // email are unchanged, and only adds or drops the hosts that changed.
 func (p *Proxy) certSourceFor(ctx context.Context, cfg Config, hosts map[string]bool) (*certSource, error) {
 	old := p.tls.Load()
+	if cfg.TLS == TLSTunnel {
+		return &certSource{mode: TLSTunnel, hosts: hosts}, nil
+	}
 	if cfg.TLS == TLSSelfSigned {
 		src := &certSource{mode: TLSSelfSigned, hosts: hosts, selfSigned: map[string]*tls.Certificate{}}
 		if old != nil && old.mode == TLSSelfSigned {
@@ -226,6 +229,13 @@ func newReverseProxy(target *url.URL, rt http.RoundTripper, log *slog.Logger) ht
 		Rewrite: func(r *httputil.ProxyRequest) {
 			r.SetURL(target)
 			r.SetXForwarded()
+			if tunnelled(r.In) {
+				// The visitor reached Cloudflare over HTTPS; the tunnel's
+				// connector says from where.
+				r.Out.Header.Set("X-Forwarded-For", r.In.Header.Get("Cf-Connecting-Ip"))
+				r.Out.Header.Set("X-Forwarded-Proto", "https")
+			}
+			r.Out.Header.Del("Cf-Connecting-Ip")
 			// Apps expect the name the visitor used, not the container address.
 			r.Out.Host = r.In.Host
 		},
@@ -248,7 +258,12 @@ func (p *Proxy) serveHTTPS(w http.ResponseWriter, r *http.Request) {
 }
 
 // serveHTTP answers ACME challenges and sends everything else to HTTPS.
+// Behind a tunnel it serves the routes itself.
 func (p *Proxy) serveHTTP(w http.ResponseWriter, r *http.Request) {
+	if src := p.tls.Load(); src != nil && src.mode == TLSTunnel {
+		p.serveTunnel(w, r)
+		return
+	}
 	if src := p.tls.Load(); src != nil && src.issuer != nil && src.issuer.HandleHTTPChallenge(w, r) {
 		return
 	}
@@ -258,6 +273,31 @@ func (p *Proxy) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	target := url.URL{Scheme: "https", Host: stripPort(r.Host), Path: r.URL.Path, RawQuery: r.URL.RawQuery}
 	http.Redirect(w, r, target.String(), http.StatusPermanentRedirect)
+}
+
+type tunnelKey struct{}
+
+// serveTunnel routes a request that came through the tunnel's connector.
+// Only a connection from this machine is the connector: the address of the
+// visitor it passes on is believed from nobody else.
+func (p *Proxy) serveTunnel(w http.ResponseWriter, r *http.Request) {
+	h := p.route(r.Host)
+	if h == nil {
+		http.NotFound(w, r)
+		return
+	}
+	if ap, err := netip.ParseAddrPort(r.RemoteAddr); err == nil && ap.Addr().IsLoopback() {
+		if ip, err := netip.ParseAddr(r.Header.Get("Cf-Connecting-Ip")); err == nil {
+			r.Header.Set("Cf-Connecting-Ip", ip.String())
+			r = r.WithContext(context.WithValue(r.Context(), tunnelKey{}, true))
+		}
+	}
+	h.ServeHTTP(w, r)
+}
+
+func tunnelled(r *http.Request) bool {
+	ok, _ := r.Context().Value(tunnelKey{}).(bool)
+	return ok
 }
 
 func (p *Proxy) route(host string) http.Handler {

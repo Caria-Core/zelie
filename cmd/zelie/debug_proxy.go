@@ -59,6 +59,8 @@ func debugProxy(ctx context.Context, c *core.Client, args []string, stdout io.Wr
 		cfg.Panel = args[1]
 	case len(args) == 2 && args[0] == "tls" && args[1] == proxy.TLSSelfSigned:
 		cfg.TLS = proxy.TLSSelfSigned
+	case len(args) == 2 && args[0] == "tls" && args[1] == proxy.TLSTunnel:
+		cfg.TLS = proxy.TLSTunnel
 	default:
 		return errUsage
 	}

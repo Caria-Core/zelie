@@ -140,3 +140,48 @@ func TestPanelOverUnixSocket(t *testing.T) {
 		t.Errorf("panel host: %v", err)
 	}
 }
+
+func TestTunnel(t *testing.T) {
+	p, app := newTestProxy(t)
+	cfg := Config{TLS: TLSTunnel, Routes: []Route{{"app.example.com", strings.TrimPrefix(app, "http://")}}}
+	if err := p.Apply(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	get := func(remote, cf string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest("GET", "http://app.example.com/a", nil)
+		req.RemoteAddr = remote
+		if cf != "" {
+			req.Header.Set("Cf-Connecting-Ip", cf)
+		}
+		rec := httptest.NewRecorder()
+		p.serveHTTP(rec, req)
+		return rec
+	}
+
+	// From the connector on this machine: served, not redirected, with the
+	// visitor's address.
+	rec := get("127.0.0.1:40000", "203.0.113.9")
+	if got := rec.Body.String(); rec.Code != http.StatusOK || !strings.Contains(got, "xff=203.0.113.9 ") || !strings.Contains(got, "proto=https") {
+		t.Errorf("through the tunnel: %d %q", rec.Code, got)
+	}
+	// Anyone else claiming to be Cloudflare is not believed.
+	rec = get("198.51.100.7:5555", "203.0.113.9")
+	if got := rec.Body.String(); !strings.Contains(got, "xff=198.51.100.7 ") || !strings.Contains(got, "proto=http") {
+		t.Errorf("from elsewhere: %q", got)
+	}
+	// Nor is a header that is not an address.
+	rec = get("127.0.0.1:40000", "1.2.3.4, 5.6.7.8")
+	if got := rec.Body.String(); !strings.Contains(got, "xff=127.0.0.1 ") {
+		t.Errorf("bad header: %q", got)
+	}
+	if rec := get("127.0.0.1:40000", ""); rec.Code != http.StatusOK {
+		t.Errorf("no header: %d", rec.Code)
+	}
+	req := httptest.NewRequest("GET", "http://other.example.com/", nil)
+	req.RemoteAddr = "127.0.0.1:40000"
+	rec = httptest.NewRecorder()
+	p.serveHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("unknown host: %d", rec.Code)
+	}
+}
