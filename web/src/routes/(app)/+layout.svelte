@@ -105,30 +105,30 @@
 				<div class="px-1 pb-2"><ThemeSwitch /></div>
 				<a
 					href="/server"
-					class="flex items-center justify-between gap-2 rounded-lg px-2 py-1.5 text-muted hover:bg-hover hover:text-fg {page.url.pathname === '/server'
+					class="flex items-center justify-between gap-2 rounded-lg px-2 py-1.5 hover:bg-hover hover:text-fg {page.url.pathname === '/server'
 						? 'bg-selected text-fg'
-						: ''}"
+						: 'text-muted'}"
 					>{t('nav.server')}{#if server.info?.available}<span class="flex items-center gap-1.5 text-xs text-fg"
 							><span class="size-1.5 rounded-full bg-accent"></span>{t('nav.updateAvailable')}</span
 						>{/if}</a
 				>
 				<a
 					href="/backups"
-					class="rounded-lg px-2 py-1.5 text-muted hover:bg-hover hover:text-fg {page.url.pathname === '/backups'
+					class="rounded-lg px-2 py-1.5 hover:bg-hover hover:text-fg {page.url.pathname === '/backups'
 						? 'bg-selected text-fg'
-						: ''}">{t('nav.backups')}</a
+						: 'text-muted'}">{t('nav.backups')}</a
 				>
 				<a
 					href="/github"
-					class="rounded-lg px-2 py-1.5 text-muted hover:bg-hover hover:text-fg {page.url.pathname.startsWith('/github')
+					class="rounded-lg px-2 py-1.5 hover:bg-hover hover:text-fg {page.url.pathname.startsWith('/github')
 						? 'bg-selected text-fg'
-						: ''}">{t('nav.github')}</a
+						: 'text-muted'}">{t('nav.github')}</a
 				>
 				<a
 					href="/account"
-					class="truncate rounded-lg px-2 py-1.5 text-muted hover:bg-hover hover:text-fg {page.url.pathname === '/account'
+					class="truncate rounded-lg px-2 py-1.5 hover:bg-hover hover:text-fg {page.url.pathname === '/account'
 						? 'bg-selected text-fg'
-						: ''}"
+						: 'text-muted'}"
 					title={t('nav.account')}>{session.me?.email}</a
 				>
 				<button class="rounded-lg px-2 py-1.5 text-left text-muted hover:bg-hover hover:text-fg" onclick={logout}

@@ -98,9 +98,7 @@
 						{#if info.available.published}<p class="text-sm text-muted">{date(info.available.published)}</p>{/if}
 					</div>
 					{#if info.available.notes}
-						<p class="max-h-60 overflow-auto rounded-xl bg-panel px-4 py-3 text-sm whitespace-pre-line text-muted">
-							{info.available.notes}
-						</p>
+						<p class="max-h-60 overflow-auto rounded-xl bg-panel px-4 py-3 text-sm whitespace-pre-line text-muted">{info.available.notes.trim()}</p>
 					{/if}
 					<p class="text-sm text-muted">{t('server.updateLead')}</p>
 					<div class="flex flex-wrap items-center gap-3">
@@ -156,11 +154,11 @@
 			<dl class="grid grid-cols-2 gap-px overflow-hidden rounded-2xl border border-line bg-line sm:grid-cols-3">
 				<div class="flex min-w-0 flex-col gap-1 bg-bg px-4 py-3">
 					<dt class="text-sm text-muted">{t('server.address')}</dt>
-					<dd class="truncate text-[15px]">{info.address ?? '—'}</dd>
+					<dd class="text-[15px] break-words">{info.address ?? '—'}</dd>
 				</div>
 				<div class="flex min-w-0 flex-col gap-1 bg-bg px-4 py-3">
 					<dt class="text-sm text-muted">{t('server.access')}</dt>
-					<dd class="truncate text-[15px]">{access || '—'}</dd>
+					<dd class="text-[15px] break-words">{access || '—'}</dd>
 				</div>
 				{#if info.host}
 					<div class="flex min-w-0 flex-col gap-1 bg-bg px-4 py-3">
