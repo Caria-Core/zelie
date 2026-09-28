@@ -215,6 +215,7 @@ func (s *Server) Serve(ctx context.Context, socket string) error {
 	go s.syncAllLinks(ctx)
 	go s.runBackups(ctx)
 	go s.runUploads(ctx)
+	go s.runImageSweep(ctx)
 	l, err := net.Listen("unix", socket)
 	if err != nil {
 		return err

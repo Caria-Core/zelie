@@ -26,7 +26,6 @@ import (
 	"github.com/containerd/containerd/v2/pkg/netns"
 	"github.com/containerd/containerd/v2/pkg/oci"
 	"github.com/containerd/errdefs"
-	"github.com/distribution/reference"
 	"github.com/opencontainers/runtime-spec/specs-go"
 )
 
@@ -405,13 +404,10 @@ func (e *Engine) Run(ctx context.Context, s Spec) (err error) {
 // anything else is pulled.
 func (e *Engine) image(ctx context.Context, ref string) (containerd.Image, error) {
 	if !strings.HasPrefix(ref, LocalImages) {
-		// "nginx:alpine" means docker.io/library/nginx:alpine, as it does
-		// everywhere else.
-		named, err := reference.ParseNormalizedNamed(ref)
+		ref, err := ImageName(ref)
 		if err != nil {
-			return nil, fmt.Errorf("image %q: %w", ref, err)
+			return nil, err
 		}
-		ref = reference.TagNameOnly(named).String()
 		image, err := e.client.Pull(ctx, ref, containerd.WithPullUnpack)
 		if err != nil {
 			return nil, fmt.Errorf("pull %s: %w", ref, err)
@@ -445,21 +441,6 @@ func (e *Engine) ImportImage(ctx context.Context, r io.Reader, name string) erro
 		return fmt.Errorf("import %s: %w", name, err)
 	}
 	_, err := e.image(ctx, name)
-	return err
-}
-
-// RemoveImage deletes one of the images Zelie built. Containers already
-// made from it keep running: they hold their own snapshot. containerd's
-// garbage collector frees the layers no other image uses.
-func (e *Engine) RemoveImage(ctx context.Context, name string) error {
-	if !strings.HasPrefix(name, LocalImages) {
-		return fmt.Errorf("only images Zelie built can be removed, not %s", name)
-	}
-	ctx = e.ctx(ctx)
-	err := e.client.ImageService().Delete(ctx, name)
-	if errdefs.IsNotFound(err) {
-		return nil
-	}
 	return err
 }
 

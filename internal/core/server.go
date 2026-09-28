@@ -35,6 +35,8 @@ type Engine interface {
 	Remove(ctx context.Context, id string) error
 	List(ctx context.Context) ([]engine.Status, error)
 	RemoveImage(ctx context.Context, name string) error
+	Images(ctx context.Context) ([]engine.Image, error)
+	SetUnused(ctx context.Context, name string, since time.Time) error
 	Wait(ctx context.Context, id string) (uint32, error)
 	Usage(id string) (engine.Usage, error)
 	CreateVolume(name string) error
@@ -86,7 +88,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/links/{app}", s.links)
 	mux.HandleFunc("PUT /v1/links/{app}", s.setLinks)
 	mux.HandleFunc("POST /v1/builds", s.build)
+	mux.HandleFunc("DELETE /v1/builds/{app}/cache", s.removeBuildCache)
 	mux.HandleFunc("DELETE /v1/images", s.removeImage)
+	mux.HandleFunc("POST /v1/images/sweep", s.sweepImages)
 	mux.HandleFunc("GET /v1/secrets/key", s.secretKey)
 	mux.HandleFunc("POST /v1/backups", s.createBackup)
 	mux.HandleFunc("GET /v1/backups/{app}", s.listBackups)

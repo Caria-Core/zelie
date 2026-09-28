@@ -19,7 +19,15 @@ import (
 	"github.com/Caria-Core/zelie/internal/secret"
 )
 
-type fakeBuilder struct{ got build.Request }
+type fakeBuilder struct {
+	got     build.Request
+	removed []string
+}
+
+func (f *fakeBuilder) RemoveCache(app string) error {
+	f.removed = append(f.removed, app)
+	return nil
+}
 
 func (f *fakeBuilder) Build(_ context.Context, req build.Request, out io.Writer) (build.Result, error) {
 	src, _ := io.ReadAll(req.Source)

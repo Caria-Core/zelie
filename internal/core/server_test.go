@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -11,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -26,6 +28,7 @@ type fakeEngine struct {
 	stopped map[string]time.Duration
 
 	removedImages []string
+	images        []engine.Image
 	volumes       []string
 	links         map[string][]engine.Link
 
@@ -151,7 +154,22 @@ func (f *fakeEngine) Wait(_ context.Context, id string) (uint32, error) {
 
 func (f *fakeEngine) RemoveImage(_ context.Context, name string) error {
 	f.removedImages = append(f.removedImages, name)
+	f.images = slices.DeleteFunc(f.images, func(i engine.Image) bool { return i.Name == name })
 	return nil
+}
+
+func (f *fakeEngine) Images(context.Context) ([]engine.Image, error) {
+	return slices.Clone(f.images), nil
+}
+
+func (f *fakeEngine) SetUnused(_ context.Context, name string, since time.Time) error {
+	for i := range f.images {
+		if f.images[i].Name == name {
+			f.images[i].UnusedSince = since
+			return nil
+		}
+	}
+	return errors.New("no such image")
 }
 
 func (f *fakeEngine) List(context.Context) ([]engine.Status, error) {

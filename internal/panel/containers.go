@@ -32,6 +32,8 @@ type Core interface {
 	Remove(ctx context.Context, id string) error
 	Logs(ctx context.Context, id string, follow bool, tail int64, w io.Writer) error
 	RemoveImage(ctx context.Context, name string) error
+	SweepImages(ctx context.Context, keep []string) ([]string, error)
+	RemoveBuildCache(ctx context.Context, app string) error
 	Usage(ctx context.Context, id string) (engine.Usage, error)
 	Host(ctx context.Context) (engine.Host, error)
 	CreateVolume(ctx context.Context, name string) error

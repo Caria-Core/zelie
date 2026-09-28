@@ -157,6 +157,19 @@ func (c *Client) RemoveImage(ctx context.Context, name string) error {
 	return c.do(ctx, http.MethodDelete, "/v1/images?"+url.Values{"name": {name}}.Encode(), nil, nil)
 }
 
+// SweepImages tells the core which images are still needed. It deletes
+// those that have not been for a week and returns their names.
+func (c *Client) SweepImages(ctx context.Context, keep []string) ([]string, error) {
+	var res sweepResponse
+	err := c.do(ctx, http.MethodPost, "/v1/images/sweep", sweepRequest{Keep: keep}, &res)
+	return res.Removed, err
+}
+
+// RemoveBuildCache deletes what builds of an app keep between them.
+func (c *Client) RemoveBuildCache(ctx context.Context, app string) error {
+	return c.do(ctx, http.MethodDelete, "/v1/builds/"+url.PathEscape(app)+"/cache", nil, nil)
+}
+
 // readError turns an error response into an *Error.
 func readError(resp *http.Response) error {
 	var e errorJSON

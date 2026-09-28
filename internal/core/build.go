@@ -17,6 +17,7 @@ import (
 // Builder is what the core needs to build images.
 type Builder interface {
 	Build(ctx context.Context, req build.Request, out io.Writer) (build.Result, error)
+	RemoveCache(app string) error
 }
 
 // A build answers with its output as it happens. The result only exists at
@@ -188,4 +189,18 @@ func (c *Client) Build(ctx context.Context, app, version string, env, sealedEnv 
 		return res, errors.New("the build ended without a result")
 	}
 	return res, nil
+}
+
+func (s *Server) removeBuildCache(w http.ResponseWriter, r *http.Request) {
+	app := r.PathValue("app")
+	if s.Builder == nil {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if err := s.Builder.RemoveCache(app); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	s.Log.Info("build cache removed", "app", app)
+	w.WriteHeader(http.StatusNoContent)
 }

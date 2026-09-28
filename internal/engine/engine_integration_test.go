@@ -423,8 +423,50 @@ func TestBuilderBuildsAnImage(t *testing.T) {
 		e.Remove(ctx, "it-built-2")
 		t.Error("a container was made from a removed image")
 	}
-	if err := e.RemoveImage(ctx, "docker.io/library/busybox:latest"); err == nil {
-		t.Error("removed a pulled image")
+}
+
+// An image is marked unused and then deleted, the way the core's sweep does.
+func TestUnusedImages(t *testing.T) {
+	e := connect(t)
+	ctx := context.Background()
+	const ref = "hello-world:latest"
+	name, _ := ImageName(ref)
+	run(t, e, Spec{ID: "it-hello", Image: ref, MemoryBytes: 32 << 20, CPUs: 0.5, Pids: 16})
+	e.Remove(ctx, "it-hello")
+
+	find := func() (Image, bool) {
+		list, err := e.Images(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, img := range list {
+			if img.Name == name {
+				return img, true
+			}
+		}
+		return Image{}, false
+	}
+	if img, ok := find(); !ok || !img.UnusedSince.IsZero() {
+		t.Fatalf("pulled image: %+v, %v", img, ok)
+	}
+	since := time.Now().Add(-8 * 24 * time.Hour).Truncate(time.Second)
+	if err := e.SetUnused(ctx, name, since); err != nil {
+		t.Fatal(err)
+	}
+	if img, _ := find(); !img.UnusedSince.Equal(since) {
+		t.Errorf("unused since %v, want %v", img.UnusedSince, since)
+	}
+	if err := e.SetUnused(ctx, name, time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	if img, _ := find(); !img.UnusedSince.IsZero() {
+		t.Errorf("mark not cleared: %v", img.UnusedSince)
+	}
+	if err := e.RemoveImage(ctx, name); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := find(); ok {
+		t.Error("the image is still there")
 	}
 }
 

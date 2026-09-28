@@ -319,6 +319,24 @@ func (s *Store) HasNewer(ctx context.Context, d Deployment) (bool, error) {
 	return n > 0, err
 }
 
+// Images lists every image an app or a kept deployment refers to.
+func (s *Store) Images(ctx context.Context) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, "SELECT image FROM apps WHERE image != '' UNION SELECT image FROM deployments WHERE image != '' AND NOT pruned")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var img string
+		if err := rows.Scan(&img); err != nil {
+			return nil, err
+		}
+		out = append(out, img)
+	}
+	return out, rows.Err()
+}
+
 // Unpruned lists the app's deployments that still have an image, newest
 // first.
 func (s *Store) Unpruned(ctx context.Context, appID string) ([]Deployment, error) {

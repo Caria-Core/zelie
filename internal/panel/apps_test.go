@@ -37,6 +37,8 @@ type appCore struct {
 	env        map[string][]string
 	builds     []string
 	removed    []string // images
+	keep       []string // what the last sweep was told
+	caches     []string // apps whose build cache went
 	suggest    string   // the test command builds find
 	buildEnv   []string // the variables the last build got, opened
 	args       map[string][]string
@@ -208,6 +210,20 @@ func (c *appCore) RemoveImage(_ context.Context, name string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.removed = append(c.removed, name)
+	return nil
+}
+
+func (c *appCore) SweepImages(_ context.Context, keep []string) ([]string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.keep = keep
+	return nil, nil
+}
+
+func (c *appCore) RemoveBuildCache(_ context.Context, app string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.caches = append(c.caches, app)
 	return nil
 }
 

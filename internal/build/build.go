@@ -362,6 +362,15 @@ func (b *Builder) cacheDir(name string) string {
 	return filepath.Join(b.Dir, "cache", name)
 }
 
+// RemoveCache deletes the tools Railpack downloaded for an app. What the
+// app left in the shared cache ages out with the rest.
+func (b *Builder) RemoveCache(app string) error {
+	if !engine.ValidID(app) {
+		return fmt.Errorf("invalid app id %q", app)
+	}
+	return os.RemoveAll(filepath.Join(b.cacheDir("apps"), app))
+}
+
 // appCache is where Railpack keeps the tools it downloads for one app.
 func (b *Builder) appCache(app string) string {
 	return b.cacheDir(filepath.Join("apps", app, "railpack"))

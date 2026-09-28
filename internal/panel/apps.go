@@ -850,6 +850,7 @@ func (s *Server) deleteApp(w http.ResponseWriter, r *http.Request) {
 		s.coreFailed(w, "remove links", err)
 		return
 	}
+	s.removeAppImages(ctx, a.ID)
 	err = s.Store.DeleteApp(ctx, a.ID)
 	if errors.Is(err, store.ErrNotFound) {
 		// Another request deleted it meanwhile, as when a browser sends a
