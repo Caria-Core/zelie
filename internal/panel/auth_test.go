@@ -40,7 +40,9 @@ func (b *browser) do(method, path string, body any) (int, map[string]any) {
 func (b *browser) record(method, path string, body any) *httptest.ResponseRecorder {
 	b.t.Helper()
 	var buf bytes.Buffer
-	if body != nil {
+	if raw, ok := body.([]byte); ok {
+		buf.Write(raw) // sent as it is, not as JSON
+	} else if body != nil {
 		json.NewEncoder(&buf).Encode(body)
 	}
 	req := httptest.NewRequest(method, "https://panel.example.com"+path, &buf)

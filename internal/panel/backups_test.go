@@ -26,6 +26,7 @@ type coreBackups struct {
 	// app's containers ran.
 	live       []bool
 	runningFor []int
+	uploads    map[string]*coreUpload // dumps being uploaded, by id
 }
 
 // running counts the app's running containers.

@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"strings"
 	"time"
@@ -18,6 +19,8 @@ const (
 	BackupRestore = "restore"
 	// BackupFound was made elsewhere and found in off-site storage.
 	BackupFound = "found"
+	// BackupUploaded is a dump from another server that someone uploaded.
+	BackupUploaded = "uploaded"
 )
 
 // Backup states.
@@ -131,6 +134,8 @@ type Backup struct {
 	Volumes []string
 	Size    int64
 	Changed int
+	// For an uploaded dump: what was changed so it loads here, by kind.
+	Adapted map[string]int
 
 	CreatedAt  time.Time
 	FinishedAt time.Time // zero while running
@@ -150,15 +155,15 @@ type Backup struct {
 }
 
 const backupColumns = `id, app_id, engine, reason, state, file, bytes, error, error_msg, created_at, finished_at, keep_until, restored_at, volumes, size, changed,
-	offsite, offsite_error, offsite_error_msg, offsite_tries, offsite_at, offsite_until, local`
+	offsite, offsite_error, offsite_error_msg, offsite_tries, offsite_at, offsite_until, local, adapted`
 
 func scanBackup(row scanner) (Backup, error) {
 	var b Backup
 	var created, keep, offsiteAt, offsiteUntil int64
 	var finished, restored sql.NullInt64
-	var volumes, text, js, otext, ojs string
+	var volumes, text, js, otext, ojs, adapted string
 	err := row.Scan(&b.ID, &b.AppID, &b.Engine, &b.Reason, &b.State, &b.File, &b.Bytes, &text, &js, &created, &finished, &keep, &restored,
-		&volumes, &b.Size, &b.Changed, &b.Offsite, &otext, &ojs, &b.OffsiteTries, &offsiteAt, &offsiteUntil, &b.Local)
+		&volumes, &b.Size, &b.Changed, &b.Offsite, &otext, &ojs, &b.OffsiteTries, &offsiteAt, &offsiteUntil, &b.Local, &adapted)
 	b.Error = readMsg(text, js)
 	b.OffsiteError = readMsg(otext, ojs)
 	b.OffsiteAt, b.OffsiteUntil = timeOrZero(offsiteAt), timeOrZero(offsiteUntil)
@@ -167,6 +172,9 @@ func scanBackup(row scanner) (Backup, error) {
 	}
 	if volumes != "" {
 		b.Volumes = strings.Split(volumes, "\n")
+	}
+	if adapted != "" {
+		json.Unmarshal([]byte(adapted), &b.Adapted)
 	}
 	b.CreatedAt, b.KeepUntil = time.Unix(created, 0), time.Unix(keep, 0)
 	if finished.Valid {
@@ -211,6 +219,17 @@ func (s *Store) FinishBackup(ctx context.Context, id int64, file string, bytes i
 func (s *Store) SetBackupContents(ctx context.Context, id int64, volumes []string, size int64, changed int) error {
 	res, err := s.db.ExecContext(ctx, "UPDATE backups SET volumes = ?, size = ?, changed = ? WHERE id = ?",
 		strings.Join(volumes, "\n"), size, changed, id)
+	return oneRow(res, err)
+}
+
+// SetAdapted records what an uploaded dump needed changed to load here.
+func (s *Store) SetAdapted(ctx context.Context, id int64, adapted map[string]int) error {
+	js := ""
+	if len(adapted) > 0 {
+		b, _ := json.Marshal(adapted)
+		js = string(b)
+	}
+	res, err := s.db.ExecContext(ctx, "UPDATE backups SET adapted = ? WHERE id = ?", js, id)
 	return oneRow(res, err)
 }
 

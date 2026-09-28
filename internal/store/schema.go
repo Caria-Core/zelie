@@ -243,5 +243,9 @@ ALTER TABLE backups ADD COLUMN offsite_tries INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE backups ADD COLUMN offsite_at INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE backups ADD COLUMN offsite_until INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE backups ADD COLUMN local INTEGER NOT NULL DEFAULT 1;
+`, `
+-- For a dump someone uploaded: the statements taken out or changed so it
+-- loads here, as JSON counts by kind.
+ALTER TABLE backups ADD COLUMN adapted TEXT NOT NULL DEFAULT '';
 `,
 }

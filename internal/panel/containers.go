@@ -51,6 +51,11 @@ type Core interface {
 	AddOldKey(ctx context.Context, recovery string) ([]string, error)
 	RemoveOffsiteBackup(ctx context.Context, app, name string) error
 	FetchBackup(ctx context.Context, app, name string) error
+	StartUpload(ctx context.Context, app string, size int64) (core.Upload, error)
+	Upload(ctx context.Context, id string) (core.Upload, error)
+	AppendUpload(ctx context.Context, id string, offset int64, piece io.Reader) (core.Upload, error)
+	RemoveUpload(ctx context.Context, id string) error
+	ImportUpload(ctx context.Context, id, kind string) (core.Backup, error)
 }
 
 // Limits an app gets when the request does not say otherwise.

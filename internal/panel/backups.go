@@ -275,6 +275,8 @@ type backupJSON struct {
 	Volumes    []string   `json:"volumes,omitempty"`
 	Size       int64      `json:"size,omitempty"`
 	Changed    int        `json:"changed,omitempty"`
+	// Adapted counts what an uploaded dump needed changed to load here.
+	Adapted map[string]int `json:"adapted,omitempty"`
 	// Offsite is where its off-site copy is: pending, sending, done or
 	// failed, or empty for none. Local is false when only that copy is
 	// left.
@@ -287,7 +289,7 @@ type backupJSON struct {
 
 func (s *Server) backupOut(b store.Backup) backupJSON {
 	out := backupJSON{ID: b.ID, App: b.AppID, Engine: b.Engine, Reason: b.Reason, State: b.State, Bytes: b.Bytes, Error: b.Error,
-		CreatedAt: b.CreatedAt, KeepUntil: b.KeepUntil, Volumes: b.Volumes, Size: b.Size, Changed: b.Changed,
+		CreatedAt: b.CreatedAt, KeepUntil: b.KeepUntil, Volumes: b.Volumes, Size: b.Size, Changed: b.Changed, Adapted: b.Adapted,
 		Offsite: b.Offsite, Local: b.Local}
 	switch {
 	case b.Offsite == store.OffsiteFailed:

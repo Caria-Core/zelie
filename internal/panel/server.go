@@ -69,6 +69,7 @@ type Server struct {
 	uploadKick chan struct{}
 	pauses     pauses
 	restores   restores
+	dumps      dumpUploads
 	// jobs are backups and restores running in the background.
 	jobs sync.WaitGroup
 	ctx  context.Context // lives as long as the server
@@ -145,6 +146,10 @@ func (s *Server) Handler() http.Handler {
 	web.HandleFunc("GET /api/apps/{app}/backups", s.signedIn(s.listBackups))
 	web.HandleFunc("POST /api/apps/{app}/backups", s.signedIn(s.backUpNow))
 	web.HandleFunc("PUT /api/apps/{app}/backups/plan", s.signedIn(s.setBackupPlan))
+	web.HandleFunc("POST /api/apps/{app}/uploads", s.confirmed(s.startDumpUpload))
+	web.HandleFunc("PUT /api/apps/{app}/uploads/{id}", s.signedIn(s.appendDumpUpload))
+	web.HandleFunc("DELETE /api/apps/{app}/uploads/{id}", s.signedIn(s.cancelDumpUpload))
+	web.HandleFunc("POST /api/apps/{app}/uploads/{id}/finish", s.signedIn(s.finishDumpUpload))
 	web.HandleFunc("GET /api/backups/deleted", s.signedIn(s.listDeletedBackups))
 	web.HandleFunc("GET /api/backups/{id}/download", s.signedIn(s.downloadBackup))
 	web.HandleFunc("POST /api/backups/{id}/restore", s.confirmed(s.restoreBackup))
