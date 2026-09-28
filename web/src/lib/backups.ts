@@ -22,9 +22,35 @@ export type Backup = {
 	volumes?: string[];
 	size?: number;
 	changed?: number;
+	// The off-site copy, if it has one. offsite_at is when it was sent,
+	// or, after a failure, when it is tried again. local is false once
+	// only the off-site copy is left.
+	offsite?: 'pending' | 'sending' | 'done' | 'failed';
+	offsite_error?: Msg;
+	offsite_at?: string;
+	offsite_until?: string;
+	local: boolean;
 };
 
-export type Plan = { enabled: boolean; minute: number; keep_days: number; stop: boolean };
+export type Plan = {
+	enabled: boolean;
+	minute: number;
+	keep_days: number;
+	stop: boolean;
+	offsite: boolean;
+	offsite_days: number;
+};
+
+// Where backups are copied off the server. The secret key never comes
+// back from the server.
+export type Offsite = {
+	set: boolean;
+	endpoint?: string;
+	region?: string;
+	bucket?: string;
+	prefix?: string;
+	access_key?: string;
+};
 
 export type Restore = {
 	backup: number;
@@ -43,6 +69,8 @@ export type Backups = {
 	// Where an app that is not a database sees its volumes now.
 	volumes: string[];
 	running: boolean;
+	// There is off-site storage to send backups to.
+	offsite_set: boolean;
 	recovery_saved_at: string | null;
 	time_zone: string;
 	restore?: Restore;

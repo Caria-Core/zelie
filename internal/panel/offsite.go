@@ -240,13 +240,22 @@ func (s *Server) sendNow(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusAccepted)
 }
 
+// getOffsite describes the destination, and whether the recovery file
+// that opens what is there was saved.
 func (s *Server) getOffsite(w http.ResponseWriter, r *http.Request) {
 	info, err := s.Core.Offsite(r.Context())
 	if err != nil {
 		s.coreFailed(w, "off-site storage", err)
 		return
 	}
-	writeJSON(w, http.StatusOK, info)
+	out := struct {
+		core.OffsiteInfo
+		RecoverySavedAt *time.Time `json:"recovery_saved_at"`
+	}{OffsiteInfo: info}
+	if at, err := s.Store.RecoverySavedAt(r.Context()); err == nil && !at.IsZero() {
+		out.RecoverySavedAt = &at
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // setOffsite hands a destination to the core, which checks it and keeps

@@ -123,6 +123,9 @@ func TestOffsiteCopies(t *testing.T) {
 	if code != http.StatusOK || out["prefix"] != "zelie/"+hostFolder() {
 		t.Fatalf("set: %d %v", code, out)
 	}
+	if _, out := e.b.do("GET", "/api/offsite", nil); out["set"] != true || out["bucket"] != "b" || out["recovery_saved_at"] != nil {
+		t.Errorf("get: %v", out)
+	}
 	if _, out := e.b.do("GET", "/api/apps/pg/backups", nil); out["offsite_set"] != true || out["plan"].(map[string]any)["offsite_days"] != 30.0 {
 		t.Errorf("list: %v", out)
 	}

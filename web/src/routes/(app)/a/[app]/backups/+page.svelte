@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
-	import { Archive, CircleAlert, Download, HardDrive, KeyRound, LoaderCircle, RotateCcw, Trash, TriangleAlert } from '@lucide/svelte';
+	import { Archive, CircleAlert, Cloud, CloudOff, Download, HardDrive, KeyRound, LoaderCircle, RotateCcw, Trash, TriangleAlert } from '@lucide/svelte';
 	import { api } from '$lib/api';
 	import type { Link } from '$lib/apps.svelte';
 	import { bytes, clock, saveRecovery, type Backup, type Backups, type Plan } from '$lib/backups';
@@ -17,7 +17,7 @@
 	let links = $state<Link[]>([]);
 	let error = $state('');
 	let busy = $state(false);
-	let plan = $state<Plan>({ enabled: true, minute: 180, keep_days: 7, stop: false });
+	let plan = $state<Plan>({ enabled: true, minute: 180, keep_days: 7, stop: false, offsite: true, offsite_days: 30 });
 	let planSaved = $state(true);
 
 	async function refresh(id: string) {
@@ -41,10 +41,11 @@
 		api<Link[]>('GET', `/apps/${id}/links`).then((l) => (links = l), () => (links = []));
 	});
 
-	// Quicker while a backup or restore runs, so the list shows it end.
+	// Quicker while a backup, restore or copy runs, so the list shows it end.
+	const moving = $derived(!!data?.running || !!data?.backups.some((b) => b.offsite === 'pending' || b.offsite === 'sending'));
 	$effect(() => {
 		const id = app.id;
-		const timer = setInterval(() => document.visibilityState === 'visible' && refresh(id), data?.running ? 3000 : 30000);
+		const timer = setInterval(() => document.visibilityState === 'visible' && refresh(id), moving ? 3000 : 30000);
 		return () => clearInterval(timer);
 	});
 
@@ -78,6 +79,13 @@
 	};
 
 	const recovery = () => act(saveRecovery);
+	const sendNow = (b: Backup) => act(() => api('POST', `/backups/${b.id}/offsite`));
+	// Off-site copies are kept at least as long as the ones here.
+	const offsiteDays = $derived([30, 60, 90, 180, 365, 730].filter((d) => d >= plan.keep_days));
+	function keepChanged() {
+		planSaved = false;
+		if (plan.offsite_days < plan.keep_days) plan.offsite_days = offsiteDays[0] ?? plan.keep_days;
+	}
 
 	// The restore dialog says what will happen before anything does.
 	let dialog = $state<HTMLDialogElement>();
@@ -98,6 +106,11 @@
 	const days = (n: number) => t('backups.days', { n });
 	const time = (iso: string) => new Date(iso).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
 	const when = (b: Backup) => `${date(b.created_at)} ${time(b.created_at)}`;
+	function kept(b: Backup): string {
+		if (!b.local) return t('backups.keptThere', { when: date(b.offsite_until!) });
+		if (b.offsite === 'done' && b.offsite_until) return t('backups.keptBoth', { here: date(b.keep_until), there: date(b.offsite_until) });
+		return t('backups.keptUntil', { when: date(b.keep_until) });
+	}
 	const reasons: Record<Backup['reason'], string> = {
 		scheduled: t('backups.reason.scheduled'),
 		manual: t('backups.reason.manual'),
@@ -229,6 +242,13 @@
 								<p class="flex flex-wrap items-center gap-x-2 gap-y-1">
 									<span class="text-[15px]">{when(b)}</span>
 									<span class="rounded-md bg-selected px-1.5 py-0.5 text-xs text-muted">{reasons[b.reason]}</span>
+									{#if b.offsite === 'done'}<span class="inline-flex items-center gap-1 rounded-md bg-ok/10 px-1.5 py-0.5 text-xs text-ok"
+											><Cloud size={12} />{t(b.local ? 'backups.offsite.done' : 'backups.offsite.only')}</span
+										>{:else if b.offsite === 'sending'}<span class="inline-flex items-center gap-1 rounded-md bg-selected px-1.5 py-0.5 text-xs text-muted"
+											><LoaderCircle size={12} class="animate-spin" />{t('backups.offsite.sending')}</span
+										>{:else if b.offsite === 'pending'}<span class="rounded-md bg-selected px-1.5 py-0.5 text-xs text-muted"
+											>{t('backups.offsite.pending')}</span
+										>{/if}
 									{#if b.restored_at}<span class="rounded-md bg-ok/10 px-1.5 py-0.5 text-xs text-ok"
 											>{t('backups.restoredTag', { when: ago(b.restored_at) })}</span
 										>{/if}
@@ -239,11 +259,24 @@
 									<p class="text-sm text-muted">{t('backups.running')}</p>
 								{:else}
 									<p class="text-sm break-words text-muted">
-										{bytes(b.bytes)}{#if b.volumes?.length}{' · '}<span class="font-mono text-[13px]">{dirs(b)}</span>{/if} · {t(
-											'backups.keptUntil',
-											{ when: date(b.keep_until) }
-										)}
+										{bytes(b.bytes)}{#if b.volumes?.length}{' · '}<span class="font-mono text-[13px]">{dirs(b)}</span>{/if} · {kept(b)}
 									</p>
+									{#if !b.local}
+										<p class="mt-1 text-sm text-muted">{t('backups.offsite.onlyHint')}</p>
+									{/if}
+									{#if b.offsite === 'failed'}
+										<p class="mt-1 flex items-start gap-1.5 text-sm break-words text-danger">
+											<CloudOff size={14} class="mt-[3px] shrink-0" /><span class="min-w-0"
+												>{t('backups.offsite.failed', { why: b.offsite_error ? say(b.offsite_error) : '' })}
+												<span class="block text-muted"
+													>{#if b.offsite_at}{t('backups.offsite.retry', { when: `${date(b.offsite_at)} ${time(b.offsite_at)}` })}{/if}
+													<button type="button" class="underline underline-offset-2 hover:text-fg" disabled={busy} onclick={() => sendNow(b)}
+														>{t('backups.offsite.sendNow')}</button
+													></span
+												></span
+											>
+										</p>
+									{/if}
 									{#if b.changed}
 										<p class="mt-1 flex items-start gap-1.5 text-sm text-warn">
 											<TriangleAlert size={14} class="mt-[3px] shrink-0" />{t('backups.changed', { n: b.changed })}
@@ -254,6 +287,16 @@
 						</div>
 						{#if b.state === 'done'}
 							<div class="flex shrink-0 items-center gap-1 pl-12 sm:pl-0">
+								{#if data.offsite_set && b.local && !b.offsite}
+									<Button
+										kind="quiet"
+										class="!size-8 !px-0"
+										disabled={busy}
+										title={t('backups.offsite.send')}
+										aria-label={t('backups.offsite.send')}
+										onclick={() => sendNow(b)}><Cloud size={16} /></Button
+									>
+								{/if}
 								<Button kind="secondary" class="!h-8 !px-3 text-sm" disabled={busy || (!files && !running)} onclick={() => askRestore(b)}
 									><RotateCcw size={14} strokeWidth={1.75} />{t('backups.restore')}</Button
 								>
@@ -295,7 +338,7 @@
 				</label>
 				<label class="flex flex-col gap-1.5 text-sm font-medium">
 					{t('backups.keep')}
-					<select class={input} bind:value={plan.keep_days} onchange={() => (planSaved = false)}>
+					<select class={input} bind:value={plan.keep_days} onchange={keepChanged}>
 						{#each [1, 3, 7, 14, 30, 60, 90, 365] as d (d)}<option value={d}>{days(d)}</option>{/each}
 						{#if ![1, 3, 7, 14, 30, 60, 90, 365].includes(plan.keep_days)}<option value={plan.keep_days}
 								>{days(plan.keep_days)}</option
@@ -303,6 +346,28 @@
 					</select>
 				</label>
 			</div>
+			{#if data.offsite_set}
+				<div class="flex flex-col gap-3">
+					<label class="flex items-start gap-2.5 text-[15px]">
+						<input type="checkbox" class="mt-1 size-4 accent-[var(--fg)]" bind:checked={plan.offsite} onchange={() => (planSaved = false)} />
+						<span>{t('backups.offsite.plan')}<span class="block text-sm text-muted">{t('backups.offsite.planHint')}</span></span>
+					</label>
+					{#if plan.offsite}
+						<label class="flex flex-col gap-1.5 self-start pl-6.5 text-sm font-medium">
+							{t('backups.offsite.keep')}
+							<select class={input} bind:value={plan.offsite_days} onchange={() => (planSaved = false)}>
+								{#each offsiteDays as d (d)}<option value={d}>{days(d)}</option>{/each}
+								{#if !offsiteDays.includes(plan.offsite_days)}<option value={plan.offsite_days}>{days(plan.offsite_days)}</option>{/if}
+							</select>
+						</label>
+					{/if}
+				</div>
+			{:else}
+				<p class="flex flex-wrap items-center gap-x-2 text-sm text-muted">
+					<CloudOff size={14} class="shrink-0" />{t('backups.offsite.none')}
+					<a href="/backups" class="underline underline-offset-2 hover:text-fg">{t('backups.offsite.setUp')}</a>
+				</p>
+			{/if}
 			{#if files}
 				<label class="flex items-start gap-2.5 text-[15px]">
 					<input type="checkbox" class="mt-1 size-4 accent-[var(--fg)]" bind:checked={plan.stop} onchange={() => (planSaved = false)} />
