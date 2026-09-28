@@ -141,3 +141,59 @@ func TestWrongKeyFails(t *testing.T) {
 		t.Error("opened with another key")
 	}
 }
+
+// A backup brought back from off-site storage opens like one made here,
+// and a damaged one is refused when it is opened.
+func TestImport(t *testing.T) {
+	d := newDir(t)
+	w, _ := d.Create("db", "sql")
+	w.Write([]byte("select 1;"))
+	info, err := w.Commit()
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile(filepath.Join(d.Root, "db", info.Name))
+
+	other := &Dir{Root: t.TempDir(), Key: d.Key}
+	if err := other.Import("db", info.Name, bytes.NewReader(raw)); err != nil {
+		t.Fatal(err)
+	}
+	r, err := other.Open("db", info.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := io.ReadAll(r)
+	r.Close()
+	if string(got) != "select 1;" {
+		t.Errorf("read back %q", got)
+	}
+	// Already there: kept as it is.
+	if err := other.Import("db", info.Name, strings.NewReader("junk")); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(other.Root, "db", info.Name)); !bytes.Equal(b, raw) {
+		t.Error("an import replaced a backup")
+	}
+
+	damaged := append([]byte(nil), raw...)
+	damaged[len(damaged)-5] ^= 1
+	name := strings.Replace(info.Name, info.Name[:15], "20260101T000000", 1)
+	if err := other.Import("db", name, bytes.NewReader(damaged)); err != nil {
+		t.Fatal(err)
+	}
+	if r, err := other.Open("db", name); err == nil {
+		_, err = io.ReadAll(r)
+		r.Close()
+		if err == nil {
+			t.Error("a damaged backup opened")
+		}
+	}
+	for _, bad := range []string{"../x", "x.sql.zst.age", ""} {
+		if err := other.Import("db", bad, strings.NewReader("")); err == nil {
+			t.Errorf("imported as %q", bad)
+		}
+	}
+	if entries, _ := os.ReadDir(filepath.Join(other.Root, "db")); len(entries) != 2 {
+		t.Errorf("%d files, want 2", len(entries))
+	}
+}

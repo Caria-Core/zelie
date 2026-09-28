@@ -52,6 +52,12 @@ func runCore(stderr io.Writer) int {
 		return 1
 	}
 
+	offsite, err := core.LoadOffsite("/var/lib/zelie/offsite.json")
+	if err != nil {
+		log.Error("start core", "err", err)
+		return 1
+	}
+
 	// Without DNS, apps cannot find their links or anything else, so the
 	// core stops with it.
 	dnsErrs, err := e.StartDNS(ctx)
@@ -73,6 +79,7 @@ func runCore(stderr io.Writer) int {
 		Builder: build.New(e, engine.DefaultPaths, "/var/lib/zelie/build"),
 		Secrets: keys,
 		Backups: &backup.Dir{Root: "/var/lib/zelie/backups", Key: backupKey},
+		Offsite: offsite,
 	}
 	if err := s.Serve(ctx, core.DefaultSocket); err != nil {
 		log.Error("core stopped", "err", err)

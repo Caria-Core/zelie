@@ -75,6 +75,9 @@ func (k *Key) Recovery(host string, now time.Time) string {
 `, host, now.UTC().Format("2006-01-02"), k.id)
 }
 
+// Public is the key's public half. It encrypts, but opens nothing.
+func (k *Key) Public() string { return k.id.Recipient().String() }
+
 // encrypt returns a writer that compresses and encrypts into w. Close
 // finishes both; without it the result cannot be opened.
 func (k *Key) encrypt(w io.Writer) (io.WriteCloser, error) {
@@ -140,6 +143,9 @@ var (
 	validApp  = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
 	validName = regexp.MustCompile(`^[0-9]{8}T[0-9]{6}Z-[a-z0-9]+\.[a-z]+\.zst\.age$`)
 )
+
+// ValidApp reports whether app can name a folder of backups.
+func ValidApp(app string) bool { return validApp.MatchString(app) }
 
 // ValidName reports whether name is a backup file's name. Names come from
 // the panel and end up in paths, so nothing else is let through.
@@ -241,6 +247,42 @@ func (w *Writer) Commit() (Info, error) {
 	}
 	w.info.Bytes = st.Size()
 	return w.info, nil
+}
+
+// Import saves a backup file made elsewhere, as it is: still encrypted,
+// and checked only when it is opened. A backup already here is kept.
+func (d *Dir) Import(app, name string, r io.Reader) error {
+	if name == "" {
+		return fmt.Errorf("no backup named: %w", ErrInvalid)
+	}
+	final, err := d.path(app, name)
+	if err != nil {
+		return err
+	}
+	if _, err := os.Stat(final); err == nil {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(final), 0o700); err != nil {
+		return err
+	}
+	f, err := os.CreateTemp(filepath.Dir(final), ".partial-*")
+	if err != nil {
+		return err
+	}
+	_, err = io.Copy(f, r)
+	if err == nil {
+		err = f.Sync()
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Rename(f.Name(), final)
+	}
+	if err != nil {
+		os.Remove(f.Name())
+	}
+	return err
 }
 
 // Abort throws the file away.

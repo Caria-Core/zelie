@@ -60,6 +60,7 @@ type Server struct {
 	Builder Builder
 	Secrets *secret.Keys
 	Backups *backup.Dir
+	Offsite *Offsite
 	Paths   engine.Paths
 	Log     *slog.Logger
 	Allowed peer.Policy
@@ -93,6 +94,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /v1/backups/{app}/{name}", s.removeBackup)
 	mux.HandleFunc("POST /v1/backups/{app}/{name}/restore", s.restoreBackup)
 	mux.HandleFunc("GET /v1/backups-key", s.recoveryKey)
+	mux.HandleFunc("POST /v1/backups/{app}/{name}/offsite", s.uploadBackup)
+	mux.HandleFunc("GET /v1/offsite", s.getOffsite)
+	mux.HandleFunc("PUT /v1/offsite", s.setOffsite)
+	mux.HandleFunc("DELETE /v1/offsite", s.removeOffsite)
+	mux.HandleFunc("GET /v1/offsite/backups", s.listOffsite)
+	mux.HandleFunc("DELETE /v1/offsite/backups/{app}/{name}", s.removeOffsiteBackup)
+	mux.HandleFunc("POST /v1/offsite/backups/{app}/{name}/fetch", s.fetchBackup)
 	return peer.Require(s.Allowed, s.Log, mux)
 }
 
