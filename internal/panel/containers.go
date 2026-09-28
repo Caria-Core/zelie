@@ -46,7 +46,9 @@ type Core interface {
 	Offsite(ctx context.Context) (core.OffsiteInfo, error)
 	SetOffsite(ctx context.Context, cfg core.OffsiteConfig) (core.OffsiteInfo, error)
 	RemoveOffsite(ctx context.Context) error
-	UploadBackup(ctx context.Context, app, name string) error
+	UploadBackup(ctx context.Context, app, name string, meta core.BackupMeta) error
+	OffsiteBackups(ctx context.Context) (core.OffsiteList, error)
+	AddOldKey(ctx context.Context, recovery string) ([]string, error)
 	RemoveOffsiteBackup(ctx context.Context, app, name string) error
 	FetchBackup(ctx context.Context, app, name string) error
 }

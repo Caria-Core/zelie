@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -20,6 +21,8 @@ type coreOffsite struct {
 	remote     map[string]bool
 	failUpload int // how many uploads fail before one works
 	fetched    []string
+	meta       map[string]core.BackupMeta
+	opens      bool // the keys here open what is there
 }
 
 func (c *appCore) Offsite(context.Context) (core.OffsiteInfo, error) {
@@ -46,7 +49,7 @@ func (c *appCore) RemoveOffsite(context.Context) error {
 	return nil
 }
 
-func (c *appCore) UploadBackup(_ context.Context, app, name string) error {
+func (c *appCore) UploadBackup(_ context.Context, app, name string, meta core.BackupMeta) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if !c.off.info.Set {
@@ -64,7 +67,39 @@ func (c *appCore) UploadBackup(_ context.Context, app, name string) error {
 		c.off.remote = map[string]bool{}
 	}
 	c.off.remote[app+"/"+name] = true
+	if c.off.meta == nil {
+		c.off.meta = map[string]core.BackupMeta{}
+	}
+	c.off.meta[app+"/"+name] = meta
 	return nil
+}
+
+func (c *appCore) OffsiteBackups(context.Context) (core.OffsiteList, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := core.OffsiteList{Key: "age1other", Opens: c.off.opens}
+	for key := range c.off.remote {
+		app, name, _ := strings.Cut(key, "/")
+		b := core.OffsiteBackup{App: app, Name: name, Bytes: 1000, Created: time.Unix(1_800_000_000, 0)}
+		if m, ok := c.off.meta[key]; ok && c.off.opens {
+			b.Meta = &m
+		} else {
+			b.Locked = true
+		}
+		out.Backups = append(out.Backups, b)
+	}
+	slices.SortFunc(out.Backups, func(a, b core.OffsiteBackup) int { return strings.Compare(a.App+a.Name, b.App+b.Name) })
+	return out, nil
+}
+
+func (c *appCore) AddOldKey(_ context.Context, recovery string) ([]string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !strings.Contains(recovery, "AGE-SECRET-KEY-1") {
+		return nil, &core.Error{Status: http.StatusBadRequest, Message: "This file has no backup key in it.", Code: "backup.no_key"}
+	}
+	c.off.opens = true
+	return []string{"age1other"}, nil
 }
 
 func (c *appCore) RemoveOffsiteBackup(_ context.Context, app, name string) error {
@@ -84,6 +119,9 @@ func (c *appCore) FetchBackup(_ context.Context, app, name string) error {
 		return &core.Error{Status: http.StatusNotFound, Message: "This backup is no longer in the off-site storage.", Code: "offsite.gone"}
 	}
 	c.off.fetched = append(c.off.fetched, app+"/"+name)
+	if c.bk.files == nil {
+		c.bk.files = map[string][]string{}
+	}
 	if !slices.Contains(c.bk.files[app], name) {
 		c.bk.files[app] = append(c.bk.files[app], name)
 	}
@@ -262,5 +300,63 @@ func TestOffsiteWait(t *testing.T) {
 		if got := offsiteWait(tries); got != want {
 			t.Errorf("offsiteWait(%d) = %v, want %v", tries, got, want)
 		}
+	}
+}
+
+// Backups another server left in the bucket: found, locked until its
+// recovery file is added, then listed with those of deleted apps and
+// restored into a new database of the same name.
+func TestFoundOffsite(t *testing.T) {
+	e := newAppEnv(t)
+	e.b.do("PUT", "/api/offsite", map[string]any{"endpoint": "https://s3.example.com", "bucket": "b", "access_key": "a", "secret_key": "s"})
+	e.core.off.remote = map[string]bool{"old-db/20260101T030000Z-aaaa.sql.zst.age": true, "files/20260101T030000Z-bbbb.tar.zst.age": true}
+	e.core.off.meta = map[string]core.BackupMeta{
+		"old-db/20260101T030000Z-aaaa.sql.zst.age": {Engine: "postgres"},
+		"files/20260101T030000Z-bbbb.tar.zst.age":  {Volumes: []string{"data"}, Size: 5000},
+	}
+
+	code, out := e.b.do("GET", "/api/offsite/found", nil)
+	if code != http.StatusOK || out["opens"] != false || len(out["backups"].([]any)) != 2 || out["backups"].([]any)[0].(map[string]any)["locked"] != true {
+		t.Fatalf("found, locked: %d %v", code, out)
+	}
+	if _, out := e.b.do("POST", "/api/offsite/found", nil); out["added"] != 0.0 {
+		t.Errorf("added locked backups: %v", out)
+	}
+	if code, out := e.b.do("POST", "/api/backups/keys", map[string]any{"recovery": "hello"}); code != http.StatusBadRequest || out["code"] != "backup.no_key" {
+		t.Errorf("not a key: %d %v", code, out)
+	}
+	if code, out := e.b.do("POST", "/api/backups/keys", map[string]any{"recovery": "# x\nAGE-SECRET-KEY-1ABC\n"}); code != http.StatusOK || out["added"] != 1.0 {
+		t.Fatalf("add key: %d %v", code, out)
+	}
+	_, out = e.b.do("GET", "/api/offsite/found", nil)
+	first := out["backups"].([]any)[1].(map[string]any)
+	if out["opens"] != true || first["app"] != "old-db" || first["engine"] != "postgres" || first["locked"] != nil {
+		t.Fatalf("found, open: %v", out)
+	}
+	if _, out := e.b.do("POST", "/api/offsite/found", nil); out["added"] != 2.0 {
+		t.Fatalf("add: %v", out)
+	}
+	if _, out := e.b.do("GET", "/api/offsite/found", nil); len(out["backups"].([]any)) != 0 {
+		t.Errorf("found again after adding: %v", out)
+	}
+
+	// Listed with the backups of deleted apps, off-site only.
+	_, list := e.b.do("GET", "/api/backups/deleted", nil)
+	raw, _ := e.s.Store.Backups(context.Background(), "")
+	if len(raw) != 2 || raw[0].Reason != store.BackupFound || raw[0].Local || raw[0].Offsite != store.OffsiteDone || raw[0].AppID != "files" ||
+		raw[0].Size != 5000 || len(raw[0].Volumes) != 1 {
+		t.Fatalf("deleted list: %v %+v", list, raw)
+	}
+
+	// A database named like it takes the backup, brought over first.
+	e.b.do("POST", "/api/databases", map[string]any{"id": "old-db", "engine": "postgres"})
+	e.settle(t, "old-db")
+	backups, _ := e.backups(t, "old-db")
+	if len(backups) != 1 || backups[0]["reason"] != "found" {
+		t.Fatalf("on the new database: %v", backups)
+	}
+	res := e.restore(t, "old-db", int64(backups[0]["id"].(float64)))
+	if res["state"] != "done" || !slices.Contains(e.core.off.fetched, "old-db/20260101T030000Z-aaaa.sql.zst.age") {
+		t.Errorf("restore: %v, fetched %v", res, e.core.off.fetched)
 	}
 }

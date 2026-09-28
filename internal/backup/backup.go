@@ -7,6 +7,7 @@ package backup
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -15,21 +16,47 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"filippo.io/age"
 	"github.com/klauspost/compress/zstd"
 )
 
-// Key encrypts and opens backups.
+// Key encrypts and opens backups. Keys added from other recovery files,
+// kept next to it with .old added to its name, only open them: backups
+// brought over from another server, or made before the key changed.
 type Key struct {
-	id *age.X25519Identity
+	id      *age.X25519Identity
+	oldPath string
+	mu      sync.Mutex
+	old     []*age.X25519Identity
 }
 
 // LoadOrCreateKey reads the key at path, creating it the first time.
 func LoadOrCreateKey(path string) (*Key, error) {
+	k, err := loadOrCreateKey(path)
+	if err != nil {
+		return nil, err
+	}
+	k.oldPath = path + ".old"
+	b, err := os.ReadFile(k.oldPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return k, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if k.old, err = parseKeys(string(b)); err != nil {
+		return nil, fmt.Errorf("%s: %w", k.oldPath, err)
+	}
+	return k, nil
+}
+
+func loadOrCreateKey(path string) (*Key, error) {
 	b, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		id, err := age.GenerateX25519Identity()
@@ -67,16 +94,151 @@ func LoadOrCreateKey(path string) (*Key, error) {
 // tool reads it as an identity file; the lines starting with # are for the
 // person who finds it later.
 func (k *Key) Recovery(host string, now time.Time) string {
-	return fmt.Sprintf(`# Zelie backup recovery key for %s, saved %s.
+	s := fmt.Sprintf(`# Zelie backup recovery key for %s, saved %s.
 # It opens every backup this server makes. Keep it somewhere safe and
 # off the server. To open a backup without Zelie:
 #   age -d -i zelie-recovery.txt BACKUP.zst.age | zstd -d > BACKUP
 %s
 `, host, now.UTC().Format("2006-01-02"), k.id)
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if len(k.old) > 0 {
+		s += "# Keys added from other recovery files, for backups made elsewhere:\n"
+		for _, id := range k.old {
+			s += id.String() + "\n"
+		}
+	}
+	return s
 }
 
 // Public is the key's public half. It encrypts, but opens nothing.
 func (k *Key) Public() string { return k.id.Recipient().String() }
+
+// ErrNoKey is returned for a recovery file with no key in it.
+var ErrNoKey = errors.New("no backup key found")
+
+// parseKeys reads the keys of a recovery file. Comments and blank lines
+// are skipped; anything else must be a key.
+func parseKeys(s string) ([]*age.X25519Identity, error) {
+	var out []*age.X25519Identity
+	for line := range strings.Lines(s) {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		id, err := age.ParseX25519Identity(line)
+		if err != nil {
+			return nil, ErrNoKey
+		}
+		out = append(out, id)
+	}
+	return out, nil
+}
+
+// AddOld keeps the keys of another recovery file, to open what they
+// encrypted. It returns the public halves of the keys that were new.
+func (k *Key) AddOld(recovery string) ([]string, error) {
+	ids, err := parseKeys(recovery)
+	if err != nil {
+		return nil, err
+	}
+	if len(ids) == 0 {
+		return nil, ErrNoKey
+	}
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	var added []string
+	all := k.old
+	for _, id := range ids {
+		pub := id.Recipient().String()
+		if pub == k.Public() || slices.ContainsFunc(all, func(o *age.X25519Identity) bool { return o.Recipient().String() == pub }) {
+			continue
+		}
+		all = append(all, id)
+		added = append(added, pub)
+	}
+	if len(added) == 0 {
+		return nil, nil
+	}
+	var b strings.Builder
+	for _, id := range all {
+		b.WriteString(id.String() + "\n")
+	}
+	if err := writeAtomic(k.oldPath, []byte(b.String())); err != nil {
+		return nil, err
+	}
+	k.old = all
+	return added, nil
+}
+
+// Opens reports whether this key, or one added to it, opens what was
+// encrypted for public.
+func (k *Key) Opens(public string) bool {
+	if public == k.Public() {
+		return true
+	}
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	return slices.ContainsFunc(k.old, func(o *age.X25519Identity) bool { return o.Recipient().String() == public })
+}
+
+func (k *Key) identities() []age.Identity {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	ids := []age.Identity{k.id}
+	for _, o := range k.old {
+		ids = append(ids, o)
+	}
+	return ids
+}
+
+// Seal encrypts a small piece of data, such as what a backup holds.
+func (k *Key) Seal(b []byte) ([]byte, error) {
+	var buf bytes.Buffer
+	w, err := k.encrypt(&buf)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := w.Write(b); err != nil {
+		return nil, err
+	}
+	if err := w.Close(); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+// Unseal opens what Seal made, up to max bytes of it.
+func (k *Key) Unseal(b []byte, max int64) ([]byte, error) {
+	r, err := k.decrypt(bytes.NewReader(b))
+	if err != nil {
+		return nil, err
+	}
+	defer r.Close()
+	return io.ReadAll(io.LimitReader(r, max))
+}
+
+// writeAtomic replaces path with b, readable by its owner alone.
+func writeAtomic(path string, b []byte) error {
+	f, err := os.CreateTemp(filepath.Dir(path), ".partial-*")
+	if err != nil {
+		return err
+	}
+	_, err = f.Write(b)
+	if err == nil {
+		err = f.Sync()
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Rename(f.Name(), path)
+	}
+	if err != nil {
+		os.Remove(f.Name())
+	}
+	return err
+}
 
 // encrypt returns a writer that compresses and encrypts into w. Close
 // finishes both; without it the result cannot be opened.
@@ -94,7 +256,7 @@ func (k *Key) encrypt(w io.Writer) (io.WriteCloser, error) {
 
 // decrypt reads what encrypt wrote.
 func (k *Key) decrypt(r io.Reader) (io.ReadCloser, error) {
-	dec, err := age.Decrypt(r, k.id)
+	dec, err := age.Decrypt(r, k.identities()...)
 	if err != nil {
 		return nil, err
 	}

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Caria-Core/zelie/internal/backup"
 	"github.com/Caria-Core/zelie/internal/msg"
@@ -120,9 +121,12 @@ func TestOffsite(t *testing.T) {
 		t.Errorf("secret sent to a new endpoint: %s", code)
 	}
 
-	rec = request(t, s, root, "POST", "/v1/backups/db/"+info.Name+"/offsite", "")
+	rec = request(t, s, root, "POST", "/v1/backups/db/"+info.Name+"/offsite", `{"engine":"postgres"}`)
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("upload: %d %s", rec.Code, rec.Body)
+	}
+	if _, ok := fake.Objects["zelie/test/db/"+info.Name+".meta"]; !ok {
+		t.Error("no meta beside the backup")
 	}
 	local, _ := os.ReadFile(filepath.Join(s.Backups.Root, "db", info.Name))
 	if !bytes.Equal(fake.Objects["zelie/test/db/"+info.Name], local) {
@@ -132,11 +136,43 @@ func TestOffsite(t *testing.T) {
 	fake.Objects["zelie/test/db/notes.txt"] = []byte("x")
 	fake.Objects["zelie/test/Bad App/"+info.Name] = []byte("x")
 	fake.Objects["zelie/other/db/"+info.Name] = []byte("x")
-	rec = request(t, s, root, "GET", "/v1/offsite/backups", "")
-	var list []OffsiteBackup
-	json.Unmarshal(rec.Body.Bytes(), &list)
-	if len(list) != 1 || list[0].App != "db" || list[0].Name != info.Name || list[0].Bytes != int64(len(local)) || list[0].Created.IsZero() {
+	rec = request(t, s, root, "GET", "/v1/offsite/backups?meta=1", "")
+	var found OffsiteList
+	json.Unmarshal(rec.Body.Bytes(), &found)
+	list := found.Backups
+	if len(list) != 1 || list[0].App != "db" || list[0].Name != info.Name || list[0].Bytes != int64(len(local)) || list[0].Created.IsZero() ||
+		list[0].Meta == nil || list[0].Meta.Engine != "postgres" || !found.Opens || found.Key != s.Backups.Key.Public() {
 		t.Fatalf("list: %s", rec.Body)
+	}
+
+	// Another server with the same folder finds them, but cannot read them
+	// until it has this server's recovery file.
+	other, _, _ := backupServer(t)
+	other.Offsite = s.Offsite
+	rec = request(t, other, root, "GET", "/v1/offsite/backups?meta=1", "")
+	found = OffsiteList{}
+	json.Unmarshal(rec.Body.Bytes(), &found)
+	if found.Opens || found.Key != s.Backups.Key.Public() || len(found.Backups) != 1 || !found.Backups[0].Locked || found.Backups[0].Meta != nil {
+		t.Fatalf("other server: %s", rec.Body)
+	}
+	if rec := request(t, other, root, "POST", "/v1/backups-key/old", `{"recovery":"hello"}`); codeOf(t, rec.Body) != "backup.no_key" {
+		t.Errorf("not a key: %d %s", rec.Code, rec.Body)
+	}
+	b, _ := json.Marshal(map[string]string{"recovery": s.Backups.Key.Recovery("a", time.Now())})
+	if rec := request(t, other, root, "POST", "/v1/backups-key/old", string(b)); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), s.Backups.Key.Public()) {
+		t.Fatalf("add key: %d %s", rec.Code, rec.Body)
+	}
+	rec = request(t, other, root, "GET", "/v1/offsite/backups?meta=1", "")
+	found = OffsiteList{}
+	json.Unmarshal(rec.Body.Bytes(), &found)
+	if !found.Opens || found.Backups[0].Meta == nil || found.Backups[0].Meta.Engine != "postgres" {
+		t.Errorf("with the key: %s", rec.Body)
+	}
+	if rec := request(t, other, root, "POST", "/v1/offsite/backups/db/"+info.Name+"/fetch", ""); rec.Code != http.StatusNoContent {
+		t.Fatalf("other fetch: %d", rec.Code)
+	}
+	if rec := request(t, other, root, "POST", "/v1/backups/db/"+info.Name+"/restore", `{"kind":"postgres","container":"db-1"}`); rec.Code != http.StatusNoContent {
+		t.Errorf("restore on the other server: %d %s", rec.Code, rec.Body)
 	}
 
 	// Lost here, brought back from the bucket, and restored.
@@ -153,6 +189,9 @@ func TestOffsite(t *testing.T) {
 	rec = request(t, s, root, "DELETE", "/v1/offsite/backups/db/"+info.Name, "")
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("remove: %d", rec.Code)
+	}
+	if _, ok := fake.Objects["zelie/test/db/"+info.Name+".meta"]; ok {
+		t.Error("meta left behind")
 	}
 	rec = request(t, s, root, "POST", "/v1/offsite/backups/db/"+strings.Replace(info.Name, info.Name[:8], "20200101", 1)+"/fetch", "")
 	if rec.Code != http.StatusNotFound || codeOf(t, rec.Body) != "offsite.gone" {

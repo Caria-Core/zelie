@@ -94,6 +94,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /v1/backups/{app}/{name}", s.removeBackup)
 	mux.HandleFunc("POST /v1/backups/{app}/{name}/restore", s.restoreBackup)
 	mux.HandleFunc("GET /v1/backups-key", s.recoveryKey)
+	mux.HandleFunc("POST /v1/backups-key/old", s.addOldKey)
 	mux.HandleFunc("POST /v1/backups/{app}/{name}/offsite", s.uploadBackup)
 	mux.HandleFunc("GET /v1/offsite", s.getOffsite)
 	mux.HandleFunc("PUT /v1/offsite", s.setOffsite)

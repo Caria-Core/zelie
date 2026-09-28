@@ -16,6 +16,8 @@ const (
 	BackupManual    = "manual"
 	// BackupRestore is the safety backup taken just before a restore.
 	BackupRestore = "restore"
+	// BackupFound was made elsewhere and found in off-site storage.
+	BackupFound = "found"
 )
 
 // Backup states.
@@ -282,6 +284,37 @@ func (s *Store) queryBackups(ctx context.Context, q string, args ...any) ([]Back
 			return nil, err
 		}
 		out = append(out, b)
+	}
+	return out, rows.Err()
+}
+
+// AddFoundBackup records a backup found in off-site storage, kept there
+// until offsite_until and not here.
+func (s *Store) AddFoundBackup(ctx context.Context, b Backup) (int64, error) {
+	res, err := s.db.ExecContext(ctx, `INSERT INTO backups (app_id, engine, reason, state, file, bytes, created_at, finished_at, keep_until,
+		volumes, size, offsite, offsite_at, offsite_until, local) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+		b.AppID, b.Engine, BackupFound, BackupDone, b.File, b.Bytes, b.CreatedAt.Unix(), b.CreatedAt.Unix(), b.CreatedAt.Unix(),
+		strings.Join(b.Volumes, "\n"), b.Size, OffsiteDone, b.OffsiteAt.Unix(), b.OffsiteUntil.Unix())
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
+// BackupFiles returns every backup file on record, as app/file.
+func (s *Store) BackupFiles(ctx context.Context) (map[string]bool, error) {
+	rows, err := s.db.QueryContext(ctx, "SELECT app_id, file FROM backups WHERE file != ''")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]bool{}
+	for rows.Next() {
+		var app, file string
+		if err := rows.Scan(&app, &file); err != nil {
+			return nil, err
+		}
+		out[app+"/"+file] = true
 	}
 	return out, rows.Err()
 }

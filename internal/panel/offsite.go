@@ -109,7 +109,7 @@ func (s *Server) uploadsOnce(ctx context.Context) {
 func (s *Server) upload(ctx context.Context, b store.Backup) {
 	key := strconv.FormatInt(b.ID, 10)
 	s.uploading.take(key)
-	err := s.Core.UploadBackup(ctx, b.AppID, b.File)
+	err := s.Core.UploadBackup(ctx, b.AppID, b.File, core.BackupMeta{Engine: b.Engine, Volumes: b.Volumes, Size: b.Size})
 	s.uploading.done(key)
 	if err == nil {
 		err = s.Store.OffsiteSent(ctx, b.ID, s.now())
@@ -311,4 +311,109 @@ func (s *Server) removeOffsiteStorage(w http.ResponseWriter, r *http.Request) {
 	}
 	s.Log.Info("off-site storage removed", "user", loginFrom(r.Context()).account.ID)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// foundJSON is what off-site storage holds that this panel has no record
+// of: backups from another server, or from before this panel was set up.
+type foundJSON struct {
+	// Opens is false when the backups were encrypted for a key this server
+	// does not have: the recovery file of the server that made them is
+	// needed.
+	Opens   bool        `json:"opens"`
+	Backups []foundItem `json:"backups"`
+}
+
+type foundItem struct {
+	App     string    `json:"app"`
+	Name    string    `json:"name"`
+	Bytes   int64     `json:"bytes"`
+	Created time.Time `json:"created"`
+	Engine  string    `json:"engine"`
+	Volumes []string  `json:"volumes,omitempty"`
+	Size    int64     `json:"size,omitempty"`
+	// Locked backups cannot be opened with the keys here.
+	Locked bool `json:"locked,omitempty"`
+}
+
+func (s *Server) found(ctx context.Context) (foundJSON, error) {
+	list, err := s.Core.OffsiteBackups(ctx)
+	if err != nil {
+		return foundJSON{}, err
+	}
+	known, err := s.Store.BackupFiles(ctx)
+	if err != nil {
+		return foundJSON{}, err
+	}
+	out := foundJSON{Opens: list.Opens || list.Key == "", Backups: []foundItem{}}
+	for _, b := range list.Backups {
+		if known[b.App+"/"+b.Name] {
+			continue
+		}
+		item := foundItem{App: b.App, Name: b.Name, Bytes: b.Bytes, Created: b.Created, Locked: b.Locked || b.Meta == nil}
+		if b.Meta != nil {
+			item.Engine, item.Volumes, item.Size = b.Meta.Engine, b.Meta.Volumes, b.Meta.Size
+		}
+		if item.Locked {
+			out.Opens = false
+		}
+		out.Backups = append(out.Backups, item)
+	}
+	return out, nil
+}
+
+// findOffsite lists the backups in off-site storage this panel does not
+// know about.
+func (s *Server) findOffsite(w http.ResponseWriter, r *http.Request) {
+	out, err := s.found(r.Context())
+	if err != nil {
+		s.coreFailed(w, "list off-site backups", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// addFound puts the backups found off-site on the list, next to those of
+// deleted apps: an app or database made with the same name can take them.
+// They stay off-site for as long as this server's own would.
+func (s *Server) addFound(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	found, err := s.found(ctx)
+	if err != nil {
+		s.coreFailed(w, "list off-site backups", err)
+		return
+	}
+	now := s.now()
+	added := 0
+	for _, f := range found.Backups {
+		if f.Locked {
+			continue
+		}
+		b := store.Backup{AppID: f.App, Engine: f.Engine, File: f.Name, Bytes: f.Bytes, CreatedAt: f.Created, Volumes: f.Volumes, Size: f.Size,
+			OffsiteAt: now, OffsiteUntil: now.Add(time.Duration(store.DefaultBackupPlan("").OffsiteDays) * 24 * time.Hour)}
+		if _, err := s.Store.AddFoundBackup(ctx, b); err != nil {
+			s.fail(w, "add found backup", err)
+			return
+		}
+		added++
+	}
+	s.Log.Info("off-site backups added", "count", added, "user", loginFrom(ctx).account.ID)
+	writeJSON(w, http.StatusOK, map[string]int{"added": added})
+}
+
+// addOldKey takes the recovery file of another server, or an earlier one,
+// so the backups it made can be opened here.
+func (s *Server) addOldKey(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Recovery string `json:"recovery"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	added, err := s.Core.AddOldKey(r.Context(), req.Recovery)
+	if err != nil {
+		s.coreFailed(w, "add backup key", err)
+		return
+	}
+	s.Log.Info("backup keys added", "keys", len(added), "user", loginFrom(r.Context()).account.ID)
+	writeJSON(w, http.StatusOK, map[string]int{"added": len(added)})
 }

@@ -25,6 +25,11 @@
 		);
 	});
 
+	// How long a backup stays: here, or off-site once only that copy is left.
+	function kept(b: Backup): string {
+		if (b.offsite === 'done' && b.offsite_until && (!b.local || b.offsite_until > b.keep_until)) return b.offsite_until;
+		return b.keep_until;
+	}
 	const what = (b: Backup) => (b.engine ? engineLabel[b.engine] : (b.volumes ?? []).map((v) => '/' + v).join(', '));
 </script>
 
@@ -45,7 +50,7 @@
 								{t('backups.deletedItem', {
 									n: d.list.length,
 									when: date(d.list[0].created_at),
-									until: date(d.list.reduce((a, b) => (a.keep_until > b.keep_until ? a : b)).keep_until)
+									until: date(d.list.map(kept).reduce((a, b) => (a > b ? a : b)))
 								})}
 							</p>
 						</div>

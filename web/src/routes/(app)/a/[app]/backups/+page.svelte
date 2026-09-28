@@ -114,7 +114,8 @@
 	const reasons: Record<Backup['reason'], string> = {
 		scheduled: t('backups.reason.scheduled'),
 		manual: t('backups.reason.manual'),
-		restore: t('backups.reason.restore')
+		restore: t('backups.reason.restore'),
+		found: t('backups.reason.found')
 	};
 	const apps = $derived(links.map((l) => l.db));
 	const redis = $derived(app.engine === 'redis');

@@ -1,12 +1,13 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { Cloud, KeyRound, Lock, TriangleAlert } from '@lucide/svelte';
+	import { Archive, Cloud, FileKey, KeyRound, Lock, Search, TriangleAlert } from '@lucide/svelte';
 	import { api } from '$lib/api';
 	import { saveRecovery, type Offsite } from '$lib/backups';
 	import { sensitive } from '$lib/confirm.svelte';
 	import { messageOf } from '$lib/errors';
+	import { engineLabel, type Engine } from '$lib/apps.svelte';
 	import { date } from '$lib/format';
-	import { t, type Key } from '$lib/i18n';
+	import { list, t, type Key } from '$lib/i18n';
 	import Button from '$lib/ui/Button.svelte';
 	import ErrorText from '$lib/ui/ErrorText.svelte';
 	import Field from '$lib/ui/Field.svelte';
@@ -106,6 +107,67 @@
 		}
 	}
 
+	// Backups another server left in the folder.
+	type Found = {
+		opens: boolean;
+		backups: { app: string; name: string; bytes: number; created: string; engine: Engine | ''; volumes?: string[]; locked?: boolean }[];
+	};
+	let found = $state<Found | null>(null);
+	let foundNote = $state('');
+	const groups = $derived.by(() => {
+		const by = new Map<string, Found['backups']>();
+		for (const b of found?.backups ?? []) by.set(b.app, [...(by.get(b.app) ?? []), b]);
+		return [...by].map(([app, l]) => ({ app, list: l }));
+	});
+	const kind = (b: Found['backups'][number]) =>
+		b.locked ? '' : b.engine ? engineLabel[b.engine] : t('offsite.volumes', { dirs: list((b.volumes ?? []).map((v) => '/' + v)) });
+
+	async function look() {
+		busy = true;
+		error = '';
+		foundNote = '';
+		try {
+			found = await api<Found>('GET', '/offsite/found');
+		} catch (err) {
+			error = messageOf(err);
+		} finally {
+			busy = false;
+		}
+	}
+
+	let keyFile = $state<HTMLInputElement>();
+	async function addKey() {
+		const file = keyFile?.files?.[0];
+		if (!file) return;
+		busy = true;
+		error = '';
+		try {
+			const recovery = await file.text();
+			const out = await sensitive(() => api<{ added: number }>('POST', '/backups/keys', { recovery }));
+			foundNote = t('offsite.keyAdded', { n: out.added });
+			found = await api<Found>('GET', '/offsite/found');
+		} catch (err) {
+			error = messageOf(err);
+		} finally {
+			busy = false;
+			if (keyFile) keyFile.value = '';
+		}
+	}
+
+	async function addFound() {
+		busy = true;
+		error = '';
+		try {
+			const out = await api<{ added: number }>('POST', '/offsite/found');
+			found = await api<Found>('GET', '/offsite/found');
+			foundNote = t('offsite.added', { n: out.added });
+		} catch (err) {
+			error = messageOf(err);
+		} finally {
+			busy = false;
+		}
+	}
+
 	const chip = 'rounded-full border px-3 py-1 text-sm transition';
 </script>
 
@@ -190,6 +252,52 @@
 				</form>
 			{/if}
 		</section>
+
+		{#if data.set && !editing}
+			<section class="flex flex-col gap-4 rounded-2xl border border-line p-5">
+				<div class="flex items-start gap-4">
+					<span class="grid size-10 shrink-0 place-items-center rounded-xl bg-selected"><Search size={20} strokeWidth={1.75} /></span>
+					<div class="min-w-0">
+						<h2 class="font-medium">{t('offsite.foundTitle')}</h2>
+						<p class="text-sm text-muted">{t('offsite.foundLead')}</p>
+					</div>
+				</div>
+				<div class="flex flex-col gap-4 sm:pl-14">
+					{#if found && found.backups.length === 0}
+						<p class="text-sm text-muted">{t('offsite.nothing', { prefix: data.prefix ?? '' })}</p>
+					{:else if found}
+						<ul class="flex flex-col divide-y divide-line rounded-2xl border border-line">
+							{#each groups as g (g.app)}
+								<li class="flex min-w-0 items-center gap-3 p-4">
+									<span class="grid size-9 shrink-0 place-items-center rounded-xl bg-selected"
+										>{#if g.list[0].locked}<Lock size={16} />{:else}<Archive size={18} strokeWidth={1.75} />{/if}</span
+									>
+									<div class="min-w-0">
+										<p class="truncate text-[15px]">{g.app}{#if kind(g.list[0])}<span class="text-muted"> · {kind(g.list[0])}</span>{/if}</p>
+										<p class="text-sm text-muted">{t('offsite.foundItem', { n: g.list.length, when: date(g.list[0].created) })}</p>
+									</div>
+								</li>
+							{/each}
+						</ul>
+						{#if !found.opens}
+							<div class="flex flex-col gap-3 rounded-xl border border-warn/40 bg-warn/5 p-4">
+								<p class="flex items-start gap-2 text-sm"><FileKey size={16} class="mt-0.5 shrink-0 text-warn" />{t('offsite.locked')}</p>
+								<label class="self-start">
+									<span class="sr-only">{t('offsite.addKey')}</span>
+									<input bind:this={keyFile} type="file" accept=".txt,text/plain" class="text-sm file:mr-3 file:h-9 file:rounded-full file:border-0 file:bg-selected file:px-4 file:text-sm file:text-fg" onchange={addKey} disabled={busy} />
+								</label>
+							</div>
+						{:else}
+							<Button class="self-start" {busy} onclick={addFound}>{t('offsite.addFound')}</Button>
+						{/if}
+					{/if}
+					{#if foundNote}<p class="rounded-xl bg-ok/10 px-4 py-3 text-sm">{foundNote}</p>{/if}
+					{#if !found}
+						<Button kind="secondary" class="self-start" {busy} onclick={look}><Search size={16} strokeWidth={1.75} />{t('offsite.look')}</Button>
+					{/if}
+				</div>
+			</section>
+		{/if}
 
 		<section class="flex flex-col gap-4 rounded-2xl border p-5 {data.recovery_saved_at ? 'border-line' : 'border-warn/40 bg-warn/5'}">
 			<div class="flex items-start gap-4">

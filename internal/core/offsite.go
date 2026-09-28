@@ -54,6 +54,28 @@ type OffsiteBackup struct {
 	Name    string    `json:"name"`
 	Bytes   int64     `json:"bytes"`
 	Created time.Time `json:"created"`
+	// Meta is what the backup holds, when it was asked for and could be
+	// read. Locked is set when it is there but no key here opens it.
+	Meta   *BackupMeta `json:"meta,omitempty"`
+	Locked bool        `json:"locked,omitempty"`
+}
+
+// BackupMeta is what a backup holds, sent along with it, encrypted, so
+// another server can tell what to restore it into.
+type BackupMeta struct {
+	// Engine is the database's; empty for a backup of an app's volumes.
+	Engine  string   `json:"engine"`
+	Volumes []string `json:"volumes,omitempty"`
+	Size    int64    `json:"size,omitempty"`
+}
+
+// OffsiteList is what the destination's folder holds.
+type OffsiteList struct {
+	// Key is the public key the folder's backups were encrypted for, from
+	// the note beside them, and Opens whether a key here opens them.
+	Key     string          `json:"key,omitempty"`
+	Opens   bool            `json:"opens"`
+	Backups []OffsiteBackup `json:"backups"`
 }
 
 // Offsite holds the destination. Its keys stay in a file only root reads:
@@ -172,6 +194,7 @@ var (
 	errOffsiteUnreachable = msg.Define(http.StatusUnprocessableEntity, "offsite.unreachable", "Could not reach {endpoint}: {detail}")
 	errOffsiteMismatch    = msg.Define(http.StatusUnprocessableEntity, "offsite.mismatch", "The storage gave back something other than what was written to it.")
 	errOffsiteGone        = msg.Define(http.StatusNotFound, "offsite.gone", "This backup is no longer in the off-site storage.")
+	errNoKey              = msg.Define(http.StatusBadRequest, "backup.no_key", "This file has no backup key in it. A recovery file starts with a few lines of # and has a line starting with AGE-SECRET-KEY-.")
 	errOffsiteNoRoom      = msg.Define(http.StatusUnprocessableEntity, "offsite.no_room", "Not enough disk space to bring the backup back: it needs {need} and {free} is free, and Zelie keeps 1 GB free for the apps.")
 )
 
@@ -231,6 +254,11 @@ func (s *Server) offsiteFailed(w http.ResponseWriter, op, app string, err error,
 
 func objectKey(c OffsiteConfig, app, name string) string {
 	return c.Prefix + "/" + app + "/" + name
+}
+
+// metaKey is where what a backup holds is kept, next to it.
+func metaKey(c OffsiteConfig, app, name string) string {
+	return objectKey(c, app, name) + ".meta"
 }
 
 // keyNote is left next to the backups, so whoever finds them later knows
@@ -337,8 +365,16 @@ func (s *Server) removeOffsite(w http.ResponseWriter, r *http.Request) {
 }
 
 // uploadBackup copies a backup file to the bucket as it is: encrypted.
+// What it holds goes along beside it, encrypted too.
 func (s *Server) uploadBackup(w http.ResponseWriter, r *http.Request) {
 	app, name := r.PathValue("app"), r.PathValue("name")
+	var meta BackupMeta
+	if r.ContentLength != 0 {
+		if err := decode(w, r, &meta); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+	}
 	client, cfg, ok := s.Offsite.current()
 	if !ok {
 		s.backupFailed(w, "upload backup", app, errOffsiteNotSet.Err())
@@ -360,6 +396,15 @@ func (s *Server) uploadBackup(w http.ResponseWriter, r *http.Request) {
 		s.offsiteFailed(w, "upload backup", app, err, cfg)
 		return
 	}
+	b, _ := json.Marshal(meta)
+	sealed, err := s.Backups.Key.Seal(b)
+	if err == nil {
+		err = client.Put(r.Context(), metaKey(cfg, app, name), bytes.NewReader(sealed), int64(len(sealed)))
+	}
+	if err != nil {
+		s.offsiteFailed(w, "upload backup", app, err, cfg)
+		return
+	}
 	s.Log.Info("backup uploaded", "app", app, "backup", name, "bytes", st.Size(), "took", time.Since(start).Round(time.Millisecond))
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -375,9 +420,11 @@ func (s *Server) removeOffsiteBackup(w http.ResponseWriter, r *http.Request) {
 		s.backupFailed(w, "remove off-site backup", app, errOffsiteNotSet.Err())
 		return
 	}
-	if err := client.Delete(r.Context(), objectKey(cfg, app, name)); err != nil {
-		s.offsiteFailed(w, "remove off-site backup", app, err, cfg)
-		return
+	for _, key := range []string{objectKey(cfg, app, name), metaKey(cfg, app, name)} {
+		if err := client.Delete(r.Context(), key); err != nil {
+			s.offsiteFailed(w, "remove off-site backup", app, err, cfg)
+			return
+		}
 	}
 	s.Log.Info("off-site backup removed", "app", app, "backup", name)
 	w.WriteHeader(http.StatusNoContent)
@@ -385,33 +432,98 @@ func (s *Server) removeOffsiteBackup(w http.ResponseWriter, r *http.Request) {
 
 // listOffsite lists the backup files in the destination's folder, of
 // every app, newest first within each. Anything else there is left out.
+// With ?meta=1 it also reads what each holds, which takes a request each.
 func (s *Server) listOffsite(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
 	client, cfg, ok := s.Offsite.current()
 	if !ok {
 		s.backupFailed(w, "list off-site backups", "", errOffsiteNotSet.Err())
 		return
 	}
-	objects, err := client.List(r.Context(), cfg.Prefix+"/")
+	objects, err := client.List(ctx, cfg.Prefix+"/")
 	if err != nil {
 		s.offsiteFailed(w, "list off-site backups", "", err, cfg)
 		return
 	}
-	out := []OffsiteBackup{}
+	out := OffsiteList{Backups: []OffsiteBackup{}}
+	metas := map[string]bool{}
+	for _, o := range objects {
+		metas[o.Key] = true
+	}
+	if note, err := s.readSmall(ctx, client, cfg.Prefix+"/zelie-key.txt"); err == nil {
+		for line := range strings.Lines(string(note)) {
+			if line = strings.TrimSpace(line); strings.HasPrefix(line, "age1") {
+				out.Key, out.Opens = line, s.Backups.Key.Opens(line)
+			}
+		}
+	}
+	withMeta := r.URL.Query().Get("meta") == "1"
 	for _, o := range objects {
 		app, name, ok := strings.Cut(strings.TrimPrefix(o.Key, cfg.Prefix+"/"), "/")
 		if !ok || !backup.ValidApp(app) || !backup.ValidName(name) {
 			continue
 		}
 		created, _ := time.Parse("20060102T150405Z", name[:16])
-		out = append(out, OffsiteBackup{App: app, Name: name, Bytes: o.Size, Created: created})
-	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].App != out[j].App {
-			return out[i].App < out[j].App
+		b := OffsiteBackup{App: app, Name: name, Bytes: o.Size, Created: created}
+		if withMeta && metas[metaKey(cfg, app, name)] {
+			sealed, err := s.readSmall(ctx, client, metaKey(cfg, app, name))
+			if err != nil {
+				s.offsiteFailed(w, "read off-site backup", app, err, cfg)
+				return
+			}
+			var m BackupMeta
+			if plain, err := s.Backups.Key.Unseal(sealed, 64<<10); err != nil {
+				b.Locked = true
+			} else if json.Unmarshal(plain, &m) == nil {
+				b.Meta = &m
+			}
 		}
-		return out[i].Name > out[j].Name
+		out.Backups = append(out.Backups, b)
+	}
+	sort.Slice(out.Backups, func(i, j int) bool {
+		bi, bj := out.Backups[i], out.Backups[j]
+		if bi.App != bj.App {
+			return bi.App < bj.App
+		}
+		return bi.Name > bj.Name
 	})
 	writeJSON(w, http.StatusOK, out)
+}
+
+// readSmall reads an object of at most 64 KB.
+func (s *Server) readSmall(ctx context.Context, c *s3.Client, key string) ([]byte, error) {
+	rc, _, err := c.Get(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	defer rc.Close()
+	return io.ReadAll(io.LimitReader(rc, 64<<10))
+}
+
+// addOldKey keeps the keys of a recovery file from another server, or
+// from before, so the backups they encrypted can be opened here.
+func (s *Server) addOldKey(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Recovery string `json:"recovery"`
+	}
+	if err := decode(w, r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	added, err := s.Backups.Key.AddOld(req.Recovery)
+	if errors.Is(err, backup.ErrNoKey) {
+		s.backupFailed(w, "add backup key", "", errNoKey.Err())
+		return
+	}
+	if err != nil {
+		s.fail(w, "add backup key", "", err)
+		return
+	}
+	s.Log.Info("backup keys added", "keys", added)
+	if added == nil {
+		added = []string{}
+	}
+	writeJSON(w, http.StatusOK, map[string][]string{"added": added})
 }
 
 // fetchBackup brings a backup back from the bucket into this server's
@@ -467,16 +579,27 @@ func (c *Client) RemoveOffsite(ctx context.Context) error {
 	return c.do(ctx, http.MethodDelete, "/v1/offsite", nil, nil)
 }
 
-// UploadBackup copies a backup to the destination.
-func (c *Client) UploadBackup(ctx context.Context, app, name string) error {
-	return c.do(ctx, http.MethodPost, "/v1/backups/"+url.PathEscape(app)+"/"+url.PathEscape(name)+"/offsite", nil, nil)
+// UploadBackup copies a backup to the destination, with what it holds.
+func (c *Client) UploadBackup(ctx context.Context, app, name string, meta BackupMeta) error {
+	return c.do(ctx, http.MethodPost, "/v1/backups/"+url.PathEscape(app)+"/"+url.PathEscape(name)+"/offsite", meta, nil)
 }
 
-// OffsiteBackups lists the backups in the destination.
-func (c *Client) OffsiteBackups(ctx context.Context) ([]OffsiteBackup, error) {
-	var out []OffsiteBackup
-	err := c.do(ctx, http.MethodGet, "/v1/offsite/backups", nil, &out)
+// OffsiteBackups lists the backups in the destination, and what each
+// holds.
+func (c *Client) OffsiteBackups(ctx context.Context) (OffsiteList, error) {
+	var out OffsiteList
+	err := c.do(ctx, http.MethodGet, "/v1/offsite/backups?meta=1", nil, &out)
 	return out, err
+}
+
+// AddOldKey adds the keys of another recovery file, and returns the
+// public halves of the new ones.
+func (c *Client) AddOldKey(ctx context.Context, recovery string) ([]string, error) {
+	var out struct {
+		Added []string `json:"added"`
+	}
+	err := c.do(ctx, http.MethodPost, "/v1/backups-key/old", map[string]string{"recovery": recovery}, &out)
+	return out.Added, err
 }
 
 // RemoveOffsiteBackup deletes a backup's copy in the destination.

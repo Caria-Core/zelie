@@ -329,7 +329,7 @@ func TestDeletedDatabaseKeepsBackups(t *testing.T) {
 		t.Errorf("deleted: %d %s", code, body)
 	}
 	code, out := e.b.do("POST", fmt.Sprintf("/api/backups/%d/restore", id), nil)
-	if code != http.StatusConflict || out["code"] != "restore.db_deleted" || !strings.Contains(out["error"].(string), "Create a PostgreSQL database named pg") {
+	if code != http.StatusConflict || out["code"] != "restore.db_deleted" || !strings.Contains(out["error"].(string), "no PostgreSQL database named pg here") {
 		t.Errorf("restore into a deleted database: %d %v", code, out)
 	}
 	// A new database of another kind under the name does not take it.

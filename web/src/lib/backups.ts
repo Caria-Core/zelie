@@ -8,7 +8,8 @@ export type Backup = {
 	app: string;
 	// Empty for a backup of an app's volumes.
 	engine: Engine | '';
-	reason: 'scheduled' | 'manual' | 'restore';
+	// found: made on another server and found in off-site storage.
+	reason: 'scheduled' | 'manual' | 'restore' | 'found';
 	state: 'running' | 'done' | 'failed';
 	bytes: number;
 	error?: Msg;

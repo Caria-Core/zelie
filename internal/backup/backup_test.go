@@ -197,3 +197,74 @@ func TestImport(t *testing.T) {
 		t.Errorf("%d files, want 2", len(entries))
 	}
 }
+
+// Another server's recovery file, added here, opens that server's backups
+// in Zelie, and this server's recovery file then carries it along.
+func TestOldKeys(t *testing.T) {
+	a, b := newDir(t), newDir(t)
+	w, _ := a.Create("db", "sql")
+	io.WriteString(w, "from a\n")
+	info, err := w.Commit()
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile(filepath.Join(a.Root, "db", info.Name))
+	b.Import("db", info.Name, bytes.NewReader(raw))
+	if _, err := b.Open("db", info.Name); err == nil {
+		t.Fatal("opened with the wrong key")
+	}
+	if b.Key.Opens(a.Key.Public()) {
+		t.Error("says it opens a's backups")
+	}
+
+	for _, bad := range []string{"", "# nothing\n", "AGE-SECRET-KEY-1NOTAKEY\n", "hello"} {
+		if _, err := b.Key.AddOld(bad); err != ErrNoKey {
+			t.Errorf("AddOld(%q): %v", bad, err)
+		}
+	}
+	added, err := b.Key.AddOld(a.Key.Recovery("a.example.com", time.Now()))
+	if err != nil || len(added) != 1 || added[0] != a.Key.Public() {
+		t.Fatalf("added %v, %v", added, err)
+	}
+	if again, _ := b.Key.AddOld(a.Key.Recovery("a.example.com", time.Now())); len(again) != 0 {
+		t.Errorf("added twice: %v", again)
+	}
+	if own, _ := b.Key.AddOld(b.Key.Recovery("b.example.com", time.Now())); len(own) != 0 {
+		t.Errorf("added its own key: %v", own)
+	}
+	r, err := b.Open("db", info.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := io.ReadAll(r)
+	r.Close()
+	if string(got) != "from a\n" || !b.Key.Opens(a.Key.Public()) {
+		t.Errorf("read %q", got)
+	}
+
+	// Kept across restarts, and new backups still use b's own key.
+	reloaded, err := LoadOrCreateKey(b.Key.oldPath[:len(b.Key.oldPath)-len(".old")])
+	if err != nil || !reloaded.Opens(a.Key.Public()) || reloaded.Public() != b.Key.Public() {
+		t.Fatalf("reloaded: %v", err)
+	}
+	if st, _ := os.Stat(b.Key.oldPath); st.Mode().Perm() != 0o600 {
+		t.Errorf("old keys file mode %v", st.Mode().Perm())
+	}
+	ids, err := age.ParseIdentities(strings.NewReader(reloaded.Recovery("b.example.com", time.Now())))
+	if err != nil || len(ids) != 2 {
+		t.Fatalf("recovery file: %d keys, %v", len(ids), err)
+	}
+	f, _ := os.Open(filepath.Join(b.Root, "db", info.Name))
+	defer f.Close()
+	if _, err := age.Decrypt(f, ids...); err != nil {
+		t.Errorf("b's recovery file does not open a's backup: %v", err)
+	}
+
+	sealed, _ := b.Key.Seal([]byte(`{"engine":"postgres"}`))
+	if got, err := reloaded.Unseal(sealed, 1<<10); err != nil || string(got) != `{"engine":"postgres"}` {
+		t.Errorf("unseal: %q %v", got, err)
+	}
+	if _, err := a.Key.Unseal(sealed, 1<<10); err == nil {
+		t.Error("a unsealed b's data")
+	}
+}
