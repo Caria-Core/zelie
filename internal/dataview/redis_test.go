@@ -43,11 +43,11 @@ func TestRedisQuoting(t *testing.T) {
 // As redis-cli 8 writes them, quotes in values and all.
 func TestFixQuotedJSON(t *testing.T) {
 	for in, want := range map[string]string{
-		`"{\\"user\\":\\"efe\\"}"`: `{"user":"efe"}`,
-		`"back\\\\slash"`:              `back\slash`,
-		`"ends\\\\"`:                   `ends\`,
+		`"{\\"user\\":\\"efe\\"}"`:  `{"user":"efe"}`,
+		`"back\\\\slash"`:           `back\slash`,
+		`"ends\\\\"`:                `ends\`,
 		`"say \\"hi\\" \\xc3\\xa9"`: `say "hi" é`,
-		`["0",["a\\"b","c"]]`:            `a"b`,
+		`["0",["a\\"b","c"]]`:       `a"b`,
 	} {
 		fixed := fixQuotedJSON(in)
 		var s string
