@@ -4,6 +4,12 @@ on:
   push:
     branches: [main]
   pull_request:
+  # The release workflow runs the same checks and builds before it signs.
+  workflow_call:
+    inputs:
+      version:
+        type: string
+        required: true
 
 permissions:
   contents: read
@@ -64,4 +70,10 @@ jobs:
           GOOS: linux
           GOARCH: ${{ matrix.arch }}
           CGO_ENABLED: "0"
-        run: go build -trimpath -o zelie-linux-${{ matrix.arch }} ./cmd/zelie
+          VERSION: ${{ inputs.version || 'dev' }}
+        run: go build -trimpath -ldflags "-X github.com/Caria-Core/zelie/internal/version.Version=$VERSION" -o zelie-linux-${{ matrix.arch }} ./cmd/zelie
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: zelie-linux-${{ matrix.arch }}
+          path: zelie-linux-${{ matrix.arch }}
+          if-no-files-found: error

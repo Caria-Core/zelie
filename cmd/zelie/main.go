@@ -18,6 +18,7 @@ import (
 const usage = `Usage: zelie <command>
 
 Commands:
+  install          Set Zelie up on this server (needs root)
   core             Run the privileged core (needs root)
   proxy            Run the web proxy (must not run as root)
   panel            Run the web panel (must not run as root)
@@ -47,6 +48,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		}
 		fmt.Fprintf(stderr, "zelie: usage: zelie engine install\n")
 		return 2
+	case "install":
+		return runInstall(args[1:], os.Stdin, stdout, stderr)
 	case "core":
 		return runCore(stderr)
 	case "proxy":

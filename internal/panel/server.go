@@ -199,6 +199,22 @@ func (s *Server) Handler() http.Handler {
 	}))
 }
 
+// waitForCore returns once the core answers, or false when ctx ends first.
+func (s *Server) waitForCore(ctx context.Context) bool {
+	for i := 0; ; i++ {
+		if _, err := s.Core.Host(ctx); err == nil {
+			return true
+		} else if i == 30 {
+			s.Log.Warn("still waiting for the core", "err", err)
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(time.Second):
+		}
+	}
+}
+
 // Serve listens on the socket until ctx is cancelled.
 func (s *Server) Serve(ctx context.Context, socket string) error {
 	if err := os.MkdirAll(filepath.Dir(socket), 0o755); err != nil {
@@ -215,13 +231,20 @@ func (s *Server) Serve(ctx context.Context, socket string) error {
 	if err := s.Store.FailUnfinishedBackups(ctx, s.now()); err != nil {
 		return err
 	}
-	go s.supervise(ctx)
-	go s.watchVolumes(ctx)
-	go s.syncAllLinks(ctx)
 	go s.runBackups(ctx)
 	go s.runUploads(ctx)
-	go s.runImageSweep(ctx)
-	go s.syncExternal(ctx)
+	// Everything that watches containers needs the core, which may still be
+	// starting when the panel's service comes up.
+	go func() {
+		if !s.waitForCore(ctx) {
+			return
+		}
+		go s.supervise(ctx)
+		go s.watchVolumes(ctx)
+		s.syncAllLinks(ctx)
+		s.syncExternal(ctx)
+		s.runImageSweep(ctx)
+	}()
 	l, err := net.Listen("unix", socket)
 	if err != nil {
 		return err

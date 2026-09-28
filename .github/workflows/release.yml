@@ -1,0 +1,53 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+    with:
+      version: ${{ github.ref_name }}
+
+  release:
+    needs: ci
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: zelie-linux-*
+          path: dist
+          merge-multiple: true
+      - name: Sign
+        env:
+          SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+        run: |
+          cp install.sh dist/
+          cd dist
+          sha256sum zelie-linux-amd64 zelie-linux-arm64 install.sh > SHA256SUMS
+          umask 077
+          printf '%s\n' "$SIGNING_KEY" > "$RUNNER_TEMP/key.pem"
+          openssl pkeyutl -sign -inkey "$RUNNER_TEMP/key.pem" -rawin -in SHA256SUMS -out SHA256SUMS.sig
+          rm "$RUNNER_TEMP/key.pem"
+          # Checked with the key install.sh carries, so a release can never
+          # go out that the script would refuse.
+          sed -n "/^public_key='/,/END PUBLIC KEY/p" ../install.sh | sed "s/^public_key='//; s/'\$//" > "$RUNNER_TEMP/pub.pem"
+          openssl pkeyutl -verify -pubin -inkey "$RUNNER_TEMP/pub.pem" -rawin -in SHA256SUMS -sigfile SHA256SUMS.sig
+          cat SHA256SUMS
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG" dist/* --title "$TAG" --notes "Pre-alpha. Not ready for production.
+
+          Install on Debian or Ubuntu, as root:
+
+              curl -fsSL https://github.com/${{ github.repository }}/releases/download/$TAG/install.sh | ZELIE_VERSION=$TAG sh"
