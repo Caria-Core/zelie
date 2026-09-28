@@ -8,8 +8,9 @@
 	import { loadServer, server } from '$lib/server.svelte';
 	import { refresh, session } from '$lib/session.svelte';
 	import AppIcon from '$lib/ui/AppIcon.svelte';
+	import AskDialog from '$lib/ui/AskDialog.svelte';
+	import Brand from '$lib/ui/Brand.svelte';
 	import ConfirmDialog from '$lib/ui/ConfirmDialog.svelte';
-	import Logo from '$lib/ui/Logo.svelte';
 	import StateDot from '$lib/ui/StateDot.svelte';
 	import ThemeSwitch from '$lib/ui/ThemeSwitch.svelte';
 
@@ -59,10 +60,7 @@
 {#if ready}
 	<div class="flex min-h-dvh flex-col md:flex-row">
 		<header class="flex items-center justify-between border-b border-line px-4 py-3 md:hidden">
-			<a href="/" class="flex items-center gap-2.5">
-				<Logo />
-				<span class="text-[17px]">{t('app.name')}</span>
-			</a>
+			<Brand />
 			<button class="rounded-lg px-2 py-1 text-sm text-muted hover:text-fg" aria-expanded={menu} onclick={() => (menu = !menu)}
 				>{t('nav.menu')}</button
 			>
@@ -72,10 +70,7 @@
 				? 'fixed inset-0 top-[53px] z-10 flex'
 				: 'hidden'} flex-col gap-6 bg-panel px-3 py-5 md:sticky md:top-0 md:flex md:h-dvh md:w-60 md:shrink-0 md:border-r md:border-line"
 		>
-			<a href="/" class="hidden items-center gap-2.5 px-2 md:flex">
-				<Logo />
-				<span class="text-[17px]">{t('app.name')}</span>
-			</a>
+			<Brand class="hidden px-2 md:flex" />
 			<nav class="flex flex-1 flex-col gap-6 overflow-y-auto text-[15px]">
 				{#each groups as g (g.href)}
 					<div class="flex flex-col gap-0.5">
@@ -141,4 +136,5 @@
 		</main>
 	</div>
 	<ConfirmDialog />
+	<AskDialog />
 {/if}

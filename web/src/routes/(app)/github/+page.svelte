@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { ask } from '$lib/ask.svelte';
 	import { onMount } from 'svelte';
 	import { Check, ExternalLink, FolderGit2, KeyRound, Rocket } from '@lucide/svelte';
 	import { page } from '$app/state';
@@ -51,7 +52,7 @@
 	}
 
 	async function disconnect() {
-		if (!confirm(t('github.disconnectConfirm'))) return;
+		if (!(await ask({ title: t('github.disconnectConfirm'), text: t('github.disconnectConfirmText'), action: t('github.disconnect'), danger: true }))) return;
 		busy = true;
 		error = '';
 		try {

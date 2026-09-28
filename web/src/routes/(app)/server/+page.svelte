@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { ask } from '$lib/ask.svelte';
 	import { onMount } from 'svelte';
 	import { ArrowUpRight, CircleCheck, RefreshCw, TriangleAlert } from '@lucide/svelte';
 	import { api } from '$lib/api';
@@ -36,7 +37,7 @@
 
 	async function update() {
 		const to = info?.available?.version;
-		if (!to || !confirm(t('server.updateConfirm', { version: to }))) return;
+		if (!to || !(await ask({ title: t('server.updateConfirm', { version: to }), text: t('server.updateConfirmText'), action: t('server.update', { version: to }) }))) return;
 		busy = true;
 		error = '';
 		try {

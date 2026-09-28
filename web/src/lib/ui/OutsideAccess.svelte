@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { ask } from '$lib/ask.svelte';
 	import { Copy, Check, KeyRound, Laptop, Server, TriangleAlert } from '@lucide/svelte';
 	import { api } from '$lib/api';
 	import type { App } from '$lib/apps.svelte';
@@ -66,8 +67,8 @@
 			x = { ...r, password: undefined };
 		});
 
-	function turnOff() {
-		if (!confirm(t('outside.offConfirm'))) return;
+	async function turnOff() {
+		if (!(await ask({ title: t('outside.offConfirm'), text: t('outside.offConfirmText'), action: t('common.turnOff'), danger: true }))) return;
 		act(async () => {
 			await api('DELETE', `/apps/${app.id}/external`);
 			x = { enabled: false };

@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { ask } from '$lib/ask.svelte';
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { api } from '$lib/api';
@@ -80,8 +81,8 @@
 		run(() => sensitive(() => addPasskey(keyName.trim() || t('account.passkeys.default'))), t('account.passkeys.done'));
 	};
 
-	function removePasskey(id: string, name: string) {
-		if (!confirm(t('account.passkeys.removeConfirm', { name }))) return;
+	async function removePasskey(id: string, name: string) {
+		if (!(await ask({ title: t('account.passkeys.removeConfirm', { name }), text: t('account.passkeys.removeConfirmText'), action: t('common.remove'), danger: true }))) return;
 		show('');
 		run(() => sensitive(() => api('DELETE', `/2fa/passkey/${id}`)));
 	}
@@ -98,14 +99,14 @@
 		run(() => sensitive(() => api('POST', '/2fa/totp', { code: code.trim() })), t('account.totp.done'));
 	};
 
-	function removeTotp() {
-		if (!confirm(t('account.totp.removeConfirm'))) return;
+	async function removeTotp() {
+		if (!(await ask({ title: t('account.totp.removeConfirm'), text: t('account.totp.removeConfirmText'), action: t('common.turnOff'), danger: true }))) return;
 		show('');
 		run(() => sensitive(() => api('DELETE', '/2fa/totp')));
 	}
 
-	function newCodes() {
-		if (!confirm(t('account.recovery.confirm'))) return;
+	async function newCodes() {
+		if (!(await ask({ title: t('account.recovery.confirm'), text: t('account.recovery.confirmText'), action: t('account.recovery.new') }))) return;
 		run(async () => {
 			const out = await sensitive(() => api<{ recovery_codes: string[] }>('POST', '/2fa/recovery'));
 			show('codes');

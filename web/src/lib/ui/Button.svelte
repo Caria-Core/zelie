@@ -6,12 +6,13 @@
 		busy = false,
 		children,
 		...rest
-	}: HTMLButtonAttributes & { kind?: 'primary' | 'secondary' | 'quiet'; busy?: boolean } = $props();
+	}: HTMLButtonAttributes & { kind?: 'primary' | 'secondary' | 'quiet' | 'danger'; busy?: boolean } = $props();
 
 	const styles = {
 		primary: 'bg-accent text-accent-fg hover:opacity-90',
 		secondary: 'bg-selected text-fg hover:bg-line',
-		quiet: 'text-muted hover:text-fg'
+		quiet: 'text-muted hover:text-fg',
+		danger: 'bg-danger text-white hover:opacity-90'
 	};
 </script>
 

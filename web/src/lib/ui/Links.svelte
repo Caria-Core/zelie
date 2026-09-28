@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { ask } from '$lib/ask.svelte';
 	import { Link2, Unlink } from '@lucide/svelte';
 	import { api } from '$lib/api';
 	import { apps, engineLabel, isDatabase, reload, type App, type Link } from '$lib/apps.svelte';
@@ -69,9 +70,9 @@
 		}, a);
 	}
 
-	function unlink(l: Link) {
+	async function unlink(l: Link) {
 		const { app: a, db } = ends(l.db);
-		if (!confirm(t('links.unlinkConfirm', { app: a, db }))) return;
+		if (!(await ask({ title: t('links.unlinkConfirm', { app: a, db }), text: t('links.unlinkConfirmText'), action: t('links.unlink'), danger: true }))) return;
 		act(() => api('DELETE', `/apps/${a}/links/${db}`), a);
 	}
 

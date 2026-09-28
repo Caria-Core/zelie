@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { ask } from '$lib/ask.svelte';
 	import { Trash } from '@lucide/svelte';
 	import { goto } from '$app/navigation';
 	import { api } from '$lib/api';
@@ -10,7 +11,6 @@
 	import ErrorText from '$lib/ui/ErrorText.svelte';
 	import Field from '$lib/ui/Field.svelte';
 	import Resources from '$lib/ui/Resources.svelte';
-	import type { Usage } from '$lib/host.svelte';
 
 	const app = $derived(current.app!);
 	let form = $state({
@@ -86,22 +86,16 @@
 		}
 	}
 
-	// What the app uses now, refreshed while the page is open.
-	let usage = $state<Usage | null>(null);
-	$effect(() => {
-		const id = app.id;
-		let stop = false;
-		const tick = async () => {
-			if (stop) return;
-			if (document.visibilityState === 'visible') usage = await api<Usage>('GET', `/apps/${id}/usage`).catch(() => null);
-			setTimeout(tick, 3000);
-		};
-		tick();
-		return () => (stop = true);
-	});
-
 	async function remove() {
-		if (!confirm(t(database ? 'settings.deleteDatabaseConfirm' : 'settings.deleteConfirm', { id: app.id }))) return;
+		if (
+			!(await ask({
+				title: t(database ? 'settings.deleteDatabaseConfirm' : 'settings.deleteConfirm', { id: app.id }),
+				text: t(database ? 'settings.deleteDatabaseConfirmText' : 'settings.deleteConfirmText'),
+				action: t('settings.delete'),
+				danger: true
+			}))
+		)
+			return;
 		busy = true;
 		try {
 			await api('DELETE', `/apps/${app.id}`);
@@ -179,7 +173,7 @@
 
 		<section class="flex flex-col gap-4">
 			{@render heading(t('new.more'), database ? t('db.resourcesLead') : t('settings.resourcesLead'))}
-			<Resources bind:memory={form.memory} bind:cpus={form.cpus} app={app.id} {usage} />
+			<Resources bind:memory={form.memory} bind:cpus={form.cpus} app={app.id} usage={current.usage} />
 		</section>
 
 		<div class="sticky bottom-0 -mx-1 flex items-center gap-3 bg-bg/90 px-1 py-3 backdrop-blur">

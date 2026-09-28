@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { ask } from '$lib/ask.svelte';
 	import { HardDrive, Plus, Trash } from '@lucide/svelte';
 	import { api } from '$lib/api';
 	import { current, load, restart } from '$lib/current.svelte';
@@ -71,8 +72,8 @@
 			await load(app.id);
 		});
 
-	function remove(v: Volume) {
-		if (!confirm(t('storage.deleteConfirm', { path: v.path }))) return;
+	async function remove(v: Volume) {
+		if (!(await ask({ title: t('storage.deleteConfirm', { path: v.path }), text: t('storage.deleteConfirmText'), action: t('storage.delete'), danger: true }))) return;
 		act(() => api('DELETE', `/apps/${app.id}/volumes/${v.id}`));
 	}
 

@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { ask } from '$lib/ask.svelte';
 	import { untrack } from 'svelte';
 	import { Archive, CircleAlert, Cloud, CloudOff, Download, HardDrive, KeyRound, LoaderCircle, RotateCcw, Trash, TriangleAlert } from '@lucide/svelte';
 	import { api } from '$lib/api';
@@ -69,8 +70,8 @@
 	// A failed backup comes back as a row, red, with the reason.
 	const backUp = () => act(() => api('POST', `/apps/${app.id}/backups`));
 
-	function remove(b: Backup) {
-		if (!confirm(t('backups.deleteConfirm', { when: when(b) }))) return;
+	async function remove(b: Backup) {
+		if (!(await ask({ title: t('backups.deleteConfirm', { when: when(b) }), text: t('backups.deleteConfirmText'), action: t('backups.delete'), danger: true }))) return;
 		act(() => sensitive(() => api('DELETE', `/backups/${b.id}`)));
 	}
 

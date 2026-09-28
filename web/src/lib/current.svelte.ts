@@ -1,8 +1,14 @@
 import { api } from './api';
 import { inProgress, reload as reloadList, type AppDetail } from './apps.svelte';
+import type { Usage } from './host.svelte';
 
-// The app open in the app pages. The layout loads it; the tabs read it.
-export const current = $state<{ app: AppDetail | null; missing: boolean }>({ app: null, missing: false });
+// The app open in the app pages. The layout loads it, and what it uses now;
+// the tabs read both.
+export const current = $state<{ app: AppDetail | null; missing: boolean; usage: Usage | null }>({
+	app: null,
+	missing: false,
+	usage: null
+});
 
 export async function load(id: string): Promise<void> {
 	try {

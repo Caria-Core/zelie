@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { ask } from '$lib/ask.svelte';
 	import { onMount } from 'svelte';
 	import { Archive, Cloud, FileKey, KeyRound, Lock, Search, TriangleAlert } from '@lucide/svelte';
 	import { api } from '$lib/api';
@@ -83,7 +84,7 @@
 	}
 
 	async function remove() {
-		if (!confirm(t('offsite.removeConfirm'))) return;
+		if (!(await ask({ title: t('offsite.removeConfirm'), text: t('offsite.removeConfirmText'), action: t('offsite.remove'), danger: true }))) return;
 		busy = true;
 		error = '';
 		try {

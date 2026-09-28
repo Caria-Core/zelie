@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { ask } from '$lib/ask.svelte';
 	import { inProgress, shortVersion, type Deployment } from '$lib/apps.svelte';
 	import { current, load, rollback } from '$lib/current.svelte';
 	import { messageOf } from '$lib/errors';
@@ -20,7 +21,7 @@
 
 	let error = $state('');
 	async function back(d: Deployment) {
-		if (!confirm(t('app.rollbackConfirm', { version: shortVersion(d.version) }))) return;
+		if (!(await ask({ title: t('app.rollbackConfirm', { version: shortVersion(d.version) }), text: t('app.rollbackConfirmText'), action: t('app.rollback') }))) return;
 		error = '';
 		try {
 			await rollback(app.id, d.id);
