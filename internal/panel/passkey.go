@@ -3,7 +3,6 @@ package panel
 import (
 	"encoding/binary"
 	"encoding/json"
-	"errors"
 	"net"
 	"net/http"
 	"strings"
@@ -12,10 +11,16 @@ import (
 	"github.com/go-webauthn/webauthn/protocol"
 	"github.com/go-webauthn/webauthn/webauthn"
 
+	"github.com/Caria-Core/zelie/internal/msg"
 	"github.com/Caria-Core/zelie/internal/store"
 )
 
-var errPasskeyNeedsDomain = errors.New("passkeys need the panel on a domain name; use an authenticator app on a bare IP address")
+var (
+	errPasskeyNeedsDomain = msg.Define(http.StatusBadRequest, "passkey.needs_domain", "Passkeys need the panel on a domain name. Use an authenticator app on a bare IP address.")
+	errPasskeyName        = msg.Define(http.StatusBadRequest, "passkey.long_name", "The name is too long.")
+	errPasskeyNotAdded    = msg.Define(http.StatusBadRequest, "passkey.not_added", "The passkey could not be added.")
+	errNoPasskeys         = msg.Define(http.StatusBadRequest, "passkey.none", "This account has no passkey.")
+)
 
 // relyingParty ties passkeys to the host name the panel is served on. The
 // proxy forwards only the configured panel host, so r.Host can be trusted
@@ -27,7 +32,7 @@ func relyingParty(r *http.Request) (*webauthn.WebAuthn, error) {
 	}
 	host = strings.ToLower(host)
 	if net.ParseIP(strings.Trim(host, "[]")) != nil {
-		return nil, errPasskeyNeedsDomain
+		return nil, errPasskeyNeedsDomain.Err()
 	}
 	return webauthn.New(&webauthn.Config{
 		RPID:          host,
@@ -70,7 +75,7 @@ func (s *Server) passkeyOptions(w http.ResponseWriter, r *http.Request) {
 	l := loginFrom(r.Context())
 	rp, err := relyingParty(r)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err)
+		s.failWith(w, "passkey", err)
 		return
 	}
 	u, err := s.passkeyUser(r, l.account)
@@ -100,17 +105,17 @@ func (s *Server) addPasskey(w http.ResponseWriter, r *http.Request) {
 		name = "Passkey"
 	}
 	if utf8.RuneCountInString(name) > 60 {
-		writeError(w, http.StatusBadRequest, errors.New("the name is too long"))
+		writeError(w, errPasskeyName.Err())
 		return
 	}
 	v, ok := s.guards.pending.take(l.session.Hash, "passkey-add", s.now())
 	if !ok {
-		writeError(w, http.StatusBadRequest, errNoCeremony)
+		writeError(w, errNoCeremony.Err())
 		return
 	}
 	rp, err := relyingParty(r)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err)
+		s.failWith(w, "passkey", err)
 		return
 	}
 	u, err := s.passkeyUser(r, l.account)
@@ -122,7 +127,7 @@ func (s *Server) addPasskey(w http.ResponseWriter, r *http.Request) {
 	cred, err := rp.FinishRegistration(u, *v.(*webauthn.SessionData), r)
 	if err != nil {
 		s.Log.Warn("passkey registration failed", "user", l.account.ID, "err", err)
-		writeError(w, http.StatusBadRequest, errors.New("the passkey could not be added"))
+		writeError(w, errPasskeyNotAdded.Err())
 		return
 	}
 	b, err := json.Marshal(cred)
@@ -156,7 +161,7 @@ func (s *Server) loginPasskey(w http.ResponseWriter, r *http.Request) {
 func (s *Server) beginPasskeyCheck(w http.ResponseWriter, r *http.Request, l login, kind string) {
 	rp, err := relyingParty(r)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err)
+		s.failWith(w, "passkey", err)
 		return
 	}
 	u, err := s.passkeyUser(r, l.account)
@@ -165,7 +170,7 @@ func (s *Server) beginPasskeyCheck(w http.ResponseWriter, r *http.Request, l log
 		return
 	}
 	if len(u.creds) == 0 {
-		writeError(w, http.StatusBadRequest, errors.New("this account has no passkey"))
+		writeError(w, errNoPasskeys.Err())
 		return
 	}
 	opts, data, err := rp.BeginLogin(u)
@@ -182,12 +187,12 @@ func (s *Server) beginPasskeyCheck(w http.ResponseWriter, r *http.Request, l log
 func (s *Server) finishPasskeyCheck(w http.ResponseWriter, r *http.Request, l login, kind string) bool {
 	v, ok := s.guards.pending.take(l.session.Hash, kind, s.now())
 	if !ok {
-		writeError(w, http.StatusBadRequest, errNoCeremony)
+		writeError(w, errNoCeremony.Err())
 		return false
 	}
 	rp, err := relyingParty(r)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err)
+		s.failWith(w, "passkey", err)
 		return false
 	}
 	u, err := s.passkeyUser(r, l.account)

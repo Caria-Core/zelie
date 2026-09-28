@@ -246,12 +246,12 @@ func TestBackupAndRestore(t *testing.T) {
 	// No safety backup, no restore.
 	e.core.bk.failBackup, e.core.bk.failures = "pg_dump: error: connection refused", -1
 	out = e.restore(t, "pg", first)
-	if out["state"] != "failed" || !strings.Contains(out["error"].(string), "Nothing was changed") || len(e.core.bk.restored) != 1 {
+	if out["state"] != "failed" || out["safety_failed"] != true || errText(out) != "pg_dump: error: connection refused" || len(e.core.bk.restored) != 1 {
 		t.Errorf("restore without a safety backup: %v, restored %v", out, e.core.bk.restored)
 	}
 	// The failure is on the list, in the database's words.
 	out = e.backUp(t, "pg")
-	if out["state"] != "failed" || out["error"] != "pg_dump: error: connection refused" {
+	if out["state"] != "failed" || errText(out) != "pg_dump: error: connection refused" {
 		t.Errorf("failed backup: %v", out)
 	}
 	e.core.bk.failBackup = ""
@@ -329,14 +329,14 @@ func TestDeletedDatabaseKeepsBackups(t *testing.T) {
 		t.Errorf("deleted: %d %s", code, body)
 	}
 	code, out := e.b.do("POST", fmt.Sprintf("/api/backups/%d/restore", id), nil)
-	if code != http.StatusConflict || !strings.Contains(out["error"].(string), "create a PostgreSQL database named pg") {
+	if code != http.StatusConflict || out["code"] != "restore.db_deleted" || !strings.Contains(out["error"].(string), "Create a PostgreSQL database named pg") {
 		t.Errorf("restore into a deleted database: %d %v", code, out)
 	}
 	// A new database of another kind under the name does not take it.
 	e.b.do("POST", "/api/databases", map[string]any{"id": "pg", "engine": "redis"})
 	e.settle(t, "pg")
 	code, out = e.b.do("POST", fmt.Sprintf("/api/backups/%d/restore", id), nil)
-	if code != http.StatusConflict || !strings.Contains(out["error"].(string), "PostgreSQL") {
+	if code != http.StatusConflict || out["code"] != "restore.wrong_engine" || fmt.Sprint(out["params"]) != "map[app:pg engine:PostgreSQL other:Redis]" {
 		t.Errorf("restore into another kind: %d %v", code, out)
 	}
 	if code, _ := e.b.do("DELETE", fmt.Sprintf("/api/backups/%d", id), nil); code != http.StatusNoContent || len(e.core.bk.files["pg"]) != 0 {
@@ -543,4 +543,11 @@ func TestScheduledVolumeBackups(t *testing.T) {
 	if count() != 1 {
 		t.Errorf("scheduled backups: %d", count())
 	}
+}
+
+// errText is the English text of the message in a response's error field.
+func errText(out map[string]any) string {
+	m, _ := out["error"].(map[string]any)
+	s, _ := m["text"].(string)
+	return s
 }

@@ -7,7 +7,7 @@
 	import { messageOf } from '$lib/errors';
 	import { ago } from '$lib/format';
 	import { createApp, status, type GitHub } from '$lib/github';
-	import { t } from '$lib/i18n';
+	import { say, t } from '$lib/i18n';
 	import Button from '$lib/ui/Button.svelte';
 	import ErrorText from '$lib/ui/ErrorText.svelte';
 	import Field from '$lib/ui/Field.svelte';
@@ -144,7 +144,7 @@
 				{#if gh.connected}
 					<div class="flex flex-col gap-3 sm:pl-14">
 						{#if gh.error}
-							<p class="text-sm text-danger">{gh.error}</p>
+							<p class="text-sm text-danger">{say(gh.error)}</p>
 						{:else if installed}
 							{#each gh.installations ?? [] as i (i.id)}
 								<p class="text-sm">{i.account} <span class="text-muted">· {i.all ? t('github.allRepos') : t('github.someRepos')}</span></p>

@@ -42,13 +42,11 @@
 						<div class="min-w-0">
 							<p class="truncate text-[15px]">{d.app} <span class="text-muted">· {what(d.list[0])}</span></p>
 							<p class="text-sm text-muted">
-								{d.list.length === 1
-									? t('backups.deletedOne', { when: date(d.list[0].created_at), until: date(d.list[0].keep_until) })
-									: t('backups.deletedItem', {
-											count: d.list.length,
-											when: date(d.list[0].created_at),
-											until: date(d.list.reduce((a, b) => (a.keep_until > b.keep_until ? a : b)).keep_until)
-										})}
+								{t('backups.deletedItem', {
+									n: d.list.length,
+									when: date(d.list[0].created_at),
+									until: date(d.list.reduce((a, b) => (a.keep_until > b.keep_until ? a : b)).keep_until)
+								})}
 							</p>
 						</div>
 					</div>

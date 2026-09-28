@@ -22,6 +22,7 @@ import (
 
 	"github.com/Caria-Core/zelie/internal/backup"
 	"github.com/Caria-Core/zelie/internal/engine"
+	"github.com/Caria-Core/zelie/internal/msg"
 	"github.com/Caria-Core/zelie/internal/peer"
 	"github.com/Caria-Core/zelie/internal/secret"
 	"github.com/containerd/errdefs"
@@ -440,6 +441,19 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	json.NewEncoder(w).Encode(v)
 }
 
+// errorJSON is an error as the core sends it. A message meant for the user
+// also has its code and values, so the panel can show it in any language.
+type errorJSON struct {
+	Error  string         `json:"error"`
+	Code   string         `json:"code,omitempty"`
+	Params map[string]any `json:"params,omitempty"`
+}
+
 func writeError(w http.ResponseWriter, status int, err error) {
-	writeJSON(w, status, map[string]string{"error": err.Error()})
+	out := errorJSON{Error: err.Error()}
+	var m *msg.Error
+	if errors.As(err, &m) {
+		out.Code, out.Params = m.Code, m.Params
+	}
+	writeJSON(w, status, out)
 }

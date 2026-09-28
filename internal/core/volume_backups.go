@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Caria-Core/zelie/internal/backup"
+	"github.com/Caria-Core/zelie/internal/msg"
 	"golang.org/x/sys/unix"
 )
 
@@ -24,6 +25,11 @@ type VolumeRef struct {
 // diskReserve is left free by backups and restores, so they never fill the
 // disk the apps write to.
 const diskReserve = 1 << 30
+
+var (
+	errNoRoomBackup  = msg.Define(http.StatusUnprocessableEntity, "backup.no_room", "Not enough disk space: the backup needs up to {need} and {free} is free, and Zelie keeps 1 GB free for the apps.")
+	errNoRoomRestore = msg.Define(http.StatusUnprocessableEntity, "restore.no_room", "Not enough disk space: the restore needs up to {need} and {free} is free, and Zelie keeps 1 GB free for the apps.")
+)
 
 func checkVolumeRefs(vols []VolumeRef) error {
 	if len(vols) == 0 {
@@ -58,14 +64,13 @@ func (s *Server) freeSpace() (int64, error) {
 }
 
 // roomFor refuses to start when need would leave less than the reserve.
-func (s *Server) roomFor(need int64, what string) error {
+func (s *Server) roomFor(need int64, what msg.Template) error {
 	free, err := s.freeSpace()
 	if err != nil {
 		return err
 	}
 	if free-need < diskReserve {
-		return &backup.Error{Msg: fmt.Sprintf("Not enough disk space: %s needs up to %s and %s is free, and Zelie keeps 1 GB free for the apps.",
-			what, sizeLabel(need), sizeLabel(free))}
+		return what.Err("need", sizeLabel(need), "free", sizeLabel(free))
 	}
 	return nil
 }
@@ -121,7 +126,7 @@ func (s *Server) backUpVolumes(w http.ResponseWriter, r *http.Request, req backu
 	}
 	// Compressed, the backup is smaller than the files; counting it at
 	// full size errs on the safe side.
-	if err := s.roomFor(need, "the backup"); err != nil {
+	if err := s.roomFor(need, errNoRoomBackup); err != nil {
 		s.backupFailed(w, "back up", req.App, err)
 		return
 	}
@@ -165,7 +170,7 @@ func (s *Server) restoreVolumes(w http.ResponseWriter, r *http.Request, app, nam
 		return
 	}
 	// The old files stay until the new ones are all in.
-	if err := s.roomFor(req.Size, "the restore"); err != nil {
+	if err := s.roomFor(req.Size, errNoRoomRestore); err != nil {
 		s.backupFailed(w, "restore", app, err)
 		return
 	}

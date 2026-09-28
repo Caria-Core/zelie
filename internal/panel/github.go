@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/Caria-Core/zelie/internal/github"
+	"github.com/Caria-Core/zelie/internal/msg"
 	"github.com/Caria-Core/zelie/internal/store"
 )
 
@@ -112,6 +113,18 @@ func (s *Server) forgetGitHub() {
 	s.gh.conn, s.gh.loaded = nil, false
 }
 
+var (
+	errBadOrg        = msg.Define(http.StatusBadRequest, "github.bad_org", "That is not a GitHub organization name.")
+	errGitHubOn      = msg.Define(http.StatusConflict, "github.connected", "GitHub is already connected.")
+	errGitHubOff     = msg.Define(http.StatusConflict, "github.not_connected", "GitHub is not connected.")
+	errManifestState = msg.Define(http.StatusBadRequest, "github.link_expired", "This link has expired or was not started here. Connect GitHub again.")
+	errGitHubAnswer  = msg.Define(http.StatusBadGateway, "github.failed", "GitHub could not be reached or refused: {detail}")
+	errOpenPanelAt   = msg.Define(http.StatusBadRequest, "github.open_panel_at", "Open the panel at {panel} to connect GitHub.")
+	errNoOwnAddress  = msg.Define(http.StatusBadRequest, "github.no_address", "The panel does not know its own address.")
+	// Webhooks are answered to GitHub, not to a person.
+	errWebhook = msg.Define(http.StatusBadRequest, "github.webhook_refused", "Webhook refused: {detail}")
+)
+
 // panelBase is the address the browser reached the panel at, such as
 // https://panel.example.com. GitHub sends people and webhooks back there.
 func (s *Server) panelBase(r *http.Request) (string, error) {
@@ -126,11 +139,11 @@ func (s *Server) panelBase(r *http.Request) (string, error) {
 			return "", err
 		}
 		if cfg.Panel != "" && !strings.EqualFold(name, cfg.Panel) {
-			return "", fmt.Errorf("open the panel at %s to connect GitHub", cfg.Panel)
+			return "", errOpenPanelAt.Err("panel", cfg.Panel)
 		}
 	}
 	if name == "" {
-		return "", errors.New("the panel does not know its own address")
+		return "", errNoOwnAddress.Err()
 	}
 	return "https://" + strings.ToLower(host), nil
 }
@@ -148,7 +161,7 @@ type githubJSON struct {
 	// cannot reach, so it has no webhook.
 	Private bool `json:"private,omitempty"`
 	// Error is set when GitHub could not be asked about the App.
-	Error string `json:"error,omitempty"`
+	Error *msg.Msg `json:"error,omitempty"`
 }
 
 type webhookJSON struct {
@@ -179,7 +192,7 @@ func (s *Server) githubStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	out.Installations, err = conn.client.Installations(ctx)
 	if err != nil {
-		out.Error = err.Error()
+		out.Error = new(errGitHubAnswer.With("detail", err.Error()))
 		writeJSON(w, http.StatusOK, out)
 		return
 	}
@@ -191,7 +204,7 @@ func (s *Server) githubStatus(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, github.ErrNotFound):
 			out.Webhook = &webhookJSON{State: "none"}
 		case err != nil:
-			out.Error = err.Error()
+			out.Error = new(errGitHubAnswer.With("detail", err.Error()))
 		default:
 			out.Webhook = webhookState(deliveries)
 		}
@@ -228,7 +241,7 @@ func (s *Server) githubManifest(w http.ResponseWriter, r *http.Request) {
 	}
 	req.Org = strings.TrimSpace(req.Org)
 	if req.Org != "" && !validAccount.MatchString(req.Org) {
-		writeError(w, http.StatusBadRequest, errors.New("that is not a GitHub organization name"))
+		writeError(w, errBadOrg.Err())
 		return
 	}
 	ctx := r.Context()
@@ -236,12 +249,12 @@ func (s *Server) githubManifest(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, "load GitHub App", err)
 		return
 	} else if conn != nil {
-		writeError(w, http.StatusConflict, errors.New("GitHub is already connected"))
+		writeError(w, errGitHubOn.Err())
 		return
 	}
 	base, err := s.panelBase(r)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err)
+		s.failWith(w, "panel address", err)
 		return
 	}
 	b := make([]byte, 24)
@@ -278,17 +291,17 @@ func (s *Server) githubCreated(w http.ResponseWriter, r *http.Request) {
 	l := loginFrom(ctx)
 	v, ok := s.guards.pending.take(l.session.Hash, "github-manifest", s.now())
 	if !ok || subtle.ConstantTimeCompare([]byte(v.(string)), []byte(req.State)) != 1 {
-		writeError(w, http.StatusBadRequest, errors.New("this link has expired or was not started here; connect GitHub again"))
+		writeError(w, errManifestState.Err())
 		return
 	}
 	base, err := s.panelBase(r)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err)
+		s.failWith(w, "panel address", err)
 		return
 	}
 	creds, err := github.Convert(ctx, s.githubHTTP(), s.githubAPI(), req.Code)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, err)
+		writeError(w, errGitHubAnswer.Err("detail", err.Error()))
 		return
 	}
 	err = s.Store.SetGitHubApp(ctx, store.GitHubApp{
@@ -330,19 +343,19 @@ func (s *Server) githubRepos(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if conn == nil {
-		writeError(w, http.StatusConflict, errors.New("GitHub is not connected"))
+		writeError(w, errGitHubOff.Err())
 		return
 	}
 	insts, err := conn.client.Installations(ctx)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, err)
+		writeError(w, errGitHubAnswer.Err("detail", err.Error()))
 		return
 	}
 	out := []github.Repository{}
 	for _, in := range insts {
 		repos, err := conn.client.Repositories(ctx, in.ID)
 		if err != nil {
-			writeError(w, http.StatusBadGateway, err)
+			writeError(w, errGitHubAnswer.Err("detail", err.Error()))
 			return
 		}
 		out = append(out, repos...)
@@ -364,22 +377,22 @@ func (s *Server) githubWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if conn == nil {
-		writeError(w, http.StatusNotFound, errors.New("GitHub is not connected"))
+		writeError(w, errGitHubOff.Err().WithStatus(http.StatusNotFound))
 		return
 	}
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxWebhook))
 	if err != nil {
-		writeError(w, http.StatusRequestEntityTooLarge, errors.New("the payload is too large"))
+		writeError(w, errWebhook.Err("detail", "the payload is too large").WithStatus(http.StatusRequestEntityTooLarge))
 		return
 	}
 	if !github.Verify(conn.secret, body, r.Header.Get("X-Hub-Signature-256")) {
 		s.Log.Warn("webhook with a bad signature", "ip", clientIP(r))
-		writeError(w, http.StatusUnauthorized, errors.New("bad signature"))
+		writeError(w, errWebhook.Err("detail", "bad signature").WithStatus(http.StatusUnauthorized))
 		return
 	}
 	delivery := r.Header.Get("X-GitHub-Delivery")
 	if delivery == "" || len(delivery) > 100 {
-		writeError(w, http.StatusBadRequest, errors.New("missing delivery id"))
+		writeError(w, errWebhook.Err("detail", "missing delivery id"))
 		return
 	}
 	first, err := s.Store.FirstDelivery(ctx, delivery, s.now())
@@ -414,7 +427,7 @@ func (s *Server) githubPush(w http.ResponseWriter, r *http.Request, body []byte)
 		} `json:"head_commit"`
 	}
 	if err := json.Unmarshal(body, &p); err != nil {
-		writeError(w, http.StatusBadRequest, errors.New("invalid push payload"))
+		writeError(w, errWebhook.Err("detail", "invalid push payload"))
 		return
 	}
 	branch, ok := strings.CutPrefix(p.Ref, "refs/heads/")

@@ -14,6 +14,7 @@ import (
 
 	"github.com/Caria-Core/zelie/internal/backup"
 	"github.com/Caria-Core/zelie/internal/core"
+	"github.com/Caria-Core/zelie/internal/msg"
 	"github.com/Caria-Core/zelie/internal/store"
 )
 
@@ -88,13 +89,28 @@ func (p *pauses) paused(id string) bool {
 	return p.n[id] > 0
 }
 
-var errBackupBusy = errors.New("a backup or restore of this app is already running")
+var (
+	errBackupBusy    = msg.Define(http.StatusConflict, "backup.busy", "A backup or restore of this app is already running.")
+	errDBNotStarted  = msg.Define(http.StatusConflict, "backup.db_not_started", "The database has not started yet.")
+	errDBNotRunning  = msg.Define(http.StatusConflict, "backup.db_not_running", "The database is not running.")
+	errCoreBackup    = msg.Define(0, "backup.core_failed", "The Zelie core could not make it. See the server log.")
+	errBadMinute     = msg.Define(http.StatusBadRequest, "backup.bad_time", "The time must be within the day.")
+	errBadKeep       = msg.Define(http.StatusBadRequest, "backup.bad_keep", "Backups are kept for 1 to 365 days.")
+	errNoBackup      = msg.Define(http.StatusNotFound, "backup.not_found", "There is no such backup.")
+	errBackupNotMade = msg.Define(http.StatusConflict, "backup.not_made", "This backup was not made.")
+	errAppDeleted    = msg.Define(http.StatusConflict, "restore.app_deleted", "{app} was deleted. Create an app named {app} with volumes at the same paths, then restore this backup into it.")
+	errDBDeleted     = msg.Define(http.StatusConflict, "restore.db_deleted", "{app} was deleted. Create a {engine} database named {app}, then restore this backup into it.")
+	errAppIntoDB     = msg.Define(http.StatusConflict, "restore.app_into_db", "This is a backup of an app's volumes, and {app} is a database.")
+	errDBIntoApp     = msg.Define(http.StatusConflict, "restore.db_into_app", "This is a backup of a {engine} database, and {app} is an app.")
+	errWrongEngine   = msg.Define(http.StatusConflict, "restore.wrong_engine", "This is a backup of a {engine} database, and {app} is {other}.")
+	errStartDBFirst  = msg.Define(http.StatusConflict, "restore.start_db_first", "Start the database first: what it holds now is backed up before the restore.")
+)
 
 // liveContainer returns the database's running container.
 func (s *Server) liveContainer(ctx context.Context, a store.App) (string, error) {
 	live, err := s.Store.LiveDeployment(ctx, a.ID)
 	if errors.Is(err, store.ErrNotFound) {
-		return "", errors.New("the database has not started yet")
+		return "", errDBNotStarted.Err()
 	}
 	if err != nil {
 		return "", err
@@ -102,7 +118,7 @@ func (s *Server) liveContainer(ctx context.Context, a store.App) (string, error)
 	id := fmt.Sprintf("%s-%d", a.ID, live.ID)
 	st, err := s.containerStatus(ctx, id)
 	if err != nil || st.State != "running" {
-		return "", errors.New("the database is not running")
+		return "", errDBNotRunning.Err()
 	}
 	return id, nil
 }
@@ -135,9 +151,9 @@ func (s *Server) makeBackup(ctx context.Context, a store.App, reason string) (st
 		return b, err
 	}
 	info, err := s.takeBackup(ctx, a, b.ID, plan, reason)
-	failure := ""
+	var failure *msg.Msg
 	if err != nil {
-		failure = backupFailure(err)
+		failure = new(backupFailure(err))
 		s.Log.Warn("backup failed", "app", a.ID, "reason", reason, "err", err)
 	} else {
 		s.Log.Info("backup made", "app", a.ID, "reason", reason, "bytes", info.Bytes)
@@ -150,15 +166,15 @@ func (s *Server) makeBackup(ctx context.Context, a store.App, reason string) (st
 }
 
 // backupFailure is what the user reads about a failed backup.
-func backupFailure(err error) string {
+func backupFailure(err error) msg.Msg {
 	var ce *core.Error
 	if errors.As(err, &ce) {
 		if ce.Status < 500 {
-			return ce.Message
+			return ce.Msg()
 		}
-		return "the Zelie core could not make it; see the server log"
+		return errCoreBackup.With()
 	}
-	return err.Error()
+	return msg.Wrap(err)
 }
 
 // runBackups makes the scheduled backups and deletes the ones whose time
@@ -267,7 +283,7 @@ type backupJSON struct {
 	Reason     string     `json:"reason"`
 	State      string     `json:"state"`
 	Bytes      int64      `json:"bytes"`
-	Error      string     `json:"error,omitempty"`
+	Error      *msg.Msg   `json:"error,omitempty"`
 	CreatedAt  time.Time  `json:"created_at"`
 	FinishedAt *time.Time `json:"finished_at,omitempty"`
 	KeepUntil  time.Time  `json:"keep_until"`
@@ -375,7 +391,7 @@ func (s *Server) backUpNow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !s.backupBusy.take(a.ID) {
-		writeError(w, http.StatusConflict, errBackupBusy)
+		writeError(w, errBackupBusy.Err())
 		return
 	}
 	// The page follows along; the backup is on its list from the start.
@@ -397,11 +413,11 @@ func (s *Server) setBackupPlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Minute < 0 || req.Minute >= 24*60 {
-		writeError(w, http.StatusBadRequest, errors.New("the time must be within the day"))
+		writeError(w, errBadMinute.Err())
 		return
 	}
 	if req.KeepDays < 1 || req.KeepDays > 365 {
-		writeError(w, http.StatusBadRequest, errors.New("backups are kept for 1 to 365 days"))
+		writeError(w, errBadKeep.Err())
 		return
 	}
 	if a.IsDatabase() {
@@ -421,12 +437,12 @@ func (s *Server) setBackupPlan(w http.ResponseWriter, r *http.Request) {
 func (s *Server) backupFrom(w http.ResponseWriter, r *http.Request) (store.Backup, bool) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
-		writeError(w, http.StatusNotFound, errors.New("no such backup"))
+		writeError(w, errNoBackup.Err())
 		return store.Backup{}, false
 	}
 	b, err := s.Store.Backup(r.Context(), id)
 	if errors.Is(err, store.ErrNotFound) {
-		writeError(w, http.StatusNotFound, errors.New("no such backup"))
+		writeError(w, errNoBackup.Err())
 		return b, false
 	}
 	if err != nil {
@@ -434,7 +450,7 @@ func (s *Server) backupFrom(w http.ResponseWriter, r *http.Request) (store.Backu
 		return b, false
 	}
 	if b.State != store.BackupDone || b.File == "" {
-		writeError(w, http.StatusConflict, errors.New("this backup was not made"))
+		writeError(w, errBackupNotMade.Err())
 		return b, false
 	}
 	return b, true
@@ -464,7 +480,7 @@ func (s *Server) deleteBackup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !s.backupBusy.take(b.AppID) {
-		writeError(w, http.StatusConflict, errBackupBusy)
+		writeError(w, errBackupBusy.Err())
 		return
 	}
 	defer s.backupBusy.done(b.AppID)
@@ -507,9 +523,12 @@ func (s *Server) recoveryFile(w http.ResponseWriter, r *http.Request) {
 // the background, since a large database takes longer than a browser or a
 // proxy in front of the panel waits for an answer.
 type restoreJSON struct {
-	Backup int64  `json:"backup"`
-	State  string `json:"state"` // running, done or failed
-	Error  string `json:"error,omitempty"`
+	Backup int64    `json:"backup"`
+	State  string   `json:"state"` // running, done or failed
+	Error  *msg.Msg `json:"error,omitempty"`
+	// SafetyFailed is set when the backup of what was there failed, so
+	// nothing was changed.
+	SafetyFailed bool `json:"safety_failed,omitempty"`
 	// Safety is when the backup of what was there before was made.
 	Safety *time.Time `json:"safety,omitempty"`
 	// Restarted are the linked apps that were stopped and started again.
@@ -565,10 +584,10 @@ func (s *Server) restoreBackup(w http.ResponseWriter, r *http.Request) {
 	a, err := s.Store.App(ctx, b.AppID)
 	if errors.Is(err, store.ErrNotFound) {
 		if b.Engine == "" {
-			writeError(w, http.StatusConflict, fmt.Errorf("%s was deleted; create an app named %s with volumes at the same paths, then restore this backup into it", b.AppID, b.AppID))
+			writeError(w, errAppDeleted.Err("app", b.AppID))
 			return
 		}
-		writeError(w, http.StatusConflict, fmt.Errorf("%s was deleted; create a %s database named %s, then restore this backup into it", b.AppID, engineLabel(b.Engine), b.AppID))
+		writeError(w, errDBDeleted.Err("app", b.AppID, "engine", engineLabel(b.Engine)))
 		return
 	}
 	if err != nil {
@@ -578,24 +597,24 @@ func (s *Server) restoreBackup(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case a.Engine == b.Engine:
 	case b.Engine == "":
-		writeError(w, http.StatusConflict, fmt.Errorf("this is a backup of an app's volumes, and %s is a database", a.ID))
+		writeError(w, errAppIntoDB.Err("app", a.ID))
 		return
 	case !a.IsDatabase():
-		writeError(w, http.StatusConflict, fmt.Errorf("this is a backup of a %s database, and %s is an app", engineLabel(b.Engine), a.ID))
+		writeError(w, errDBIntoApp.Err("engine", engineLabel(b.Engine), "app", a.ID))
 		return
 	default:
-		writeError(w, http.StatusConflict, fmt.Errorf("this is a backup of a %s database, and %s is %s", engineLabel(b.Engine), a.ID, engineLabel(a.Engine)))
+		writeError(w, errWrongEngine.Err("engine", engineLabel(b.Engine), "app", a.ID, "other", engineLabel(a.Engine)))
 		return
 	}
 	if !a.IsDatabase() && !s.hasVolumes(w, r, a) {
 		return
 	}
 	if a.IsDatabase() && a.Stopped {
-		writeError(w, http.StatusConflict, errors.New("start the database first: what it holds now is backed up before the restore"))
+		writeError(w, errStartDBFirst.Err())
 		return
 	}
 	if !s.backupBusy.take(a.ID) {
-		writeError(w, http.StatusConflict, errBackupBusy)
+		writeError(w, errBackupBusy.Err())
 		return
 	}
 	user := loginFrom(r.Context()).account.ID
@@ -617,7 +636,7 @@ func (s *Server) runRestore(ctx context.Context, a store.App, b store.Backup, us
 	defer func() { out.At = s.now() }()
 	safety, err := s.makeBackup(ctx, a, store.BackupRestore)
 	if err != nil {
-		out.Error = "Nothing was changed: the safety backup of what is there now failed: " + backupFailure(err)
+		out.Error, out.SafetyFailed = new(backupFailure(err)), true
 		return out
 	}
 	out.Safety = &safety.CreatedAt
@@ -627,7 +646,7 @@ func (s *Server) runRestore(ctx context.Context, a store.App, b store.Backup, us
 	}
 	if err != nil {
 		s.Log.Error("restore failed", "app", a.ID, "backup", b.File, "err", err)
-		out.Error = "The restore failed: " + backupFailure(err)
+		out.Error = new(backupFailure(err))
 		return out
 	}
 	s.Store.SetRestored(ctx, b.ID, s.now())

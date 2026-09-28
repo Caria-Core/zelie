@@ -19,6 +19,7 @@ import (
 	"github.com/Caria-Core/zelie/internal/core"
 	"github.com/Caria-Core/zelie/internal/engine"
 	"github.com/Caria-Core/zelie/internal/github"
+	"github.com/Caria-Core/zelie/internal/msg"
 	"github.com/Caria-Core/zelie/internal/proxy"
 	"github.com/Caria-Core/zelie/internal/store"
 )
@@ -40,6 +41,18 @@ var (
 	startupGrace = 10 * time.Second
 	startupLimit = 60 * time.Second
 	startupPoll  = 500 * time.Millisecond
+)
+
+var (
+	errTestsTimeout   = msg.Define(0, "deploy.tests_timeout", "The tests did not finish within {minutes} minutes.")
+	errTestsFailed    = msg.Define(0, "deploy.tests_failed", "The tests failed with exit code {code}.")
+	errStoppedAtStart = msg.Define(0, "deploy.stopped_at_start", "The app stopped right after starting. Its log shows why.")
+	errDBNoAnswer     = msg.Define(0, "deploy.database_no_answer", "The database did not accept connections on port {port} within {seconds} seconds.")
+	errNoAnswer       = msg.Define(0, "deploy.no_answer", "The app did not answer at {path} on port {port} within {seconds} seconds.")
+	errBadAnswer      = msg.Define(0, "deploy.bad_answer", "The app answered {status} at {path} on port {port}. It has to answer with a status below 500 within {seconds} seconds.")
+	errNotStarted     = msg.Define(0, "deploy.not_started", "The app did not start in time.")
+	errStopOld        = msg.Define(0, "deploy.stop_old", "The old version could not be stopped: {detail}")
+	errRoute          = msg.Define(0, "deploy.route", "{domain} could not be pointed at the new version: {detail}")
 )
 
 // healthClient talks straight to the container: no proxy from the
@@ -170,7 +183,7 @@ func (s *Server) runDeployment(ctx context.Context, appID string, id int64) {
 	var status *commitStatus
 	fail := func(err error) {
 		fmt.Fprintf(out, "\nDeployment failed: %v\n", err)
-		d.Error = err.Error()
+		d.Error = new(msg.Wrap(err))
 		set(store.DeployFailed)
 		status.set(ctx, github.StatusFailure, "Deployment failed: "+err.Error())
 		s.Log.Warn("deployment failed", "app", appID, "id", id, "err", err)
@@ -245,12 +258,12 @@ func (s *Server) runDeployment(ctx context.Context, appID string, id int64) {
 		fail(err)
 		return
 	}
-	if reason := s.overLimit(vols); reason != "" {
+	if over := s.overLimit(vols); over != nil {
 		// Stopped, or Zelie would keep trying to bring it back.
 		if err := s.Store.SetStopped(ctx, app.ID, true); err != nil {
 			s.Log.Error("stop app", "app", app.ID, "err", err)
 		}
-		fail(errors.New(reason))
+		fail(over)
 		return
 	}
 
@@ -260,7 +273,7 @@ func (s *Server) runDeployment(ctx context.Context, appID string, id int64) {
 	stoppedOld := false
 	if len(vols) > 0 {
 		if stoppedOld, err = s.stopRunning(ctx, app.ID, out); err != nil {
-			fail(fmt.Errorf("stop the old version: %w", err))
+			fail(errStopOld.Err("detail", err.Error()))
 			return
 		}
 	}
@@ -279,7 +292,7 @@ func (s *Server) runDeployment(ctx context.Context, appID string, id int64) {
 	}
 	if err := s.syncRoutes(ctx, map[string]string{app.ID: container}); err != nil {
 		undo()
-		fail(fmt.Errorf("point %s at the new version: %w", app.Domain, err))
+		fail(errRoute.Err("domain", app.Domain, "detail", err.Error()))
 		return
 	}
 	if err := s.Store.GoLive(ctx, d, s.now()); err != nil {
@@ -396,11 +409,11 @@ func (s *Server) runTests(ctx context.Context, app store.App, image string, depl
 	<-logsDone
 	switch {
 	case errors.Is(waitCtx.Err(), context.DeadlineExceeded):
-		return fmt.Errorf("the tests did not finish within %s", testTimeout)
+		return errTestsTimeout.Err("minutes", int(testTimeout/time.Minute))
 	case err != nil:
 		return err
 	case code != 0:
-		return fmt.Errorf("the tests failed (exit code %d)", code)
+		return errTestsFailed.Err("code", code)
 	}
 	fmt.Fprintln(out, "The tests passed.")
 	return nil
@@ -469,7 +482,8 @@ func (s *Server) start(ctx context.Context, app store.App, image, container stri
 	}
 	deadline := time.Now().Add(startupLimit)
 	var upSince time.Time
-	lastAnswer := ""
+	// The status the app last answered with; 0 until it answers.
+	lastStatus := 0
 	for {
 		st, err := s.containerStatus(ctx, container)
 		if err != nil {
@@ -481,7 +495,6 @@ func (s *Server) start(ctx context.Context, app store.App, image, container stri
 				fmt.Fprintln(out, "It accepts connections.")
 				return nil
 			}
-			lastAnswer = "not accepting connections yet"
 		case st.State == "running" && app.Domain != "":
 			addr := netip.AddrPortFrom(st.IP, uint16(app.Port)).String()
 			code, err := s.healthCheck(ctx, "http://"+addr+app.HealthPath, app.Domain)
@@ -489,10 +502,8 @@ func (s *Server) start(ctx context.Context, app store.App, image, container stri
 				fmt.Fprintf(out, "It answered with %d.\n", code)
 				return nil
 			}
-			if err != nil {
-				lastAnswer = "no answer yet"
-			} else {
-				lastAnswer = fmt.Sprintf("it answered %d", code)
+			if err == nil {
+				lastStatus = code
 			}
 		case st.State == "running" && upSince.IsZero():
 			upSince = time.Now()
@@ -501,20 +512,23 @@ func (s *Server) start(ctx context.Context, app store.App, image, container stri
 		case st.State == "stopped":
 			fmt.Fprintln(out, "\nThe app stopped right after starting. Its last output:")
 			s.Core.Logs(ctx, container, false, 4<<10, out)
-			return errors.New("the app stopped right after starting")
+			return errStoppedAtStart.Err()
 		}
 		if time.Now().After(deadline) {
 			if isDB {
 				fmt.Fprintln(out, "\nThe database's last output:")
 				s.Core.Logs(ctx, container, false, 4<<10, out)
-				return fmt.Errorf("the database did not accept connections on port %d within %s", app.Port, startupLimit)
+				return errDBNoAnswer.Err("port", app.Port, "seconds", int(startupLimit/time.Second))
 			}
-			if lastAnswer != "" {
+			if app.Domain != "" {
 				fmt.Fprintln(out, "\nThe app's last output:")
 				s.Core.Logs(ctx, container, false, 4<<10, out)
-				return fmt.Errorf("the app did not answer at %s on port %d within %s (%s)", app.HealthPath, app.Port, startupLimit, lastAnswer)
+				if lastStatus != 0 {
+					return errBadAnswer.Err("status", lastStatus, "path", app.HealthPath, "port", app.Port, "seconds", int(startupLimit/time.Second))
+				}
+				return errNoAnswer.Err("path", app.HealthPath, "port", app.Port, "seconds", int(startupLimit/time.Second))
 			}
-			return errors.New("the app did not start in time")
+			return errNotStarted.Err()
 		}
 		select {
 		case <-ctx.Done():

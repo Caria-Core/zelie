@@ -1,11 +1,12 @@
 import { api } from './api';
+import type { Msg } from './i18n';
 
 export type Deployment = {
 	id: number;
 	version: string;
 	image?: string;
 	state: 'queued' | 'building' | 'testing' | 'starting' | 'live' | 'failed' | 'replaced' | 'skipped';
-	error?: string;
+	error?: Msg;
 	cause: 'manual' | 'push' | 'restart' | 'rollback' | 'recover' | 'restore' | 'backup';
 	// The image still exists, so it can be rolled back to.
 	kept: boolean;
@@ -39,9 +40,9 @@ export type App = {
 	// The user stopped it; Zelie keeps it down.
 	stopped: boolean;
 	// Why Zelie stopped bringing it back up after crashes.
-	crashing?: string;
+	crashing?: Msg;
 	// Which volume has grown past its limit, keeping the app down.
-	volume_full?: string;
+	volume_full?: Msg;
 	// Set for a database: postgres, mariadb or redis, and its major version.
 	engine?: Engine;
 	engine_version?: string;

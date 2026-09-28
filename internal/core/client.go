@@ -13,6 +13,7 @@ import (
 	"strconv"
 
 	"github.com/Caria-Core/zelie/internal/engine"
+	"github.com/Caria-Core/zelie/internal/msg"
 	"github.com/Caria-Core/zelie/internal/secret"
 )
 
@@ -37,9 +38,21 @@ func NewClient(socket string) *Client {
 type Error struct {
 	Status  int
 	Message string
+	// Code and Params are set for a message meant for the user.
+	Code   string
+	Params map[string]any
 }
 
 func (e *Error) Error() string { return e.Message }
+
+// Msg is the error as a message for the user: the core's own, when it
+// wrote one, or else its text as it is.
+func (e *Error) Msg() msg.Msg {
+	if e.Code != "" {
+		return msg.Msg{Code: e.Code, Params: e.Params, Text: e.Message}
+	}
+	return msg.Other.With("detail", e.Message)
+}
 
 func (c *Client) do(ctx context.Context, method, path string, body any, out any) error {
 	var r io.Reader
@@ -146,14 +159,12 @@ func (c *Client) RemoveImage(ctx context.Context, name string) error {
 
 // readError turns an error response into an *Error.
 func readError(resp *http.Response) error {
-	var e struct {
-		Error string `json:"error"`
-	}
+	var e errorJSON
 	json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&e)
 	if e.Error == "" {
 		e.Error = resp.Status
 	}
-	return &Error{Status: resp.StatusCode, Message: e.Error}
+	return &Error{Status: resp.StatusCode, Message: e.Error, Code: e.Code, Params: e.Params}
 }
 
 func (c *Client) List(ctx context.Context) ([]engine.Status, error) {

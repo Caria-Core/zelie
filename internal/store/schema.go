@@ -224,5 +224,10 @@ ALTER TABLE backup_plans ADD COLUMN stop INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE backups ADD COLUMN volumes TEXT NOT NULL DEFAULT '';
 ALTER TABLE backups ADD COLUMN size INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE backups ADD COLUMN changed INTEGER NOT NULL DEFAULT 0;
+`, `
+-- Why a deployment or backup failed, as a message the web interface can
+-- translate: JSON of msg.Msg. The error columns keep the English text.
+ALTER TABLE deployments ADD COLUMN error_msg TEXT NOT NULL DEFAULT '';
+ALTER TABLE backups ADD COLUMN error_msg TEXT NOT NULL DEFAULT '';
 `,
 }

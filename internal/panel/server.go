@@ -22,6 +22,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Caria-Core/zelie/internal/core"
+	"github.com/Caria-Core/zelie/internal/msg"
 	"github.com/Caria-Core/zelie/internal/peer"
 	"github.com/Caria-Core/zelie/internal/store"
 	"github.com/Caria-Core/zelie/internal/webui"
@@ -152,7 +154,7 @@ func (s *Server) Handler() http.Handler {
 	web.HandleFunc("GET /api/github/repos", s.signedIn(s.githubRepos))
 	web.HandleFunc("POST /api/github/webhook", s.githubWebhook)
 	web.HandleFunc("GET /api/", func(w http.ResponseWriter, r *http.Request) {
-		writeError(w, http.StatusNotFound, errors.New("no such API endpoint"))
+		writeError(w, errNoEndpoint.Err())
 	})
 	web.Handle("GET /", webui.Handler())
 	// Browsers say where a request comes from; anything that changes state
@@ -229,7 +231,7 @@ func (s *Server) setupLink(w http.ResponseWriter, r *http.Request) {
 	err := s.Store.SetSetupToken(r.Context(), hash[:], s.now().Add(setupLinkTTL))
 	switch {
 	case errors.Is(err, store.ErrSetupDone):
-		writeError(w, http.StatusConflict, err)
+		writeError(w, errSetupDone.Err())
 		return
 	case err != nil:
 		s.fail(w, "setup link", err)
@@ -263,9 +265,31 @@ func secureHeaders(next http.Handler) http.Handler {
 
 // fail logs an internal error and tells the client only that something went
 // wrong, so details of the server never reach the browser.
+var (
+	errServer     = msg.Define(http.StatusInternalServerError, "server.failed", "Something went wrong on the server.")
+	errNoEndpoint = msg.Define(http.StatusNotFound, "server.no_endpoint", "There is no such API endpoint.")
+	errSetupDone  = msg.Define(http.StatusConflict, "setup.done", "Setup is already done.")
+	errBadBody    = msg.Define(http.StatusBadRequest, "server.bad_request", "The request was not understood.")
+)
+
 func (s *Server) fail(w http.ResponseWriter, what string, err error) {
 	s.Log.Error(what, "err", err)
-	writeError(w, http.StatusInternalServerError, errors.New("something went wrong on the server"))
+	writeError(w, errServer.Err())
+}
+
+// failWith sends err to the user: its own message when it has one, what
+// the core refused, or else the generic failure, logged.
+func (s *Server) failWith(w http.ResponseWriter, what string, err error) {
+	var m *msg.Error
+	var ce *core.Error
+	switch {
+	case errors.As(err, &m):
+		writeError(w, m)
+	case errors.As(err, &ce):
+		s.coreFailed(w, what, err)
+	default:
+		s.fail(w, what, err)
+	}
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -275,8 +299,20 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	json.NewEncoder(w).Encode(v)
 }
 
-func writeError(w http.ResponseWriter, status int, err error) {
-	writeJSON(w, status, map[string]string{"error": err.Error()})
+// errorJSON is how an error goes to the web interface: its message in
+// English, and its code and values to show it in the user's language.
+type errorJSON struct {
+	Error  string         `json:"error"`
+	Code   string         `json:"code"`
+	Params map[string]any `json:"params,omitempty"`
+	// Confirm asks the user to confirm it is them and try again.
+	Confirm bool `json:"confirm,omitempty"`
+}
+
+// writeError sends a message defined with msg.Define. There is no way to
+// send bare text: everything a user reads can be translated.
+func writeError(w http.ResponseWriter, e *msg.Error) {
+	writeJSON(w, e.Status, errorJSON{Error: e.Text, Code: e.Code, Params: e.Params})
 }
 
 // Client talks to the panel's socket from the server itself.

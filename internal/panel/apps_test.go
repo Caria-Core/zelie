@@ -408,13 +408,13 @@ func TestFailedDeploymentKeepsTheOldVersion(t *testing.T) {
 
 	e.core.failBuild = true
 	e.b.do("POST", "/api/apps/web/deployments", nil)
-	if d := e.settle(t, "web"); d.State != store.DeployFailed || !strings.Contains(d.Error, "exit code 1") {
+	if d := e.settle(t, "web"); d.State != store.DeployFailed || d.Error == nil || !strings.Contains(d.Error.Text, "exit code 1") {
 		t.Fatalf("failed build: %+v", d)
 	}
 	e.core.failBuild, e.core.crash = false, true
 	e.b.do("POST", "/api/apps/web/deployments", nil)
 	d := e.settle(t, "web")
-	if d.State != store.DeployFailed || !strings.Contains(d.Error, "stopped right after starting") {
+	if d.State != store.DeployFailed || d.Error == nil || d.Error.Code != "deploy.stopped_at_start" {
 		t.Fatalf("crashing app: %+v", d)
 	}
 	if live, _ := e.s.Store.LiveDeployment(context.Background(), "web"); live.ID != first.ID {

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Caria-Core/zelie/internal/msg"
 	"github.com/Caria-Core/zelie/internal/peer"
 	"github.com/Caria-Core/zelie/internal/store"
 )
@@ -166,10 +167,17 @@ func (s *Server) recentlyConfirmed(l login) bool {
 	return l.session.Verified && s.now().Sub(l.session.ConfirmedAt) <= confirmWindow
 }
 
+var (
+	errConfirmFirst = msg.Define(http.StatusForbidden, "session.confirm_first", "Confirm it is you first.")
+	errNotLoggedIn  = msg.Define(http.StatusUnauthorized, "session.logged_out", "You are not logged in.")
+	errSecondStep   = msg.Define(http.StatusUnauthorized, "session.second_step", "The second step of logging in is not done.")
+)
+
 // writeConfirmFirst tells the interface to ask the user to confirm and then
 // try again.
 func writeConfirmFirst(w http.ResponseWriter) {
-	writeJSON(w, http.StatusForbidden, map[string]any{"error": "confirm it is you first", "confirm": true})
+	m := errConfirmFirst.With()
+	writeJSON(w, http.StatusForbidden, errorJSON{Error: m.Text, Code: m.Code, Confirm: true})
 }
 
 func (s *Server) withLogin(allowEnrolling bool, next http.HandlerFunc) http.HandlerFunc {
@@ -177,14 +185,14 @@ func (s *Server) withLogin(allowEnrolling bool, next http.HandlerFunc) http.Hand
 		l, err := s.currentLogin(r)
 		switch {
 		case errors.Is(err, store.ErrNotFound):
-			writeError(w, http.StatusUnauthorized, errors.New("not logged in"))
+			writeError(w, errNotLoggedIn.Err())
 			return
 		case err != nil:
 			s.fail(w, "load session", err)
 			return
 		}
 		if !l.session.Verified && !(allowEnrolling && !l.account.HasSecondFactor()) {
-			writeError(w, http.StatusUnauthorized, errors.New("the second step of logging in is not done"))
+			writeError(w, errSecondStep.Err())
 			return
 		}
 		next(w, r.WithContext(context.WithValue(r.Context(), loginKey{}, l)))

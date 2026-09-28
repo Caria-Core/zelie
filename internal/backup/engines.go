@@ -9,10 +9,13 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net/http"
 	"os"
 	"strconv"
 	"strings"
 	"syscall"
+
+	"github.com/Caria-Core/zelie/internal/msg"
 )
 
 // Exec runs a command in the database's container, as root there and with
@@ -65,13 +68,22 @@ rc=$?; rm -f ` + restoreFile + `; exit $rc`},
 	},
 }
 
-// Error is a backup or restore the database itself refused or broke off.
-// Its message is meant for the user; other errors are Zelie's own.
-type Error struct{ Msg string }
-
-func (e *Error) Error() string { return e.Msg }
-
-func failed(format string, args ...any) error { return &Error{fmt.Sprintf(format, args...)} }
+// A backup or restore the database refused or broke off, or a backup file
+// that is not right, fails with one of these. They are meant for the user;
+// other errors are Zelie's own.
+var (
+	errDumpFailed  = msg.Define(http.StatusUnprocessableEntity, "backup.dump_failed", "The dump failed with exit code {code}: {detail}")
+	errDumpKind    = msg.Define(http.StatusUnprocessableEntity, "backup.dump_kind", "The dump is not a {kind} file: {detail}")
+	errDumpCut     = msg.Define(http.StatusUnprocessableEntity, "backup.dump_cut", "The dump stopped before its end: {detail}")
+	errCopyFailed  = msg.Define(http.StatusUnprocessableEntity, "restore.copy_failed", "Copying the backup into the database failed with exit code {code}: {detail}")
+	errCopyShort   = msg.Define(http.StatusUnprocessableEntity, "restore.copy_short", "The backup did not arrive whole in the database: {sent} bytes were sent, and it reports {got}.")
+	errLoadFailed  = msg.Define(http.StatusUnprocessableEntity, "restore.load_failed", "Loading the backup failed with exit code {code}: {detail}")
+	errNotRedis    = msg.Define(http.StatusUnprocessableEntity, "restore.not_redis", "The backup is not a Redis file.")
+	errDamaged     = msg.Define(http.StatusUnprocessableEntity, "restore.damaged", "The backup is damaged: {detail}")
+	errCutShort    = msg.Define(http.StatusUnprocessableEntity, "restore.cut_short", "The backup is damaged: it ends in the middle of {file}.")
+	errLinkOut     = msg.Define(http.StatusUnprocessableEntity, "restore.link_out", "The backup links {file} to {target}, outside its volume.")
+	errThroughLink = msg.Define(http.StatusUnprocessableEntity, "restore.through_link", "The backup writes through the symbolic link {link}.")
+)
 
 // Kinds lists the kinds of backup a database can have.
 func Kinds() []string { return []string{"postgres", "mariadb", "redis"} }
@@ -105,13 +117,13 @@ func Dump(ctx context.Context, exec Exec, k string, w io.Writer) error {
 		return err
 	}
 	if code != 0 {
-		return failed("the dump failed (exit %d): %s", code, stderr.String())
+		return errDumpFailed.Err("code", code, "detail", stderr.String())
 	}
 	if kd.header != "" && !bytes.HasPrefix(check.head, []byte(kd.header)) {
-		return failed("the dump is not a %s file: %s", k, stderr.String())
+		return errDumpKind.Err("kind", k, "detail", stderr.String())
 	}
 	if kd.trailer != "" && !bytes.Contains(check.tail, []byte(kd.trailer)) {
-		return failed("the dump stopped before its end: %s", stderr.String())
+		return errDumpCut.Err("detail", stderr.String())
 	}
 	return nil
 }
@@ -132,12 +144,12 @@ func Load(ctx context.Context, exec Exec, k string, dump io.Reader) error {
 		return err
 	}
 	if code != 0 {
-		return failed("copying the backup into the database failed (exit %d): %s", code, stderr.String())
+		return errCopyFailed.Err("code", code, "detail", stderr.String())
 	}
 	f := strings.Fields(out.String())
 	if len(f) < 2 || f[0] != strconv.FormatInt(counted.n, 10) || f[1] != hex.EncodeToString(sum.Sum(nil)) {
 		exec(context.WithoutCancel(ctx), []string{"rm", "-f", restoreFile}, nil, nil, nil)
-		return failed("the backup did not arrive whole in the database: sent %d bytes, it has %q", counted.n, out.String())
+		return errCopyShort.Err("sent", counted.n, "got", strings.TrimSpace(out.String()))
 	}
 	stderr = tail{}
 	code, err = exec(ctx, kd.load, nil, nil, &stderr)
@@ -145,7 +157,7 @@ func Load(ctx context.Context, exec Exec, k string, dump io.Reader) error {
 		return err
 	}
 	if code != 0 {
-		return failed("loading the backup failed (exit %d): %s", code, stderr.String())
+		return errLoadFailed.Err("code", code, "detail", stderr.String())
 	}
 	return nil
 }
@@ -175,7 +187,7 @@ func RestoreRedis(vol *os.Root, rdb io.Reader) error {
 	}
 	if !bytes.HasPrefix(check.head, []byte("REDIS")) {
 		vol.RemoveAll(fresh)
-		return failed("the backup is not a Redis file")
+		return errNotRedis.Err()
 	}
 	manifest := "file " + base + " seq 1 type b\nfile " + incr + " seq 1 type i\n"
 	if err := writeFile(vol, fresh+"/"+incr, strings.NewReader("")); err != nil {

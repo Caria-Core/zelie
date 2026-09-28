@@ -1,4 +1,5 @@
 import { api } from './api';
+import type { Msg } from './i18n';
 
 export type GitHub = {
 	connected: boolean;
@@ -10,7 +11,7 @@ export type GitHub = {
 	webhook?: { state: 'ok' | 'failing' | 'none'; last?: string; status?: string };
 	// The App was made for an address GitHub cannot reach, so it has no webhook.
 	private?: boolean;
-	error?: string;
+	error?: Msg;
 };
 
 export type Repository = { full_name: string; private: boolean; default_branch: string };

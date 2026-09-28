@@ -3,7 +3,7 @@
 	import { untrack } from 'svelte';
 	import { page } from '$app/state';
 	import { engineLabel, shownState } from '$lib/apps.svelte';
-	import { t } from '$lib/i18n';
+	import { say, t } from '$lib/i18n';
 	import { busy, current, deploy, load, restart, start, stop } from '$lib/current.svelte';
 	import { messageOf } from '$lib/errors';
 	import AppIcon from '$lib/ui/AppIcon.svelte';
@@ -98,19 +98,19 @@
 			</div>
 			<div class="flex items-center gap-2">
 				{#if a.stopped}
-					<Button kind="secondary" onclick={() => run(start)} busy={starting || busy()} disabled={!!a.volume_full} title={a.volume_full}>
+					<Button kind="secondary" onclick={() => run(start)} busy={starting || busy()} disabled={!!a.volume_full} title={a.volume_full ? say(a.volume_full) : undefined}>
 						<Play size={16} strokeWidth={1.75} />{t('app.start')}
 					</Button>
 				{:else if a.state !== 'none'}
 					<Button kind="quiet" onclick={() => run(stop)} busy={starting} title={t('app.stopHint')}>
 						<Square size={14} strokeWidth={1.75} />{t('app.stop')}
 					</Button>
-					<Button kind="secondary" onclick={() => run(restart)} busy={starting || busy()} disabled={!!a.volume_full} title={a.volume_full || t('app.restartHint')}>
+					<Button kind="secondary" onclick={() => run(restart)} busy={starting || busy()} disabled={!!a.volume_full} title={a.volume_full ? say(a.volume_full) : t('app.restartHint')}>
 						<RotateCw size={16} strokeWidth={1.75} />{t('app.restart')}
 					</Button>
 				{/if}
 				{#if !a.engine}
-					<Button onclick={() => run(deploy)} busy={starting || busy()} disabled={!!a.volume_full} title={a.volume_full}>
+					<Button onclick={() => run(deploy)} busy={starting || busy()} disabled={!!a.volume_full} title={a.volume_full ? say(a.volume_full) : undefined}>
 						<Rocket size={16} strokeWidth={1.75} />{busy() ? t('app.deploying') : t('app.deploy')}
 					</Button>
 				{/if}
@@ -119,11 +119,11 @@
 		<ErrorText message={error} />
 		{#if a.volume_full}
 			<p class="rounded-xl border border-danger/30 px-4 py-3 text-sm text-danger">
-				{t('app.volumeFull', { why: a.volume_full })}
+				{t('app.volumeFull', { why: say(a.volume_full) })}
 				<a href="/a/{a.id}/storage" class="underline underline-offset-2">{t('app.tab.storage')}</a>
 			</p>
 		{:else if a.crashing}
-			<p class="rounded-xl border border-danger/30 px-4 py-3 text-sm text-danger">{t('app.crashing', { why: a.crashing })}</p>
+			<p class="rounded-xl border border-danger/30 px-4 py-3 text-sm text-danger">{t('app.crashing', { why: say(a.crashing) })}</p>
 		{:else if a.stopped}
 			<p class="text-sm text-muted">{t('app.stoppedNote')}</p>
 		{/if}

@@ -8,7 +8,7 @@
 	import { current } from '$lib/current.svelte';
 	import { messageOf } from '$lib/errors';
 	import { ago, date } from '$lib/format';
-	import { t } from '$lib/i18n';
+	import { list, say, t } from '$lib/i18n';
 	import Button from '$lib/ui/Button.svelte';
 	import ErrorText from '$lib/ui/ErrorText.svelte';
 
@@ -95,7 +95,7 @@
 	const restoring = $derived(data?.restore);
 	const restored = $derived(data?.backups.find((b) => b.id === restoring?.backup));
 
-	const days = (n: number) => (n === 1 ? t('backups.day') : t('backups.days', { n }))
+	const days = (n: number) => t('backups.days', { n });
 	const time = (iso: string) => new Date(iso).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
 	const when = (b: Backup) => `${date(b.created_at)} ${time(b.created_at)}`;
 	const reasons: Record<Backup['reason'], string> = {
@@ -191,7 +191,9 @@
 			{t('backups.restored', { when: restored ? when(restored) : '', safety: restoring.safety ? time(restoring.safety) : '' })}
 		</p>
 	{:else if restoring?.state === 'failed'}
-		<p class="rounded-xl border border-danger/30 px-4 py-3 text-sm text-danger">{restoring.error}</p>
+		<p class="rounded-xl border border-danger/30 px-4 py-3 text-sm text-danger">
+			{t(restoring.safety_failed ? 'backups.safetyFailed' : 'backups.restoreFailed', { why: restoring.error ? say(restoring.error) : '' })}
+		</p>
 	{/if}
 
 	{#if noVolumes}
@@ -208,7 +210,7 @@
 		<div class="flex flex-col gap-2">
 			{#if done.length}
 				<p class="text-sm text-muted">
-					{done.length === 1 ? t('backups.totalOne', { size: bytes(total) }) : t('backups.total', { n: done.length, size: bytes(total) })}
+					{t('backups.total', { n: done.length, size: bytes(total) })}
 				</p>
 			{/if}
 			<ul class="flex flex-col divide-y divide-line rounded-2xl border border-line">
@@ -232,7 +234,7 @@
 										>{/if}
 								</p>
 								{#if b.state === 'failed'}
-									<p class="text-sm break-words text-danger">{t('backups.failed', { why: b.error ?? '' })}</p>
+									<p class="text-sm break-words text-danger">{t('backups.failed', { why: b.error ? say(b.error) : '' })}</p>
 								{:else if b.state === 'running'}
 									<p class="text-sm text-muted">{t('backups.running')}</p>
 								{:else}
@@ -244,9 +246,7 @@
 									</p>
 									{#if b.changed}
 										<p class="mt-1 flex items-start gap-1.5 text-sm text-warn">
-											<TriangleAlert size={14} class="mt-[3px] shrink-0" />{b.changed === 1
-												? t('backups.changedOne')
-												: t('backups.changed', { n: b.changed })}
+											<TriangleAlert size={14} class="mt-[3px] shrink-0" />{t('backups.changed', { n: b.changed })}
 										</p>
 									{/if}
 								{/if}
@@ -383,10 +383,7 @@
 					<li class="flex gap-3">
 						<span class="grid size-6 shrink-0 place-items-center rounded-full bg-selected text-xs">2</span>
 						<span
-							>{#if apps.length && redis}{t(apps.length === 1 ? 'backups.step.stopBothOne' : 'backups.step.stopBoth', {
-									apps: apps.join(', '),
-									db: app.id
-								})}{:else if apps.length}{t(apps.length === 1 ? 'backups.step.stopApp' : 'backups.step.stopApps', { apps: apps.join(', ') })}{:else if redis}{t('backups.step.stopDb', { db: app.id })}{:else}{t('backups.step.noApps')}{/if}</span
+							>{#if apps.length && redis}{t('backups.step.stopBoth', { apps: list(apps), n: apps.length, db: app.id })}{:else if apps.length}{t('backups.step.stopApps', { apps: list(apps), n: apps.length })}{:else if redis}{t('backups.step.stopDb', { db: app.id })}{:else}{t('backups.step.noApps')}{/if}</span
 						>
 					</li>
 					<li class="flex gap-3">

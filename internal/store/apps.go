@@ -7,6 +7,8 @@ import (
 	"errors"
 	"strings"
 	"time"
+
+	"github.com/Caria-Core/zelie/internal/msg"
 )
 
 // App sources.
@@ -252,17 +254,19 @@ type Deployment struct {
 	Message    string // first line of the pushed commit's message
 	Pruned     bool   // its image was deleted
 	State      string
-	Error      string
+	Error      *msg.Msg // why it failed
 	CreatedAt  time.Time
 	FinishedAt time.Time // zero while in progress
 }
 
-const deploymentColumns = "id, app_id, version, image, state, error, cause, message, pruned, created_at, coalesce(finished_at, 0)"
+const deploymentColumns = "id, app_id, version, image, state, error, error_msg, cause, message, pruned, created_at, coalesce(finished_at, 0)"
 
 func scanDeployment(row scanner) (Deployment, error) {
 	var d Deployment
 	var created, finished int64
-	err := row.Scan(&d.ID, &d.AppID, &d.Version, &d.Image, &d.State, &d.Error, &d.Cause, &d.Message, &d.Pruned, &created, &finished)
+	var text, js string
+	err := row.Scan(&d.ID, &d.AppID, &d.Version, &d.Image, &d.State, &text, &js, &d.Cause, &d.Message, &d.Pruned, &created, &finished)
+	d.Error = readMsg(text, js)
 	d.CreatedAt = time.Unix(created, 0)
 	if finished != 0 {
 		d.FinishedAt = time.Unix(finished, 0)
@@ -352,8 +356,9 @@ func (s *Store) SetDeployment(ctx context.Context, d Deployment, now time.Time) 
 	if d.State == DeployLive || d.State == DeployFailed || d.State == DeployReplaced || d.State == DeploySkipped {
 		finished = now.Unix()
 	}
-	_, err := s.db.ExecContext(ctx, "UPDATE deployments SET version = ?, image = ?, state = ?, error = ?, finished_at = coalesce(finished_at, ?) WHERE id = ?",
-		d.Version, d.Image, d.State, d.Error, finished, d.ID)
+	text, js := msgColumns(d.Error)
+	_, err := s.db.ExecContext(ctx, "UPDATE deployments SET version = ?, image = ?, state = ?, error = ?, error_msg = ?, finished_at = coalesce(finished_at, ?) WHERE id = ?",
+		d.Version, d.Image, d.State, text, js, finished, d.ID)
 	return err
 }
 

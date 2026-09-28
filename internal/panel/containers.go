@@ -13,6 +13,7 @@ import (
 	"github.com/Caria-Core/zelie/internal/build"
 	"github.com/Caria-Core/zelie/internal/core"
 	"github.com/Caria-Core/zelie/internal/engine"
+	"github.com/Caria-Core/zelie/internal/msg"
 	"github.com/Caria-Core/zelie/internal/secret"
 )
 
@@ -63,26 +64,33 @@ func (s *Server) streamLogs(w http.ResponseWriter, r *http.Request, id string) {
 	err := s.Core.Logs(r.Context(), id, true, logTail, ev)
 	if err != nil && r.Context().Err() == nil {
 		var ce *core.Error
-		msg := "the logs could not be read"
+		notice := errNoLogs.With()
 		if errors.As(err, &ce) && ce.Status == http.StatusNotFound {
-			msg = "this container has no logs yet"
+			notice = errLogsEmpty.With()
 		} else {
 			s.Log.Error("container logs", "id", id, "err", err)
 		}
-		ev.send("notice", msg)
+		ev.send("notice", notice)
 	}
 }
+
+var (
+	errNoLogs    = msg.Define(0, "logs.unreadable", "The logs could not be read.")
+	errLogsEmpty = msg.Define(0, "logs.none", "This container has no logs yet.")
+)
+
+var errCoreDown = msg.Define(http.StatusBadGateway, "core.failed", "The Zelie core did not answer. See the server log.")
 
 // coreFailed passes on what the core said about a bad request, and hides
 // the details of anything else.
 func (s *Server) coreFailed(w http.ResponseWriter, what string, err error) {
 	var ce *core.Error
 	if errors.As(err, &ce) && ce.Status < 500 {
-		writeError(w, ce.Status, ce)
+		writeError(w, &msg.Error{Status: ce.Status, Msg: ce.Msg()})
 		return
 	}
 	s.Log.Error(what, "err", err)
-	writeError(w, http.StatusBadGateway, errors.New("the Zelie core did not answer; see the server log"))
+	writeError(w, errCoreDown.Err())
 }
 
 // isNotFound reports whether the core said the thing asked for does not
@@ -153,14 +161,16 @@ func (ev *eventStream) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-func (ev *eventStream) send(name, text string) {
+// send writes one event; its data is v as JSON. A "notice" carries a
+// msg.Msg, for the web interface to show in the user's language.
+func (ev *eventStream) send(name string, v any) {
 	ev.mu.Lock()
 	defer ev.mu.Unlock()
-	ev.event(name, text)
+	ev.event(name, v)
 }
 
-func (ev *eventStream) event(name, text string) error {
-	b, _ := json.Marshal(text)
+func (ev *eventStream) event(name string, v any) error {
+	b, _ := json.Marshal(v)
 	if _, err := io.WriteString(ev.w, "event: "+name+"\ndata: "+string(b)+"\n\n"); err != nil {
 		return err
 	}

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Caria-Core/zelie/internal/auth"
+	"github.com/Caria-Core/zelie/internal/msg"
 	"github.com/Caria-Core/zelie/internal/store"
 )
 
@@ -120,10 +121,18 @@ func (s *Server) confirmPasskey(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+var (
+	errWrongPassword = msg.Define(http.StatusBadRequest, "account.wrong_password", "The current password is wrong.")
+	errNoPasskey     = msg.Define(http.StatusNotFound, "account.no_passkey", "There is no such passkey.")
+	errFactorGone    = msg.Define(http.StatusNotFound, "account.factor_gone", "It is already gone.")
+	errLastFactor    = msg.Define(http.StatusConflict, "account.last_factor", "This is your only second step. Add another one before removing it.")
+	errSessionGone   = msg.Define(http.StatusNotFound, "account.session_gone", "That session has already ended.")
+)
+
 // secondStepAllowed applies the same limit on wrong codes as logging in.
 func (s *Server) secondStepAllowed(w http.ResponseWriter, l login) bool {
 	if s.guards.second.Blocked(fmt.Sprint(l.account.ID), s.now()) {
-		writeError(w, http.StatusTooManyRequests, errTooMany)
+		writeError(w, errTooMany.Err())
 		return false
 	}
 	return true
@@ -154,11 +163,11 @@ func (s *Server) changePassword(w http.ResponseWriter, r *http.Request) {
 	}
 	if !auth.CheckPassword(l.account.Password, req.Current) {
 		s.guards.second.Add(fmt.Sprint(l.account.ID), s.now())
-		writeError(w, http.StatusBadRequest, errors.New("the current password is wrong"))
+		writeError(w, errWrongPassword.Err())
 		return
 	}
-	if err := auth.CheckPasswordRules(req.New); err != nil {
-		writeError(w, http.StatusBadRequest, err)
+	if bad := auth.CheckPasswordRules(req.New); bad != nil {
+		writeError(w, bad)
 		return
 	}
 	ctx := r.Context()
@@ -188,7 +197,7 @@ func (s *Server) removePasskey(w http.ResponseWriter, r *http.Request) {
 	l := loginFrom(r.Context())
 	id, err := base64.RawURLEncoding.DecodeString(r.PathValue("id"))
 	if err != nil {
-		writeError(w, http.StatusNotFound, errors.New("no such passkey"))
+		writeError(w, errNoPasskey.Err())
 		return
 	}
 	if !s.factorRemoved(w, s.Store.DeletePasskey(r.Context(), l.account.ID, id), "remove passkey") {
@@ -201,9 +210,9 @@ func (s *Server) removePasskey(w http.ResponseWriter, r *http.Request) {
 func (s *Server) factorRemoved(w http.ResponseWriter, err error, what string) bool {
 	switch {
 	case errors.Is(err, store.ErrNotFound):
-		writeError(w, http.StatusNotFound, errors.New("it is already gone"))
+		writeError(w, errFactorGone.Err())
 	case errors.Is(err, store.ErrLastFactor):
-		writeError(w, http.StatusConflict, err)
+		writeError(w, errLastFactor.Err())
 	case err != nil:
 		s.fail(w, what, err)
 	default:
@@ -228,15 +237,14 @@ func (s *Server) newRecoveryCodes(w http.ResponseWriter, r *http.Request) {
 // confirmation: at worst it logs someone out.
 func (s *Server) endSession(w http.ResponseWriter, r *http.Request) {
 	l := loginFrom(r.Context())
-	errGone := errors.New("that session has already ended")
 	hash, err := base64.RawURLEncoding.DecodeString(r.PathValue("id"))
 	if err != nil {
-		writeError(w, http.StatusNotFound, errGone)
+		writeError(w, errSessionGone.Err())
 		return
 	}
 	switch err := s.Store.DeleteUserSession(r.Context(), l.account.ID, hash); {
 	case errors.Is(err, store.ErrNotFound):
-		writeError(w, http.StatusNotFound, errGone)
+		writeError(w, errSessionGone.Err())
 		return
 	case err != nil:
 		s.fail(w, "end session", err)

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Caria-Core/zelie/internal/backup"
+	"github.com/Caria-Core/zelie/internal/msg"
 	"github.com/containerd/errdefs"
 )
 
@@ -236,11 +237,11 @@ func (s *Server) recoveryKey(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) backupFailed(w http.ResponseWriter, op, app string, err error) {
-	var be *backup.Error
+	var me *msg.Error
 	switch {
-	case errors.As(err, &be):
+	case errors.As(err, &me):
 		s.Log.Warn(op+" failed", "app", app, "err", err)
-		writeError(w, http.StatusUnprocessableEntity, err)
+		writeError(w, me.Status, err)
 	case errors.Is(err, os.ErrNotExist), errdefs.IsNotFound(err):
 		writeError(w, http.StatusNotFound, errors.New("backup, container or volume not found"))
 	case errdefs.IsInvalidArgument(err), errors.Is(err, backup.ErrInvalid):

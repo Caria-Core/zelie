@@ -6,6 +6,8 @@ import (
 	"errors"
 	"strings"
 	"time"
+
+	"github.com/Caria-Core/zelie/internal/msg"
 )
 
 // Why a backup was made.
@@ -104,7 +106,7 @@ type Backup struct {
 	State  string
 	File   string // the core's name for it, once made
 	Bytes  int64
-	Error  string
+	Error  *msg.Msg // why it failed
 	// For a backup of volumes: the folders in it, how much its files take
 	// and how many changed while they were copied.
 	Volumes []string
@@ -117,15 +119,16 @@ type Backup struct {
 	RestoredAt time.Time // zero if it was never put back
 }
 
-const backupColumns = "id, app_id, engine, reason, state, file, bytes, error, created_at, finished_at, keep_until, restored_at, volumes, size, changed"
+const backupColumns = "id, app_id, engine, reason, state, file, bytes, error, error_msg, created_at, finished_at, keep_until, restored_at, volumes, size, changed"
 
 func scanBackup(row scanner) (Backup, error) {
 	var b Backup
 	var created, keep int64
 	var finished, restored sql.NullInt64
-	var volumes string
-	err := row.Scan(&b.ID, &b.AppID, &b.Engine, &b.Reason, &b.State, &b.File, &b.Bytes, &b.Error, &created, &finished, &keep, &restored,
+	var volumes, text, js string
+	err := row.Scan(&b.ID, &b.AppID, &b.Engine, &b.Reason, &b.State, &b.File, &b.Bytes, &text, &js, &created, &finished, &keep, &restored,
 		&volumes, &b.Size, &b.Changed)
+	b.Error = readMsg(text, js)
 	if errors.Is(err, sql.ErrNoRows) {
 		return b, ErrNotFound
 	}
@@ -152,14 +155,15 @@ func (s *Store) StartBackup(ctx context.Context, b Backup) (int64, error) {
 	return res.LastInsertId()
 }
 
-// FinishBackup records how a backup ended: with a file, or with an error.
-func (s *Store) FinishBackup(ctx context.Context, id int64, file string, bytes int64, failure string, at time.Time) error {
+// FinishBackup records how a backup ended: with a file, or with why not.
+func (s *Store) FinishBackup(ctx context.Context, id int64, file string, bytes int64, failure *msg.Msg, at time.Time) error {
 	state := BackupDone
-	if failure != "" {
+	if failure != nil {
 		state = BackupFailed
 	}
-	res, err := s.db.ExecContext(ctx, "UPDATE backups SET state = ?, file = ?, bytes = ?, error = ?, finished_at = ? WHERE id = ?",
-		state, file, bytes, failure, at.Unix(), id)
+	text, js := msgColumns(failure)
+	res, err := s.db.ExecContext(ctx, "UPDATE backups SET state = ?, file = ?, bytes = ?, error = ?, error_msg = ?, finished_at = ? WHERE id = ?",
+		state, file, bytes, text, js, at.Unix(), id)
 	return oneRow(res, err)
 }
 
@@ -233,11 +237,14 @@ func (s *Store) DeleteBackup(ctx context.Context, id int64) error {
 	return oneRow(res, err)
 }
 
+var errPanelRestarted = msg.Define(0, "backup.panel_restarted", "The panel restarted during this backup.")
+
 // FailUnfinishedBackups marks backups that were running when the panel
 // stopped as failed. The panel calls it on start.
 func (s *Store) FailUnfinishedBackups(ctx context.Context, now time.Time) error {
-	_, err := s.db.ExecContext(ctx, "UPDATE backups SET state = ?, error = ?, finished_at = ? WHERE state = ?",
-		BackupFailed, "the panel restarted during this backup", now.Unix(), BackupRunning)
+	text, js := msgColumns(new(errPanelRestarted.With()))
+	_, err := s.db.ExecContext(ctx, "UPDATE backups SET state = ?, error = ?, error_msg = ?, finished_at = ? WHERE state = ?",
+		BackupFailed, text, js, now.Unix(), BackupRunning)
 	return err
 }
 

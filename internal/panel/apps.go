@@ -14,6 +14,7 @@ import (
 	"github.com/distribution/reference"
 
 	"github.com/Caria-Core/zelie/internal/engine"
+	"github.com/Caria-Core/zelie/internal/msg"
 	"github.com/Caria-Core/zelie/internal/proxy"
 	"github.com/Caria-Core/zelie/internal/secret"
 	"github.com/Caria-Core/zelie/internal/store"
@@ -26,7 +27,7 @@ type deploymentJSON struct {
 	Version    string     `json:"version"`
 	Image      string     `json:"image,omitempty"`
 	State      string     `json:"state"`
-	Error      string     `json:"error,omitempty"`
+	Error      *msg.Msg   `json:"error,omitempty"`
 	Cause      string     `json:"cause"`
 	Message    string     `json:"message,omitempty"`
 	CreatedAt  time.Time  `json:"created_at"`
@@ -69,9 +70,9 @@ type appJSON struct {
 	// Stopped is set when the user stopped the app.
 	Stopped bool `json:"stopped"`
 	// Crashing says why Zelie stopped bringing the app back up.
-	Crashing string `json:"crashing,omitempty"`
+	Crashing *msg.Msg `json:"crashing,omitempty"`
 	// VolumeFull says which volume keeps the app from running.
-	VolumeFull string          `json:"volume_full,omitempty"`
+	VolumeFull *msg.Msg        `json:"volume_full,omitempty"`
 	Latest     *deploymentJSON `json:"latest,omitempty"`
 }
 
@@ -85,7 +86,9 @@ func (s *Server) appOut(ctx context.Context, a store.App, containers []engine.St
 	if err != nil {
 		return out, err
 	}
-	out.VolumeFull = s.overLimit(vols)
+	if over := s.overLimit(vols); over != nil {
+		out.VolumeFull = &over.Msg
+	}
 	recent, err := s.Store.Deployments(ctx, a.ID, 1)
 	if err != nil {
 		return out, err
@@ -160,8 +163,44 @@ type appRequest struct {
 	Volumes []volumeRequest `json:"volumes"`
 }
 
+var (
+	errBadSource       = msg.Define(http.StatusBadRequest, "app.bad_source", "The source must be github or image.")
+	errAppExists       = msg.Define(http.StatusConflict, "app.exists", "An app with that name or domain already exists.")
+	errPanelDomain     = msg.Define(http.StatusConflict, "app.panel_domain", "That is the panel's own domain.")
+	errNoApp           = msg.Define(http.StatusNotFound, "app.not_found", "There is no such app.")
+	errFixedFields     = msg.Define(http.StatusBadRequest, "app.fixed", "An app's name and source cannot change.")
+	errVolumesOneByOne = msg.Define(http.StatusBadRequest, "app.volumes_one_by_one", "Volumes are changed one at a time.")
+	errDatabaseFields  = msg.Define(http.StatusBadRequest, "db.fixed", "Only a database's memory and CPU can change.")
+	errDomainTaken     = msg.Define(http.StatusConflict, "app.domain_taken", "Another app already uses that domain.")
+	errTooManyVars     = msg.Define(http.StatusBadRequest, "env.too_many", "There are too many variables.")
+	errDatabaseVars    = msg.Define(http.StatusBadRequest, "env.database", "Zelie sets a database's variables.")
+	errBadVarName      = msg.Define(http.StatusBadRequest, "env.bad_name", "{name} is not a valid variable name.")
+	errVarTwice        = msg.Define(http.StatusBadRequest, "env.twice", "{name} is set twice.")
+	errVarFromLink     = msg.Define(http.StatusConflict, "env.from_link", "{name} comes from a linked database. Change the link's prefix to set your own.")
+	errVarTooLong      = msg.Define(http.StatusBadRequest, "env.too_long", "The value of {name} is too long.")
+	errVarNothingKept  = msg.Define(http.StatusBadRequest, "env.nothing_kept", "{name} has no saved value to keep.")
+	errNothingLive     = msg.Define(http.StatusConflict, "deploy.nothing_live", "Nothing is live yet. Deploy first.")
+	errNoDeployment    = msg.Define(http.StatusNotFound, "deploy.not_found", "There is no such deployment.")
+	errNotLiveBefore   = msg.Define(http.StatusConflict, "deploy.never_live", "Only a version that was live can be rolled back to.")
+	errImagePruned     = msg.Define(http.StatusConflict, "deploy.pruned", "That version's image was deleted to free space.")
+	errBuildNotGitHub  = msg.Define(http.StatusBadRequest, "app.build_github_only", "Only apps built from GitHub have a build command.")
+	errTestsNotGitHub  = msg.Define(http.StatusBadRequest, "app.tests_github_only", "Only apps built from GitHub run tests.")
+	errPullsNotGitHub  = msg.Define(http.StatusBadRequest, "app.pulls_github_only", "Only apps built from GitHub can pull on restart.")
+	errPushNotGitHub   = msg.Define(http.StatusBadRequest, "app.push_github_only", "Only apps built from GitHub deploy on push.")
+	errNoImage         = msg.Define(http.StatusBadRequest, "app.no_image", "Enter an image, such as nginx:alpine.")
+	errReservedImage   = msg.Define(http.StatusBadRequest, "app.reserved_image", "That image name is reserved for images Zelie builds.")
+	errBadImage        = msg.Define(http.StatusBadRequest, "app.bad_image", "{image} is not a valid image name.")
+	errBadPort         = msg.Define(http.StatusBadRequest, "app.bad_port", "The port must be between 1 and 65535.")
+	errBadDomain       = msg.Define(http.StatusBadRequest, "app.bad_domain", "{domain} is not a valid domain name.")
+	errBadMemory       = msg.Define(http.StatusBadRequest, "app.bad_memory", "The memory limit must be at least 16 MB.")
+	errBadCPUs         = msg.Define(http.StatusBadRequest, "app.bad_cpus", "The CPU limit is out of range.")
+	errBadHealthPath   = msg.Define(http.StatusBadRequest, "app.bad_health_path", "The health check path must start with / and hold no spaces.")
+	errBadCommand      = msg.Define(http.StatusBadRequest, "app.bad_command", "A command must be one line of at most 500 characters.")
+	errBadAppName      = msg.Define(http.StatusBadRequest, "app.bad_name", "The name must be up to 40 lowercase letters, digits and dashes, and not start with zelie.")
+)
+
 // apply copies the fields that were sent onto a and checks the result.
-func (req appRequest) apply(a *store.App) error {
+func (req appRequest) apply(a *store.App) *msg.Error {
 	set := func(dst *string, src *string) {
 		if src != nil {
 			*dst = strings.TrimSpace(*src)
@@ -190,67 +229,67 @@ func (req appRequest) apply(a *store.App) error {
 			continue
 		}
 		cmd := strings.TrimSpace(*c.src)
-		if err := checkCommand(cmd); err != nil {
-			return err
+		if bad := checkCommand(cmd); bad != nil {
+			return bad
 		}
 		*c.dst = cmd
 	}
 	if req.BuildCommand != nil && a.BuildCommand != "" && a.Source != store.SourceGitHub {
-		return errors.New("only apps built from GitHub have a build command")
+		return errBuildNotGitHub.Err()
 	}
 	if req.TestCommand != nil {
 		cmd := strings.TrimSpace(*req.TestCommand)
 		switch {
 		case a.Source != store.SourceGitHub:
-			return errors.New("only apps built from GitHub run tests")
+			return errTestsNotGitHub.Err()
 		}
-		if err := checkCommand(cmd); err != nil {
-			return err
+		if bad := checkCommand(cmd); bad != nil {
+			return bad
 		}
 		a.TestCommand, a.TestSet = cmd, true
 	}
 	if req.RestartPulls != nil {
 		if a.Source != store.SourceGitHub {
-			return errors.New("only apps built from GitHub can pull on restart")
+			return errPullsNotGitHub.Err()
 		}
 		a.RestartPulls = *req.RestartPulls
 	}
 	if req.AutoDeploy != nil {
 		if a.Source != store.SourceGitHub {
-			return errors.New("only apps built from GitHub deploy on push")
+			return errPushNotGitHub.Err()
 		}
 		a.AutoDeploy = *req.AutoDeploy
 	}
 	switch {
 	case a.Source == store.SourceImage && (a.Image == "" || len(a.Image) > 255 || strings.ContainsAny(a.Image, " \t\n")):
-		return errors.New("enter an image, such as nginx:alpine")
+		return errNoImage.Err()
 	case a.Source == store.SourceImage && strings.HasPrefix(a.Image, engine.LocalImages):
-		return errors.New("that image name is reserved for images Zelie builds")
+		return errReservedImage.Err()
 	case a.Source == store.SourceImage && !validImage(a.Image):
-		return fmt.Errorf("%q is not a valid image name", a.Image)
+		return errBadImage.Err("image", a.Image)
 	case a.Source == store.SourceGitHub:
-		if err := checkRepo(a.Repo, a.Branch); err != nil {
-			return err
+		if bad := checkRepo(a.Repo, a.Branch); bad != nil {
+			return bad
 		}
 	}
 	switch {
 	case a.Port < 1 || a.Port > 65535:
-		return errors.New("the port must be between 1 and 65535")
+		return errBadPort.Err()
 	case a.Domain != "" && !proxy.ValidDomain(a.Domain):
-		return fmt.Errorf("%q is not a valid domain name", a.Domain)
+		return errBadDomain.Err("domain", a.Domain)
 	case a.MemoryMB < 16 || a.MemoryMB > 1<<20:
-		return errors.New("the memory limit must be at least 16 MB")
+		return errBadMemory.Err()
 	case a.CPUs <= 0 || a.CPUs > 1024:
-		return errors.New("the CPU limit is out of range")
+		return errBadCPUs.Err()
 	case !validHealthPath(a.HealthPath):
-		return errors.New("the health check path must start with / and hold no spaces")
+		return errBadHealthPath.Err()
 	}
 	return nil
 }
 
-func checkCommand(cmd string) error {
+func checkCommand(cmd string) *msg.Error {
 	if len(cmd) > 500 || strings.ContainsAny(cmd, "\x00\r\n") {
-		return errors.New("a command must be one line of at most 500 characters")
+		return errBadCommand.Err()
 	}
 	return nil
 }
@@ -272,11 +311,11 @@ func validImage(ref string) bool {
 	return err == nil
 }
 
-func checkAppID(id string) error {
+func checkAppID(id string) *msg.Error {
 	// Containers are named <app>-<deployment>, which must fit in 63
 	// characters, and names starting with zelie are Zelie's own.
 	if !engine.ValidID(id) || len(id) > 40 || strings.HasPrefix(id, "zelie") {
-		return errors.New("the name must be up to 40 lowercase letters, digits and dashes, and not start with zelie")
+		return errBadAppName.Err()
 	}
 	return nil
 }
@@ -286,8 +325,8 @@ func (s *Server) createApp(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	if err := checkAppID(req.ID); err != nil {
-		writeError(w, http.StatusBadRequest, err)
+	if bad := checkAppID(req.ID); bad != nil {
+		writeError(w, bad)
 		return
 	}
 	a := store.App{ID: req.ID, Source: req.Source, MemoryMB: defaultMemoryMB, CPUs: defaultCPUs, HealthPath: "/", CreatedAt: s.now()}
@@ -297,11 +336,11 @@ func (s *Server) createApp(w http.ResponseWriter, r *http.Request) {
 	case store.SourceImage:
 		a.Port = 80
 	default:
-		writeError(w, http.StatusBadRequest, errors.New("the source must be github or image"))
+		writeError(w, errBadSource.Err())
 		return
 	}
-	if err := req.apply(&a); err != nil {
-		writeError(w, http.StatusBadRequest, err)
+	if bad := req.apply(&a); bad != nil {
+		writeError(w, bad)
 		return
 	}
 	if !s.domainFree(w, r, a) {
@@ -309,22 +348,18 @@ func (s *Server) createApp(w http.ResponseWriter, r *http.Request) {
 	}
 	switch err := s.Store.CreateApp(r.Context(), a); {
 	case errors.Is(err, store.ErrExists):
-		writeError(w, http.StatusConflict, errors.New("an app with that name or domain already exists"))
+		writeError(w, errAppExists.Err())
 		return
 	case err != nil:
 		s.fail(w, "create app", err)
 		return
 	}
 	for _, vr := range req.Volumes {
-		if _, status, err := s.createVolume(r.Context(), a, vr); err != nil {
+		if _, err := s.createVolume(r.Context(), a, vr); err != nil {
 			ctx := context.WithoutCancel(r.Context())
 			s.removeAppVolumes(ctx, a.ID)
 			s.Store.DeleteApp(ctx, a.ID)
-			if status == http.StatusBadGateway {
-				s.coreFailed(w, "create volume", err)
-			} else {
-				writeError(w, status, err)
-			}
+			s.failWith(w, "create volume", err)
 			return
 		}
 	}
@@ -347,7 +382,7 @@ func (s *Server) domainFree(w http.ResponseWriter, r *http.Request, a store.App)
 		return false
 	}
 	if cfg.Panel == a.Domain {
-		writeError(w, http.StatusConflict, errors.New("that is the panel's own domain"))
+		writeError(w, errPanelDomain.Err())
 		return false
 	}
 	return true
@@ -358,7 +393,7 @@ func (s *Server) appFrom(w http.ResponseWriter, r *http.Request) (store.App, boo
 	a, err := s.Store.App(r.Context(), r.PathValue("app"))
 	switch {
 	case errors.Is(err, store.ErrNotFound):
-		writeError(w, http.StatusNotFound, errors.New("no such app"))
+		writeError(w, errNoApp.Err())
 		return a, false
 	case err != nil:
 		s.fail(w, "load app", err)
@@ -429,21 +464,21 @@ func (s *Server) updateApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.ID != "" || req.Source != "" {
-		writeError(w, http.StatusBadRequest, errors.New("an app's name and source cannot change"))
+		writeError(w, errFixedFields.Err())
 		return
 	}
 	if req.Volumes != nil {
-		writeError(w, http.StatusBadRequest, errors.New("volumes are changed one at a time"))
+		writeError(w, errVolumesOneByOne.Err())
 		return
 	}
 	if a.IsDatabase() && (req.Image != nil || req.Repo != nil || req.Branch != nil || req.Port != nil || req.Domain != nil ||
 		req.AutoDeploy != nil || req.HealthPath != nil || req.TestCommand != nil || req.BuildCommand != nil || req.StartCommand != nil || req.RestartPulls != nil) {
-		writeError(w, http.StatusBadRequest, errors.New("only a database's memory and CPU can change"))
+		writeError(w, errDatabaseFields.Err())
 		return
 	}
 	oldDomain := a.Domain
-	if err := req.apply(&a); err != nil {
-		writeError(w, http.StatusBadRequest, err)
+	if bad := req.apply(&a); bad != nil {
+		writeError(w, bad)
 		return
 	}
 	if !s.domainFree(w, r, a) {
@@ -451,7 +486,7 @@ func (s *Server) updateApp(w http.ResponseWriter, r *http.Request) {
 	}
 	switch err := s.Store.UpdateApp(r.Context(), a); {
 	case errors.Is(err, store.ErrExists):
-		writeError(w, http.StatusConflict, errors.New("another app already uses that domain"))
+		writeError(w, errDomainTaken.Err())
 		return
 	case err != nil:
 		s.fail(w, "update app", err)
@@ -483,11 +518,11 @@ func (s *Server) setEnv(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(req) > 200 {
-		writeError(w, http.StatusBadRequest, errors.New("too many variables"))
+		writeError(w, errTooManyVars.Err())
 		return
 	}
 	if a.IsDatabase() {
-		writeError(w, http.StatusBadRequest, errors.New("Zelie sets a database's variables"))
+		writeError(w, errDatabaseVars.Err())
 		return
 	}
 	ctx := r.Context()
@@ -521,16 +556,16 @@ func (s *Server) setEnv(w http.ResponseWriter, r *http.Request) {
 	for _, v := range req {
 		switch {
 		case !secret.ValidName(v.Name):
-			writeError(w, http.StatusBadRequest, fmt.Errorf("%q is not a valid variable name", v.Name))
+			writeError(w, errBadVarName.Err("name", v.Name))
 			return
 		case seen[v.Name]:
-			writeError(w, http.StatusBadRequest, fmt.Errorf("%s is set twice", v.Name))
+			writeError(w, errVarTwice.Err("name", v.Name))
 			return
 		case fromLinks[v.Name]:
-			writeError(w, http.StatusConflict, fmt.Errorf("%s comes from a linked database; change the link's prefix to set your own", v.Name))
+			writeError(w, errVarFromLink.Err("name", v.Name))
 			return
 		case len(v.Value) > 32<<10:
-			writeError(w, http.StatusBadRequest, fmt.Errorf("the value of %s is too long", v.Name))
+			writeError(w, errVarTooLong.Err("name", v.Name))
 			return
 		}
 		seen[v.Name] = true
@@ -541,7 +576,7 @@ func (s *Server) setEnv(w http.ResponseWriter, r *http.Request) {
 		if v.Keep {
 			sealed, ok := sealedBefore[v.Name]
 			if !ok {
-				writeError(w, http.StatusBadRequest, fmt.Errorf("%s has no saved value to keep", v.Name))
+				writeError(w, errVarNothingKept.Err("name", v.Name))
 				return
 			}
 			vars = append(vars, store.EnvVar{Name: v.Name, Value: sealed, Secret: true})
@@ -555,7 +590,7 @@ func (s *Server) setEnv(w http.ResponseWriter, r *http.Request) {
 		}
 		sealed, err := secret.Seal(key, a.ID, v.Name, v.Value)
 		if err != nil {
-			writeError(w, http.StatusBadRequest, err)
+			s.fail(w, "seal variable", err)
 			return
 		}
 		vars = append(vars, store.EnvVar{Name: v.Name, Value: sealed, Secret: true})
@@ -601,7 +636,7 @@ func (s *Server) restartApp(w http.ResponseWriter, r *http.Request) {
 	}
 	live, err := s.Store.LiveDeployment(r.Context(), a.ID)
 	if errors.Is(err, store.ErrNotFound) {
-		writeError(w, http.StatusConflict, errors.New("nothing is live yet; deploy first"))
+		writeError(w, errNothingLive.Err())
 		return
 	}
 	if err != nil {
@@ -621,16 +656,16 @@ func (s *Server) rollback(w http.ResponseWriter, r *http.Request) {
 	d, err := s.Store.Deployment(r.Context(), a.ID, id)
 	switch {
 	case errors.Is(err, store.ErrNotFound):
-		writeError(w, http.StatusNotFound, errors.New("no such deployment"))
+		writeError(w, errNoDeployment.Err())
 		return
 	case err != nil:
 		s.fail(w, "load deployment", err)
 		return
 	case d.State != store.DeployReplaced && d.State != store.DeployLive:
-		writeError(w, http.StatusConflict, errors.New("only a version that was live can be rolled back to"))
+		writeError(w, errNotLiveBefore.Err())
 		return
 	case d.Pruned:
-		writeError(w, http.StatusConflict, errors.New("that version's image was deleted to free space"))
+		writeError(w, errImagePruned.Err())
 		return
 	}
 	s.redeploy(w, r, a, d, store.CauseRollback)
@@ -644,8 +679,8 @@ func (s *Server) unstop(w http.ResponseWriter, r *http.Request, a store.App) boo
 		s.fail(w, "list volumes", err)
 		return false
 	}
-	if reason := s.overLimit(vols); reason != "" {
-		writeError(w, http.StatusConflict, errors.New(reason))
+	if over := s.overLimit(vols); over != nil {
+		writeError(w, over)
 		return false
 	}
 	if !a.Stopped {
@@ -714,12 +749,12 @@ func (s *Server) deploymentLog(w http.ResponseWriter, r *http.Request) {
 	}
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
-		writeError(w, http.StatusNotFound, errors.New("no such deployment"))
+		writeError(w, errNoDeployment.Err())
 		return
 	}
 	ctx := r.Context()
 	if _, err := s.Store.Deployment(ctx, a.ID, id); err != nil {
-		writeError(w, http.StatusNotFound, errors.New("no such deployment"))
+		writeError(w, errNoDeployment.Err())
 		return
 	}
 	ev := newEventStream(w)
@@ -768,7 +803,7 @@ func (s *Server) appLogs(w http.ResponseWriter, r *http.Request) {
 	if errors.Is(err, store.ErrNotFound) {
 		ev := newEventStream(w)
 		defer ev.close()
-		ev.send("notice", "nothing is live yet")
+		ev.send("notice", errNothingLive.With())
 		return
 	}
 	if err != nil {

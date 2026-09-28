@@ -3,7 +3,6 @@ package panel
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -11,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Caria-Core/zelie/internal/engine"
+	"github.com/Caria-Core/zelie/internal/msg"
 	"github.com/Caria-Core/zelie/internal/store"
 )
 
@@ -48,6 +48,23 @@ func (v *volumeSizes) set(m map[string]int64, at time.Time) {
 	v.bytes, v.at = m, at
 }
 
+var (
+	errVolumeFull      = msg.Define(http.StatusConflict, "volume.full", "The volume at {path} holds {used}, over its {limit} limit. Raise the limit to start the app.")
+	errVolumePath      = msg.Define(http.StatusBadRequest, "volume.bad_path", "The path must start with / and name a directory such as /data. /proc, /sys and /dev are taken.")
+	errVolumeBadChars  = msg.Define(http.StatusBadRequest, "volume.bad_chars", "That path cannot hold a volume.")
+	errVolumeSmall     = msg.Define(http.StatusBadRequest, "volume.small", "A volume's limit must be at least {min} MB.")
+	errVolumeOverDisk  = msg.Define(http.StatusBadRequest, "volume.over_disk", "The limit is larger than the server's disk ({disk}).")
+	errVolumeNoPath    = msg.Define(http.StatusBadRequest, "volume.no_path", "A volume needs a path.")
+	errVolumeTooMany   = msg.Define(http.StatusBadRequest, "volume.too_many", "An app can have at most {max} volumes.")
+	errVolumeOverlaps  = msg.Define(http.StatusConflict, "volume.overlaps", "{path} overlaps the volume at {other}.")
+	errVolumeExists    = msg.Define(http.StatusConflict, "volume.exists", "There is already a volume at {path}.")
+	errVolumeDatabase  = msg.Define(http.StatusBadRequest, "volume.database_one", "A database keeps its files in the one volume it has.")
+	errVolumeDBPath    = msg.Define(http.StatusBadRequest, "volume.database_path", "A database's volume stays where its engine keeps its files.")
+	errVolumeDBDelete  = msg.Define(http.StatusBadRequest, "volume.database_delete", "A database's volume goes when the database is deleted.")
+	errVolumeStopFirst = msg.Define(http.StatusConflict, "volume.stop_first", "Stop the app before deleting one of its volumes.")
+	errNoVolume        = msg.Define(http.StatusNotFound, "volume.not_found", "There is no such volume.")
+)
+
 type volumeJSON struct {
 	ID      int64  `json:"id"`
 	Path    string `json:"path"`
@@ -72,13 +89,13 @@ func (s *Server) volumeOut(v store.Volume) volumeJSON {
 
 // overLimit returns why the app may not run: a volume that has grown past
 // its limit. Empty means none has.
-func (s *Server) overLimit(vols []store.Volume) string {
+func (s *Server) overLimit(vols []store.Volume) *msg.Error {
 	for _, v := range vols {
 		if n, ok := s.sizes.get(v.Name); ok && n > v.LimitMB<<20 {
-			return fmt.Sprintf("the volume at %s holds %s, over its %s limit; raise the limit to start the app", v.Path, formatMB(n>>20), formatMB(v.LimitMB))
+			return errVolumeFull.Err("path", v.Path, "used", formatMB(n>>20), "limit", formatMB(v.LimitMB))
 		}
 	}
-	return ""
+	return nil
 }
 
 func formatMB(mb int64) string {
@@ -92,22 +109,23 @@ func formatMB(mb int64) string {
 }
 
 // checkVolume validates what the user asked for, against the server's disk.
+// Its error is a *msg.Error for the user, or the core's failure.
 func (s *Server) checkVolume(ctx context.Context, v store.Volume) error {
 	if err := engine.CheckVolumeTarget(v.Path); err != nil {
-		return errors.New("the path must start with / and name a directory such as /data; /proc, /sys and /dev are taken")
+		return errVolumePath.Err()
 	}
 	if len(v.Path) > 255 || strings.ContainsAny(v.Path, ",:\x00") {
-		return errors.New("that path cannot hold a volume")
+		return errVolumeBadChars.Err()
 	}
 	if v.LimitMB < minVolumeMB {
-		return fmt.Errorf("a volume's limit must be at least %d MB", minVolumeMB)
+		return errVolumeSmall.Err("min", minVolumeMB)
 	}
 	h, err := s.Core.Host(ctx)
 	if err != nil {
 		return err
 	}
 	if v.LimitMB > h.DiskBytes>>20 {
-		return fmt.Errorf("the limit is larger than the server's disk (%s)", formatMB(h.DiskBytes>>20))
+		return errVolumeOverDisk.Err("disk", formatMB(h.DiskBytes>>20))
 	}
 	return nil
 }
@@ -136,64 +154,60 @@ func (s *Server) addVolume(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if a.IsDatabase() {
-		writeError(w, http.StatusBadRequest, errors.New("a database keeps its files in the one volume it has"))
+		writeError(w, errVolumeDatabase.Err())
 		return
 	}
 	var req volumeRequest
 	if !decode(w, r, &req) {
 		return
 	}
-	v, status, err := s.createVolume(r.Context(), a, req)
+	v, err := s.createVolume(r.Context(), a, req)
 	if err != nil {
-		if status == http.StatusBadGateway {
-			s.coreFailed(w, "create volume", err)
-		} else {
-			writeError(w, status, err)
-		}
+		s.failWith(w, "create volume", err)
 		return
 	}
 	s.Log.Info("volume added", "app", a.ID, "path", v.Path, "user", loginFrom(r.Context()).account.ID)
 	writeJSON(w, http.StatusCreated, s.volumeOut(v))
 }
 
-// createVolume records a volume and has the core make it. The status says
-// what kind of failure an error is.
-func (s *Server) createVolume(ctx context.Context, a store.App, req volumeRequest) (store.Volume, int, error) {
+// createVolume records a volume and has the core make it. Its error is a
+// *msg.Error for the user, the core's failure, or the panel's own.
+func (s *Server) createVolume(ctx context.Context, a store.App, req volumeRequest) (store.Volume, error) {
 	v := store.Volume{AppID: a.ID, LimitMB: defaultVolumeMB, CreatedAt: s.now()}
 	if req.Path == nil {
-		return v, http.StatusBadRequest, errors.New("a volume needs a path")
+		return v, errVolumeNoPath.Err()
 	}
 	v.Path = strings.TrimSpace(*req.Path)
 	if req.LimitMB != nil {
 		v.LimitMB = *req.LimitMB
 	}
 	if err := s.checkVolume(ctx, v); err != nil {
-		return v, http.StatusBadRequest, err
+		return v, err
 	}
 	existing, err := s.Store.Volumes(ctx, a.ID)
 	if err != nil {
-		return v, http.StatusInternalServerError, err
+		return v, err
 	}
 	if len(existing) >= maxVolumes {
-		return v, http.StatusBadRequest, fmt.Errorf("an app can have at most %d volumes", maxVolumes)
+		return v, errVolumeTooMany.Err("max", maxVolumes)
 	}
 	for _, e := range existing {
 		if strings.HasPrefix(v.Path+"/", e.Path+"/") || strings.HasPrefix(e.Path+"/", v.Path+"/") {
-			return v, http.StatusConflict, fmt.Errorf("%s overlaps the volume at %s", v.Path, e.Path)
+			return v, errVolumeOverlaps.Err("path", v.Path, "other", e.Path)
 		}
 	}
 	v, err = s.Store.CreateVolume(ctx, v)
 	if errors.Is(err, store.ErrExists) {
-		return v, http.StatusConflict, fmt.Errorf("there is already a volume at %s", v.Path)
+		return v, errVolumeExists.Err("path", v.Path)
 	}
 	if err != nil {
-		return v, http.StatusInternalServerError, err
+		return v, err
 	}
 	if err := s.Core.CreateVolume(ctx, v.Name); err != nil {
 		s.Store.DeleteVolume(context.WithoutCancel(ctx), a.ID, v.ID)
-		return v, http.StatusBadGateway, err
+		return v, err
 	}
-	return v, 0, nil
+	return v, nil
 }
 
 // updateVolume changes a volume's path or limit. A new path is used from
@@ -209,7 +223,7 @@ func (s *Server) updateVolume(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Path != nil {
 		if a.IsDatabase() {
-			writeError(w, http.StatusBadRequest, errors.New("a database's volume stays where its engine keeps its files"))
+			writeError(w, errVolumeDBPath.Err())
 			return
 		}
 		v.Path = strings.TrimSpace(*req.Path)
@@ -218,7 +232,7 @@ func (s *Server) updateVolume(w http.ResponseWriter, r *http.Request) {
 		v.LimitMB = *req.LimitMB
 	}
 	if err := s.checkVolume(r.Context(), v); err != nil {
-		writeError(w, http.StatusBadRequest, err)
+		s.failWith(w, "check volume", err)
 		return
 	}
 	others, err := s.Store.Volumes(r.Context(), a.ID)
@@ -228,7 +242,7 @@ func (s *Server) updateVolume(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, e := range others {
 		if e.ID != v.ID && (strings.HasPrefix(v.Path+"/", e.Path+"/") || strings.HasPrefix(e.Path+"/", v.Path+"/")) {
-			writeError(w, http.StatusConflict, fmt.Errorf("%s overlaps the volume at %s", v.Path, e.Path))
+			writeError(w, errVolumeOverlaps.Err("path", v.Path, "other", e.Path))
 			return
 		}
 	}
@@ -247,7 +261,7 @@ func (s *Server) deleteVolume(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if a.IsDatabase() {
-		writeError(w, http.StatusBadRequest, errors.New("a database's volume goes when the database is deleted"))
+		writeError(w, errVolumeDBDelete.Err())
 		return
 	}
 	// Finish once started, like deleting an app.
@@ -261,7 +275,7 @@ func (s *Server) deleteVolume(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, c := range list {
 		if c.App == a.ID && c.State != "stopped" {
-			writeError(w, http.StatusConflict, errors.New("stop the app before deleting one of its volumes"))
+			writeError(w, errVolumeStopFirst.Err())
 			return
 		}
 	}
@@ -318,7 +332,7 @@ func (s *Server) volumeFrom(w http.ResponseWriter, r *http.Request) (store.App, 
 			return a, v, true
 		}
 	}
-	writeError(w, http.StatusNotFound, errors.New("no such volume"))
+	writeError(w, errNoVolume.Err())
 	return a, store.Volume{}, false
 }
 
@@ -365,15 +379,15 @@ func (s *Server) checkVolumes(ctx context.Context) {
 		byApp[v.AppID] = append(byApp[v.AppID], v)
 	}
 	for appID, vols := range byApp {
-		reason := s.overLimit(vols)
-		if reason == "" {
+		over := s.overLimit(vols)
+		if over == nil {
 			continue
 		}
 		a, err := s.Store.App(ctx, appID)
 		if err != nil || a.Stopped {
 			continue
 		}
-		s.Log.Warn("volume over its limit, stopping the app", "app", appID, "reason", reason)
+		s.Log.Warn("volume over its limit, stopping the app", "app", appID, "reason", over.Text)
 		if err := s.stopApp(ctx, a); err != nil {
 			s.Log.Error("volumes: stop app", "app", appID, "err", err)
 		}

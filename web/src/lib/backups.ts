@@ -1,4 +1,5 @@
-import { ApiError } from './api';
+import { errorFrom } from './api';
+import type { Msg } from './i18n';
 import type { Engine } from './apps.svelte';
 import { sensitive } from './confirm.svelte';
 
@@ -10,7 +11,7 @@ export type Backup = {
 	reason: 'scheduled' | 'manual' | 'restore';
 	state: 'running' | 'done' | 'failed';
 	bytes: number;
-	error?: string;
+	error?: Msg;
 	created_at: string;
 	finished_at?: string;
 	keep_until: string;
@@ -28,8 +29,10 @@ export type Plan = { enabled: boolean; minute: number; keep_days: number; stop: 
 export type Restore = {
 	backup: number;
 	state: 'running' | 'done' | 'failed';
-	error?: string;
+	error?: Msg;
 	safety?: string;
+	// Set when the backup of what was there failed, so nothing changed.
+	safety_failed?: boolean;
 	restarted: string[];
 	at: string;
 };
@@ -64,7 +67,7 @@ export async function saveRecovery(): Promise<void> {
 		const res = await fetch('/api/backups/recovery');
 		if (!res.ok) {
 			const data = await res.json().catch(() => ({}));
-			throw new ApiError(res.status, data.error ?? res.statusText, data.confirm === true);
+			throw errorFrom(res.status, res.statusText, data);
 		}
 		return res.blob();
 	});

@@ -94,8 +94,8 @@ func TestVolumeOverItsLimitStopsTheApp(t *testing.T) {
 		t.Fatal("the app kept running over its limit")
 	}
 	_, out := e.b.do("GET", "/api/apps/mc", nil)
-	if full, _ := out["volume_full"].(string); !strings.Contains(full, "/data") {
-		t.Errorf("volume_full %q", full)
+	if full, _ := out["volume_full"].(map[string]any); full["code"] != "volume.full" || !strings.Contains(fmt.Sprint(full["params"]), "path:/data") {
+		t.Errorf("volume_full %v", out["volume_full"])
 	}
 
 	for _, path := range []string{"start", "restart", "deployments"} {

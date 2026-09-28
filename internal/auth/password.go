@@ -6,12 +6,13 @@ import (
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/base64"
-	"errors"
 	"fmt"
+	"net/http"
 	"runtime/debug"
 	"strings"
 	"sync"
 
+	"github.com/Caria-Core/zelie/internal/msg"
 	"golang.org/x/crypto/argon2"
 )
 
@@ -35,12 +36,17 @@ const maxPasswordLength = 512
 var hashSlots = make(chan struct{}, 2)
 
 // CheckPasswordRules reports why a new password is not acceptable.
-func CheckPasswordRules(pw string) error {
+var (
+	errShortPassword = msg.Define(http.StatusBadRequest, "password.short", "The password needs at least {min} characters.")
+	errLongPassword  = msg.Define(http.StatusBadRequest, "password.long", "The password is too long.")
+)
+
+func CheckPasswordRules(pw string) *msg.Error {
 	switch n := len([]rune(pw)); {
 	case n < MinPasswordLength:
-		return fmt.Errorf("the password needs at least %d characters", MinPasswordLength)
+		return errShortPassword.Err("min", MinPasswordLength)
 	case len(pw) > maxPasswordLength:
-		return errors.New("the password is too long")
+		return errLongPassword.Err()
 	}
 	return nil
 }

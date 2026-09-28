@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Caria-Core/zelie/internal/msg"
 	"github.com/Caria-Core/zelie/internal/store"
 )
 
@@ -33,7 +34,7 @@ type crashes struct {
 type crashRecord struct {
 	times  []time.Time // crashes within the window
 	next   time.Time   // not brought back before this
-	gaveUp string      // why Zelie stopped bringing it back
+	gaveUp *msg.Msg    // why Zelie stopped bringing it back
 }
 
 func (c *crashes) record(app string) *crashRecord {
@@ -55,14 +56,16 @@ func (c *crashes) reset(app string) {
 	delete(c.byApp, app)
 }
 
-// gaveUp returns why Zelie stopped bringing the app back, or "".
-func (c *crashes) gaveUp(app string) string {
+var errCrashing = msg.Define(0, "app.gave_up", "It stopped by itself {count} times within {minutes} minutes, so Zelie left it down.")
+
+// gaveUp returns why Zelie stopped bringing the app back, or nil.
+func (c *crashes) gaveUp(app string) *msg.Msg {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if r, ok := c.byApp[app]; ok {
 		return r.gaveUp
 	}
-	return ""
+	return nil
 }
 
 // supervise brings back live apps that have stopped: after a crash, or
@@ -126,7 +129,7 @@ func (s *Server) bringBack(ctx context.Context, a store.App, live store.Deployme
 	now := s.now()
 	s.crashes.mu.Lock()
 	r := s.crashes.record(a.ID)
-	if r.gaveUp != "" || now.Before(r.next) {
+	if r.gaveUp != nil || now.Before(r.next) {
 		s.crashes.mu.Unlock()
 		return
 	}
@@ -138,7 +141,8 @@ func (s *Server) bringBack(ctx context.Context, a store.App, live store.Deployme
 	}
 	r.times = append(kept, now)
 	if len(r.times) >= crashLimit {
-		r.gaveUp = fmt.Sprintf("it stopped by itself %d times within %s, so Zelie left it down", len(r.times), crashWindow)
+		m := errCrashing.With("count", len(r.times), "minutes", int(crashWindow/time.Minute))
+		r.gaveUp = &m
 		s.crashes.mu.Unlock()
 		s.Log.Warn("app keeps stopping, giving up", "app", a.ID)
 		return

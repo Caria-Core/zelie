@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/Caria-Core/zelie/internal/msg"
 )
 
 // Source fetches an app's code.
@@ -25,12 +27,17 @@ var (
 	validCommit = regexp.MustCompile(`^[0-9a-f]{40}$`)
 )
 
-func checkRepo(repo, branch string) error {
+var (
+	errBadRepo   = msg.Define(http.StatusBadRequest, "app.bad_repo", "The repository must look like owner/name.")
+	errBadBranch = msg.Define(http.StatusBadRequest, "app.bad_branch", "That is not a valid branch name.")
+)
+
+func checkRepo(repo, branch string) *msg.Error {
 	if !validRepo.MatchString(repo) || strings.HasSuffix(repo, ".git") {
-		return errors.New("the repository must look like owner/name")
+		return errBadRepo.Err()
 	}
 	if !validBranch.MatchString(branch) || strings.Contains(branch, "..") || strings.HasSuffix(branch, "/") {
-		return errors.New("that is not a valid branch name")
+		return errBadBranch.Err()
 	}
 	return nil
 }

@@ -36,6 +36,21 @@ build tag. `hack/vm-test.sh` builds them and runs them inside a
 - Tests come with the change they cover.
 - Commit messages say what the change does, in plain English.
 
+## Text people read
+
+Everything the interface shows can be translated, so no user-facing sentence is
+written inline.
+
+- In the web interface, text comes from `t('area.key')`, with the English in
+  `web/src/lib/locales/en.ts`. Plurals use `{n, plural, one {…} other {# …}}`, and the
+  browser picks the right form for each language.
+- The server sends messages, not sentences. Define each one once with `msg.Define`,
+  giving it a code and its English text; `writeError` accepts nothing else. After
+  adding or changing one, run `go test ./internal/msg -run TestLocale -update` to
+  regenerate `web/src/lib/locales/messages.en.ts`. CI fails when that file is out of
+  date.
+- Logs, deployment output and anything sent to other services stay in English.
+
 ## Contributor License Agreement
 
 Before your first pull request can be merged, you will be asked to sign a Contributor

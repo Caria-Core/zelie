@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Caria-Core/zelie/internal/auth"
+	"github.com/Caria-Core/zelie/internal/msg"
 	"github.com/Caria-Core/zelie/internal/store"
 )
 
@@ -20,13 +21,15 @@ import (
 const sealTOTP = "totp secret"
 
 var (
-	errTooMany     = errors.New("too many attempts; wait a few minutes and try again")
-	errBadLogin    = errors.New("wrong email or password")
-	errBadCode     = errors.New("that code did not work")
-	errNoCeremony  = errors.New("this step has expired; start again")
-	errHalfLogin   = errors.New("log in with your password first")
-	errNoFactor    = errors.New("this account has no authenticator app")
-	errAlreadyDone = errors.New("already logged in")
+	errTooMany     = msg.Define(http.StatusTooManyRequests, "login.too_many", "Too many attempts. Wait a few minutes and try again.")
+	errBadLogin    = msg.Define(http.StatusUnauthorized, "login.wrong", "Wrong email or password.")
+	errBadCode     = msg.Define(http.StatusUnauthorized, "login.bad_code", "That code did not work.")
+	errNoCeremony  = msg.Define(http.StatusBadRequest, "login.expired", "This step has expired. Start again.")
+	errHalfLogin   = msg.Define(http.StatusUnauthorized, "login.password_first", "Log in with your password first.")
+	errNoFactor    = msg.Define(http.StatusBadRequest, "login.no_totp", "This account has no authenticator app.")
+	errAlreadyDone = msg.Define(http.StatusConflict, "login.already", "You are already logged in.")
+	errBadEmail    = msg.Define(http.StatusBadRequest, "login.bad_email", "That does not look like an email address.")
+	errBadToken    = msg.Define(http.StatusForbidden, "setup.bad_token", "This setup link is not valid. Run zelie setup-link on the server for a new one.")
 )
 
 // guards holds the in-memory state of logging in. None of it needs to
@@ -97,16 +100,16 @@ func (s *Server) setup(w http.ResponseWriter, r *http.Request) {
 	}
 	now, ip := s.now(), clientIP(r)
 	if s.guards.byIP.Blocked(ip, now) {
-		writeError(w, http.StatusTooManyRequests, errTooMany)
+		writeError(w, errTooMany.Err())
 		return
 	}
-	email, err := checkEmail(req.Email)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err)
+	email, bad := checkEmail(req.Email)
+	if bad != nil {
+		writeError(w, bad)
 		return
 	}
-	if err := auth.CheckPasswordRules(req.Password); err != nil {
-		writeError(w, http.StatusBadRequest, err)
+	if bad := auth.CheckPasswordRules(req.Password); bad != nil {
+		writeError(w, bad)
 		return
 	}
 	token, _ := base64.RawURLEncoding.DecodeString(req.Token)
@@ -115,10 +118,10 @@ func (s *Server) setup(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case errors.Is(err, store.ErrBadSetupToken):
 		s.guards.byIP.Add(ip, now)
-		writeError(w, http.StatusForbidden, err)
+		writeError(w, errBadToken.Err())
 		return
 	case errors.Is(err, store.ErrSetupDone):
-		writeError(w, http.StatusConflict, err)
+		writeError(w, errSetupDone.Err())
 		return
 	case err != nil:
 		s.fail(w, "setup", err)
@@ -140,7 +143,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	now, ip := s.now(), clientIP(r)
 	account := strings.ToLower(req.Email)
 	if s.guards.byIP.Blocked(ip, now) || s.guards.byAccount.Blocked(account, now) {
-		writeError(w, http.StatusTooManyRequests, errTooMany)
+		writeError(w, errTooMany.Err())
 		return
 	}
 	a, err := s.Store.AccountByEmail(r.Context(), req.Email)
@@ -155,7 +158,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		s.guards.byIP.Add(ip, now)
 		s.guards.byAccount.Add(account, now)
 		s.Log.Warn("failed login", "ip", ip)
-		writeError(w, http.StatusUnauthorized, errBadLogin)
+		writeError(w, errBadLogin.Err())
 		return
 	}
 	s.guards.byAccount.Reset(account)
@@ -221,18 +224,18 @@ func (s *Server) halfLogin(w http.ResponseWriter, r *http.Request) (login, bool)
 	l, err := s.currentLogin(r)
 	switch {
 	case errors.Is(err, store.ErrNotFound):
-		writeError(w, http.StatusUnauthorized, errHalfLogin)
+		writeError(w, errHalfLogin.Err())
 		return l, false
 	case err != nil:
 		s.fail(w, "load session", err)
 		return l, false
 	case l.session.Verified:
-		writeError(w, http.StatusConflict, errAlreadyDone)
+		writeError(w, errAlreadyDone.Err())
 		return l, false
 	}
 	key := fmt.Sprint(l.account.ID)
 	if s.guards.second.Blocked(key, s.now()) {
-		writeError(w, http.StatusTooManyRequests, errTooMany)
+		writeError(w, errTooMany.Err())
 		return l, false
 	}
 	return l, true
@@ -252,7 +255,7 @@ func (s *Server) verified(w http.ResponseWriter, r *http.Request, l login, how s
 
 func (s *Server) secondFailed(w http.ResponseWriter, l login) {
 	s.guards.second.Add(fmt.Sprint(l.account.ID), s.now())
-	writeError(w, http.StatusUnauthorized, errBadCode)
+	writeError(w, errBadCode.Err())
 }
 
 func (s *Server) loginTOTP(w http.ResponseWriter, r *http.Request) {
@@ -267,7 +270,7 @@ func (s *Server) loginTOTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if l.account.TOTPSecret == nil {
-		writeError(w, http.StatusBadRequest, errNoFactor)
+		writeError(w, errNoFactor.Err())
 		return
 	}
 	ok, err := s.useTOTPCode(r, l.account, req.Code)
@@ -349,7 +352,7 @@ func (s *Server) confirmTOTP(w http.ResponseWriter, r *http.Request) {
 	now := s.now()
 	v, ok := s.guards.pending.take(l.session.Hash, "totp", now)
 	if !ok {
-		writeError(w, http.StatusBadRequest, errNoCeremony)
+		writeError(w, errNoCeremony.Err())
 		return
 	}
 	secret := v.([]byte)
@@ -357,7 +360,7 @@ func (s *Server) confirmTOTP(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		// Keep the secret so a typo does not mean scanning again.
 		s.guards.pending.put(l.session.Hash, "totp", secret, now)
-		writeError(w, http.StatusBadRequest, errBadCode)
+		writeError(w, errBadCode.Err().WithStatus(http.StatusBadRequest))
 		return
 	}
 	if err := s.Store.SetTOTP(r.Context(), l.account.ID, s.Sealer.Seal(secret, sealTOTP), step); err != nil {
@@ -390,10 +393,10 @@ func (s *Server) factorAdded(w http.ResponseWriter, r *http.Request, l login) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-func checkEmail(s string) (string, error) {
+func checkEmail(s string) (string, *msg.Error) {
 	a, err := mail.ParseAddress(s)
 	if err != nil || a.Address != s || len(s) > 254 {
-		return "", errors.New("that does not look like an email address")
+		return "", errBadEmail.Err()
 	}
 	return s, nil
 }
@@ -404,7 +407,7 @@ func decode(w http.ResponseWriter, r *http.Request, v any) bool {
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(v); err != nil {
-		writeError(w, http.StatusBadRequest, errors.New("invalid request body"))
+		writeError(w, errBadBody.Err())
 		return false
 	}
 	return true

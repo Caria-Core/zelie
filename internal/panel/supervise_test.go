@@ -68,7 +68,7 @@ func TestCrashedAppIsBroughtBack(t *testing.T) {
 		e.s.deploys.wg.Wait()
 	}
 	_, app := e.b.do("GET", "/api/apps/web", nil)
-	if msg, _ := app["crashing"].(string); !strings.Contains(msg, "5 times") {
+	if m, _ := app["crashing"].(map[string]any); m["code"] != "app.gave_up" || fmt.Sprint(m["params"]) != "map[count:5 minutes:10]" {
 		t.Fatalf("crashing: %v", app["crashing"])
 	}
 	before = count()

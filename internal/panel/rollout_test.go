@@ -27,7 +27,8 @@ func TestHealthCheck(t *testing.T) {
 	e.mu.Unlock()
 	e.b.do("POST", "/api/apps/web/deployments", nil)
 	d := e.settle(t, "web")
-	if d.State != store.DeployFailed || !strings.Contains(d.Error, "did not answer at /healthz") || !strings.Contains(d.Error, "it answered 502") {
+	if d.State != store.DeployFailed || d.Error == nil || d.Error.Code != "deploy.bad_answer" ||
+		fmt.Sprint(d.Error.Params["status"], d.Error.Params["path"]) != "502/healthz" {
 		t.Fatalf("unhealthy deployment %+v", d)
 	}
 	if live, _ := e.s.Store.LiveDeployment(context.Background(), "web"); live.ID != first.ID {

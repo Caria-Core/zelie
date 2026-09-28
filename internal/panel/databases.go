@@ -15,6 +15,7 @@ import (
 
 	"github.com/Caria-Core/zelie/internal/core"
 	"github.com/Caria-Core/zelie/internal/engine"
+	"github.com/Caria-Core/zelie/internal/msg"
 	"github.com/Caria-Core/zelie/internal/secret"
 	"github.com/Caria-Core/zelie/internal/store"
 )
@@ -130,20 +131,20 @@ func (s *Server) createDatabase(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	if err := checkAppID(req.ID); err != nil {
-		writeError(w, http.StatusBadRequest, err)
+	if bad := checkAppID(req.ID); bad != nil {
+		writeError(w, bad)
 		return
 	}
 	e, ok := engineOf(store.App{Engine: req.Engine})
 	if !ok {
-		writeError(w, http.StatusBadRequest, errors.New("the engine must be postgres, mariadb or redis"))
+		writeError(w, errBadEngine.Err())
 		return
 	}
 	if req.Version == "" {
 		req.Version = e.Versions[0]
 	}
 	if !slices.Contains(e.Versions, req.Version) {
-		writeError(w, http.StatusBadRequest, fmt.Errorf("%s comes in versions %v", e.Label, e.Versions))
+		writeError(w, errBadVersion.Err("engine", e.Label, "versions", strings.Join(e.Versions, ", ")))
 		return
 	}
 	ctx := r.Context()
@@ -163,7 +164,7 @@ func (s *Server) createDatabase(w http.ResponseWriter, r *http.Request) {
 	}
 	switch err := s.Store.CreateApp(ctx, a); {
 	case errors.Is(err, store.ErrExists):
-		writeError(w, http.StatusConflict, errors.New("an app or database with that name already exists"))
+		writeError(w, errNameTaken.Err())
 		return
 	case err != nil:
 		s.fail(w, "create database", err)
@@ -194,13 +195,9 @@ func (s *Server) createDatabase(w http.ResponseWriter, r *http.Request) {
 		// A small disk still fits the database with room to spare.
 		limit = max(minVolumeMB, h.DiskBytes>>20/4)
 	}
-	if _, status, err := s.createVolume(ctx, a, volumeRequest{Path: &path, LimitMB: &limit}); err != nil {
+	if _, err := s.createVolume(ctx, a, volumeRequest{Path: &path, LimitMB: &limit}); err != nil {
 		undo()
-		if status == http.StatusBadGateway {
-			s.coreFailed(w, "create volume", err)
-		} else {
-			writeError(w, status, err)
-		}
+		s.failWith(w, "create volume", err)
 		return
 	}
 	s.Log.Info("database created", "database", a.ID, "engine", a.Image, "user", loginFrom(ctx).account.ID)
@@ -316,13 +313,13 @@ func (s *Server) addLink(w http.ResponseWriter, r *http.Request) {
 		l.Prefix = *req.Prefix
 	}
 	ctx := r.Context()
-	if status, err := s.checkLink(ctx, a, l); err != nil {
-		writeError(w, status, err)
+	if err := s.checkLink(ctx, a, l); err != nil {
+		s.failWith(w, "check link", err)
 		return
 	}
 	switch err := s.Store.CreateLink(ctx, l); {
 	case errors.Is(err, store.ErrExists):
-		writeError(w, http.StatusConflict, fmt.Errorf("%s is already linked to %s", a.ID, l.DBID))
+		writeError(w, errLinked.Err("app", a.ID, "db", l.DBID))
 		return
 	case err != nil:
 		s.fail(w, "link", err)
@@ -351,13 +348,13 @@ func (s *Server) updateLink(w http.ResponseWriter, r *http.Request) {
 	if req.Prefix != nil {
 		l.Prefix = *req.Prefix
 	}
-	if status, err := s.checkLink(r.Context(), a, l); err != nil {
-		writeError(w, status, err)
+	if err := s.checkLink(r.Context(), a, l); err != nil {
+		s.failWith(w, "check link", err)
 		return
 	}
 	switch err := s.Store.UpdateLink(r.Context(), l); {
 	case errors.Is(err, store.ErrNotFound):
-		writeError(w, http.StatusNotFound, errors.New("no such link"))
+		writeError(w, errNoLink.Err())
 	case err != nil:
 		s.fail(w, "update link", err)
 	default:
@@ -375,7 +372,7 @@ func (s *Server) deleteLink(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	switch err := s.Store.DeleteLink(ctx, a.ID, r.PathValue("db")); {
 	case errors.Is(err, store.ErrNotFound):
-		writeError(w, http.StatusNotFound, errors.New("no such link"))
+		writeError(w, errNoLink.Err())
 		return
 	case err != nil:
 		s.fail(w, "unlink", err)
@@ -391,31 +388,47 @@ func (s *Server) deleteLink(w http.ResponseWriter, r *http.Request) {
 
 // checkLink checks a new or changed link: the target is a database, and the
 // variables it brings clash with no other variable of the app.
-func (s *Server) checkLink(ctx context.Context, a store.App, l store.Link) (int, error) {
+var (
+	errBadEngine  = msg.Define(http.StatusBadRequest, "db.bad_engine", "The engine must be postgres, mariadb or redis.")
+	errBadVersion = msg.Define(http.StatusBadRequest, "db.bad_version", "{engine} comes in versions {versions}.")
+	errNameTaken  = msg.Define(http.StatusConflict, "db.name_taken", "An app or database with that name already exists.")
+	errLinked     = msg.Define(http.StatusConflict, "link.exists", "{app} is already linked to {db}.")
+	errNoLink     = msg.Define(http.StatusNotFound, "link.not_found", "There is no such link.")
+	errLinkDB     = msg.Define(http.StatusBadRequest, "link.database", "A database cannot be linked to another.")
+	errBadPrefix  = msg.Define(http.StatusBadRequest, "link.bad_prefix", "The prefix must be capital letters, digits and underscores, starting with a letter.")
+	errNoDB       = msg.Define(http.StatusBadRequest, "link.no_database", "There is no database named {db}.")
+	errVarOwn     = msg.Define(http.StatusConflict, "link.var_own", "{name} is already one of the app's own variables. Give this link a prefix, such as {prefix}_.")
+	errVarOther   = msg.Define(http.StatusConflict, "link.var_other", "{name} is already a variable of {db}. Give this link a prefix, such as {prefix}_.")
+)
+
+// checkLink checks a link before it is saved. Its error is a *msg.Error
+// for the user, or the panel's own.
+func (s *Server) checkLink(ctx context.Context, a store.App, l store.Link) error {
 	if a.IsDatabase() {
-		return http.StatusBadRequest, errors.New("a database cannot be linked to another")
+		return errLinkDB.Err()
 	}
 	if !validPrefix.MatchString(l.Prefix) {
-		return http.StatusBadRequest, errors.New("the prefix must be capital letters, digits and underscores, starting with a letter")
+		return errBadPrefix.Err()
 	}
 	db, err := s.Store.App(ctx, l.DBID)
 	if errors.Is(err, store.ErrNotFound) || (err == nil && !db.IsDatabase()) {
-		return http.StatusBadRequest, fmt.Errorf("there is no database named %q", l.DBID)
+		return errNoDB.Err("db", l.DBID)
 	}
 	if err != nil {
-		return http.StatusInternalServerError, err
+		return err
 	}
+	// Who has a name already: "" for the app itself, or a database.
 	taken := map[string]string{}
 	vars, err := s.Store.Env(ctx, a.ID)
 	if err != nil {
-		return http.StatusInternalServerError, err
+		return err
 	}
 	for _, v := range vars {
-		taken[v.Name] = "one of the app's own variables"
+		taken[v.Name] = ""
 	}
 	links, err := s.Store.Links(ctx, a.ID, "")
 	if err != nil {
-		return http.StatusInternalServerError, err
+		return err
 	}
 	for _, other := range links {
 		if other.DBID == l.DBID {
@@ -423,20 +436,25 @@ func (s *Server) checkLink(ctx context.Context, a store.App, l store.Link) (int,
 		}
 		od, err := s.Store.App(ctx, other.DBID)
 		if err != nil {
-			return http.StatusInternalServerError, err
+			return err
 		}
 		oe, _ := engineOf(od)
 		for _, v := range oe.vars {
-			taken[other.Prefix+v.Name] = "a variable of " + other.DBID
+			taken[other.Prefix+v.Name] = other.DBID
 		}
 	}
 	e, _ := engineOf(db)
 	for _, v := range e.vars {
-		if what, ok := taken[l.Prefix+v.Name]; ok {
-			return http.StatusConflict, fmt.Errorf("%s is already %s; give this link a prefix, such as %s_", l.Prefix+v.Name, what, prefixFor(l.DBID))
+		name := l.Prefix + v.Name
+		owner, ok := taken[name]
+		switch {
+		case ok && owner == "":
+			return errVarOwn.Err("name", name, "prefix", prefixFor(l.DBID))
+		case ok:
+			return errVarOther.Err("name", name, "db", owner, "prefix", prefixFor(l.DBID))
 		}
 	}
-	return 0, nil
+	return nil
 }
 
 // prefixFor suggests a prefix from a database's name.

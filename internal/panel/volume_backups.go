@@ -2,15 +2,15 @@ package panel
 
 import (
 	"context"
-	"errors"
 	"net/http"
 	"strings"
 
 	"github.com/Caria-Core/zelie/internal/core"
+	"github.com/Caria-Core/zelie/internal/msg"
 	"github.com/Caria-Core/zelie/internal/store"
 )
 
-var errNoVolumes = errors.New("this app has no volumes, so there is nothing to back up; add one under Settings, Storage")
+var errNoVolumes = msg.Define(http.StatusConflict, "backup.no_volumes", "This app has no volumes, so there is nothing to back up. Add one under Storage.")
 
 // hasVolumes answers 409 for an app that is not a database and has no
 // volumes: it keeps nothing between deployments to back up.
@@ -24,7 +24,7 @@ func (s *Server) hasVolumes(w http.ResponseWriter, r *http.Request, a store.App)
 		return false
 	}
 	if len(vols) == 0 {
-		writeError(w, http.StatusConflict, errNoVolumes)
+		writeError(w, errNoVolumes.Err())
 		return false
 	}
 	return true
@@ -38,7 +38,7 @@ func (s *Server) volumeRefs(ctx context.Context, a store.App) ([]core.VolumeRef,
 		return nil, err
 	}
 	if len(vols) == 0 {
-		return nil, errNoVolumes
+		return nil, errNoVolumes.Err()
 	}
 	refs := make([]core.VolumeRef, len(vols))
 	for i, v := range vols {
@@ -129,7 +129,7 @@ func (s *Server) runVolumeRestore(ctx context.Context, a store.App, b store.Back
 	err := s.whileStopped(ctx, a, store.CauseRestore, func() error {
 		safety, err := s.makeBackup(ctx, a, store.BackupRestore)
 		if err != nil {
-			out.Error = "Nothing was changed: the safety backup of what is there now failed: " + backupFailure(err)
+			out.Error, out.SafetyFailed = new(backupFailure(err)), true
 			return err
 		}
 		out.Safety = &safety.CreatedAt
@@ -141,8 +141,8 @@ func (s *Server) runVolumeRestore(ctx context.Context, a store.App, b store.Back
 	})
 	if err != nil {
 		s.Log.Error("restore failed", "app", a.ID, "backup", b.File, "err", err)
-		if out.Error == "" {
-			out.Error = "The restore failed: " + backupFailure(err)
+		if out.Error == nil {
+			out.Error = new(backupFailure(err))
 		}
 		return out
 	}

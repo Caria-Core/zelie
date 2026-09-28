@@ -48,7 +48,7 @@ func TestTestsRunBeforeGoingLive(t *testing.T) {
 	e.source.commit = strings.Repeat("b", 40)
 	e.b.do("POST", "/api/apps/web/deployments", nil)
 	d := e.settle(t, "web")
-	if d.State != store.DeployFailed || d.Error != "the tests failed (exit code 1)" {
+	if d.State != store.DeployFailed || d.Error == nil || d.Error.Code != "deploy.tests_failed" || d.Error.Text != "The tests failed with exit code 1." {
 		t.Fatalf("failing tests %+v", d)
 	}
 	if live, _ := e.s.Store.LiveDeployment(context.Background(), "web"); live.ID != first.ID {

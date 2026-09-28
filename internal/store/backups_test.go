@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"github.com/Caria-Core/zelie/internal/msg"
 )
 
 func TestBackups(t *testing.T) {
@@ -26,10 +28,13 @@ func TestBackups(t *testing.T) {
 			t.Fatal(err)
 		}
 		file := ""
+		var why *msg.Msg
 		if failure == "" {
 			file = "x.sql.zst.age"
+		} else {
+			why = new(msg.Other.With("detail", failure))
 		}
-		if err := s.FinishBackup(ctx, id, file, 10, failure, at); err != nil {
+		if err := s.FinishBackup(ctx, id, file, 10, why, at); err != nil {
 			t.Fatal(err)
 		}
 		return id
@@ -132,7 +137,7 @@ func TestVolumeBackupRecord(t *testing.T) {
 	if err := s.SetBackupContents(ctx, id, []string{"data", "srv/plugins"}, 5000, 2); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.FinishBackup(ctx, id, "x.tar.zst.age", 900, "", now); err != nil {
+	if err := s.FinishBackup(ctx, id, "x.tar.zst.age", 900, nil, now); err != nil {
 		t.Fatal(err)
 	}
 	b, err := s.Backup(ctx, id)
@@ -141,5 +146,29 @@ func TestVolumeBackupRecord(t *testing.T) {
 	}
 	if len(b.Volumes) != 2 || b.Volumes[1] != "srv/plugins" || b.Size != 5000 || b.Changed != 2 || b.Engine != "" {
 		t.Errorf("backup %+v", b)
+	}
+}
+
+func TestFailureMessages(t *testing.T) {
+	ctx := context.Background()
+	s := open(t)
+	now := time.Unix(1_800_000_000, 0)
+	id, _ := s.StartBackup(ctx, Backup{AppID: "db", Engine: "postgres", Reason: BackupManual, CreatedAt: now, KeepUntil: now})
+	// A row from before messages had codes holds only its English text.
+	if _, err := s.db.ExecContext(ctx, "UPDATE backups SET state = ?, error = ? WHERE id = ?", BackupFailed, "the dump failed", id); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := s.Backup(ctx, id)
+	if b.Error == nil || b.Error.Code != msg.Other.Code || b.Error.Text != "the dump failed" {
+		t.Errorf("old row: %+v", b.Error)
+	}
+	if err := s.FailUnfinishedBackups(ctx, now); err != nil {
+		t.Fatal(err)
+	}
+	id2, _ := s.StartBackup(ctx, Backup{AppID: "db", Engine: "postgres", Reason: BackupManual, CreatedAt: now, KeepUntil: now})
+	s.FailUnfinishedBackups(ctx, now)
+	b, _ = s.Backup(ctx, id2)
+	if b.State != BackupFailed || b.Error == nil || b.Error.Code != "backup.panel_restarted" {
+		t.Errorf("unfinished: %+v %+v", b, b.Error)
 	}
 }

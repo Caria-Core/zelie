@@ -232,7 +232,7 @@ func RestoreTar(ctx context.Context, r io.Reader, vols []Volume) ([]string, erro
 		}
 		if err != nil {
 			cleanUp()
-			return nil, failed("the backup is damaged: %v", err)
+			return nil, errDamaged.Err("detail", err.Error())
 		}
 		i, rel, ok := owning(vols, hdr.Name)
 		if !ok {
@@ -242,7 +242,7 @@ func RestoreTar(ctx context.Context, r io.Reader, vols []Volume) ([]string, erro
 			j, target, ok := owning(vols, hdr.Linkname)
 			if !ok || j != i || target == "." {
 				cleanUp()
-				return nil, failed("the backup links %s to %s, outside its volume", hdr.Name, hdr.Linkname)
+				return nil, errLinkOut.Err("file", hdr.Name, "target", hdr.Linkname)
 			}
 			hdr.Linkname = target
 		}
@@ -332,7 +332,7 @@ func (u *unpack) entry(hdr *tar.Header, rel string, body io.Reader) error {
 			err = cerr
 		}
 		if errors.Is(err, io.ErrUnexpectedEOF) {
-			return failed("the backup is damaged: it ends in the middle of %s", hdr.Name)
+			return errCutShort.Err("file", hdr.Name)
 		}
 		if err != nil {
 			return err
@@ -360,7 +360,7 @@ func (u *unpack) entry(hdr *tar.Header, rel string, body io.Reader) error {
 func (u *unpack) throughLink(rel string) error {
 	for p := path.Dir(rel); p != "."; p = path.Dir(p) {
 		if u.symlinks[p] {
-			return failed("the backup writes through the symbolic link %s", p)
+			return errThroughLink.Err("link", p)
 		}
 	}
 	return nil

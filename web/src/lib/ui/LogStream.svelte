@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { t } from '$lib/i18n';
+	import { say, t, type Msg } from '$lib/i18n';
 
 	// LogStream shows server-sent output as it arrives: "output" events
 	// carry text, "notice" and "done" end the stream.
@@ -28,7 +28,7 @@
 			if (atBottom) queueMicrotask(() => pre && (pre.scrollTop = pre.scrollHeight));
 		});
 		src.addEventListener('notice', (e) => {
-			notice = JSON.parse(e.data);
+			notice = say(JSON.parse(e.data) as Msg);
 			src.close();
 		});
 		src.addEventListener('done', (e) => {

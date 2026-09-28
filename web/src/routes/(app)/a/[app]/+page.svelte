@@ -5,7 +5,7 @@
 	import DatabaseOverview from '$lib/ui/DatabaseOverview.svelte';
 	import ErrorText from '$lib/ui/ErrorText.svelte';
 	import { ago } from '$lib/format';
-	import { t } from '$lib/i18n';
+	import { say, t } from '$lib/i18n';
 	import DeployState from '$lib/ui/DeployState.svelte';
 	import LogStream from '$lib/ui/LogStream.svelte';
 
@@ -74,7 +74,7 @@
 						>
 					</div>
 				</div>
-				{#if d.error}<p class="text-sm text-danger">{d.error}</p>{/if}
+				{#if d.error}<p class="text-sm text-danger">{say(d.error)}</p>{/if}
 				{#if opened === d.id}
 					<LogStream url="/api/apps/{app.id}/deployments/{d.id}/log" height="max-h-[50vh] min-h-24" ondone={() => load(app.id)} />
 				{/if}
