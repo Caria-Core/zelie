@@ -174,7 +174,7 @@ func TestErrors(t *testing.T) {
 	}{
 		{"postgres", "psql:<stdin>:4: ERROR:  canceling statement due to statement timeout\n", "data.timeout", "The query took longer than 5 seconds. Narrow it down with a filter."},
 		{"mariadb", "ERROR 1969 (70100) at line 4: Query execution was interrupted (max_statement_time exceeded)\n", "data.timeout", ""},
-		{"postgres", "psql:<stdin>:4: ERROR:  invalid input syntax for type integer: \"abc\"\nLINE 1: ...\n", "data.query_failed", "The database refused the query: invalid input syntax for type integer: \"abc\"\nLINE 1: ..."},
+		{"postgres", "psql:<stdin>:4: ERROR:  invalid input syntax for type integer: \"abc\"\nLINE 1: ...\n", "data.query_failed", "The database refused the query: invalid input syntax for type integer: \"abc\""},
 	} {
 		cat := pgCatalog
 		if c.engine == "mariadb" {

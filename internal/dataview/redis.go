@@ -123,6 +123,41 @@ func redisUnquote(s string) ([]byte, error) {
 	return out, nil
 }
 
+// fixQuotedJSON mends a line of redis-cli --quoted-json. It writes a
+// string in Redis's quoting and then escapes the backslashes for JSON, but
+// not the quotes: a value holding a " comes out as \\" and ends the JSON
+// string early. Inside a string every backslash arrives doubled, so a quote
+// after an odd number of Redis backslashes belongs to the value.
+func fixQuotedJSON(line string) string {
+	var out strings.Builder
+	in, escaping := false, false
+	for i := 0; i < len(line); i++ {
+		c := line[i]
+		switch {
+		case !in:
+			in = c == '"'
+		case c == '\\' && i+1 < len(line):
+			out.WriteByte(c)
+			i++
+			c = line[i]
+			if c == '\\' {
+				escaping = !escaping
+			} else {
+				escaping = false
+			}
+		case c == '"' && escaping:
+			out.WriteByte('\\')
+			escaping = false
+		case c == '"':
+			in = false
+		default:
+			escaping = false
+		}
+		out.WriteByte(c)
+	}
+	return out.String()
+}
+
 // readable is how a value is shown: as text when it is text, otherwise as
 // hex.
 func readable(b []byte) (string, bool) {
@@ -151,6 +186,7 @@ func redisRun(ctx context.Context, exec Exec, commands []string) ([]json.RawMess
 			replies = append(replies, json.RawMessage(`{"error":`+rest+`}`))
 			continue
 		}
+		line = fixQuotedJSON(line)
 		if !json.Valid([]byte(line)) {
 			return nil, fmt.Errorf("redis-cli said %q", line)
 		}

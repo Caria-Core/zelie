@@ -232,7 +232,8 @@ printf '\000\377' | redis-cli --no-auth-warning -x set "user:bin" >/dev/null
 redis-cli --no-auth-warning hset "user:2" name Ada role admin >/dev/null
 redis-cli --no-auth-warning expire "user:2" 300 >/dev/null
 redis-cli --no-auth-warning rpush queue a b c >/dev/null
-redis-cli --no-auth-warning zadd rank 1.5 x 2 y >/dev/null`)
+redis-cli --no-auth-warning zadd rank 1.5 x 2 y >/dev/null
+redis-cli --no-auth-warning set "say:\"hi\"" '{"user":"efe","path":"C:\\x"}' >/dev/null`)
 	ctx := context.Background()
 	p, err := Keys(ctx, exec, "user:*", "0")
 	if err != nil {
@@ -266,6 +267,14 @@ redis-cli --no-auth-warning zadd rank 1.5 x 2 y >/dev/null`)
 	}
 	if v, err = KeyValue(ctx, exec, "rank"); err != nil || cells(Page{Rows: v.Rows}) != "x,1.5|y,2" {
 		t.Errorf("zset: %q %v", cells(Page{Rows: v.Rows}), err)
+	}
+	// redis-cli leaves quotes in values unescaped in its JSON.
+	quoted, err := Keys(ctx, exec, "say:*", "0")
+	if err != nil || len(quoted.Keys) != 1 || quoted.Keys[0].Name != `say:"hi"` {
+		t.Fatalf("quoted key: %+v %v", quoted, err)
+	}
+	if v, err = KeyValue(ctx, exec, quoted.Keys[0].ID); err != nil || *v.Rows[0][0] != `{"user":"efe","path":"C:\\x"}` {
+		t.Errorf("quoted value: %+v %v", v, err)
 	}
 	if v, err = KeyValue(ctx, exec, "queue"); err != nil || v.Size != 3 {
 		t.Errorf("list: %+v %v", v, err)

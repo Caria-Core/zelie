@@ -509,6 +509,11 @@ func queryError(e dialect, timeout time.Duration, code uint32, stderr string) er
 	if i := strings.Index(detail, "ERROR:"); i >= 0 {
 		detail = strings.TrimSpace(detail[i+len("ERROR:"):])
 	}
+	// What follows is Postgres pointing into the query Zelie wrote, which
+	// the user never saw.
+	if i := strings.Index(detail, "\nLINE "); i >= 0 {
+		detail = detail[:i]
+	}
 	if detail == "" {
 		detail = fmt.Sprintf("exit code %d", code)
 	}

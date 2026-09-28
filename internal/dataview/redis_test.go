@@ -2,6 +2,7 @@ package dataview
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -35,6 +36,38 @@ func TestRedisQuoting(t *testing.T) {
 	for _, bad := range []string{`ends\`, `\x0`, `\xzz`} {
 		if _, err := redisUnquote(bad); err == nil {
 			t.Errorf("%s read", bad)
+		}
+	}
+}
+
+// As redis-cli 8 writes them, quotes in values and all.
+func TestFixQuotedJSON(t *testing.T) {
+	for in, want := range map[string]string{
+		`"{\\"user\\":\\"efe\\"}"`: `{"user":"efe"}`,
+		`"back\\\\slash"`:              `back\slash`,
+		`"ends\\\\"`:                   `ends\`,
+		`"say \\"hi\\" \\xc3\\xa9"`: `say "hi" é`,
+		`["0",["a\\"b","c"]]`:            `a"b`,
+	} {
+		fixed := fixQuotedJSON(in)
+		var s string
+		var list []json.RawMessage
+		if json.Unmarshal([]byte(fixed), &list) == nil {
+			var inner []string
+			json.Unmarshal(list[1], &inner)
+			s = inner[0]
+		} else if err := json.Unmarshal([]byte(fixed), &s); err != nil {
+			t.Errorf("%s: %s is not JSON: %v", in, fixed, err)
+			continue
+		}
+		got, err := redisUnquote(s)
+		if err != nil || string(got) != want {
+			t.Errorf("%s: %q %v", in, got, err)
+		}
+	}
+	for _, same := range []string{`["a","b"]`, `100`, `"none"`, `[["m1",1.5]]`} {
+		if got := fixQuotedJSON(same); got != same {
+			t.Errorf("%s became %s", same, got)
 		}
 	}
 }
