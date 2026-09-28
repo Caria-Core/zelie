@@ -13,7 +13,7 @@ import (
 	"github.com/Caria-Core/zelie/internal/store"
 )
 
-// Outside access (K80): a desktop tool reaches a database through an SSH
+// Outside access: a desktop tool reaches a database through an SSH
 // tunnel to a loopback port the core listens on, signing in as a user of
 // its own. The password is shown once and never kept here.
 

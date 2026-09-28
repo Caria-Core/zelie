@@ -14,7 +14,7 @@ import (
 	"github.com/Caria-Core/zelie/internal/store"
 )
 
-// Off-site copies (K74). The core sends backups to the S3 bucket and holds
+// Off-site copies. The core sends backups to the S3 bucket and holds
 // its keys; the panel decides what goes, tries again after a failure and
 // deletes what is past its time.
 

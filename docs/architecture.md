@@ -1,7 +1,7 @@
 # Architecture
 
-This document describes how Zelie is put together and why. It is written ahead of the
-code and will change as the code catches up.
+This document describes how Zelie is put together and why. Parts of it, such as game
+servers, updates and several servers, describe plans the code has not reached yet.
 
 ## One binary, three processes
 
@@ -109,9 +109,26 @@ address, or through a Cloudflare Tunnel with no open web ports at all.
 
 ## Databases
 
-MariaDB, PostgreSQL and Redis run in containers on the private network of the project
-that uses them. They never get a public port. When a database is attached to an app, the
-connection details are passed to it as environment variables.
+MariaDB, PostgreSQL and Redis each run in a container of their own, with a volume for
+their files. A database never gets a public port. Each app is on a network of its own and the
+firewall drops traffic between them; linking a database to an app opens one way through,
+to the database's one port, so the app reaches it by name. The app also gets variables to
+connect with. The
+password is sealed for the core: the panel stores it but cannot read it, and only the
+core opens it, when it starts the database or a linked app.
+
+Anything that reads a database, such as a backup or the Data tab, runs the engine's own
+client inside the database's container, started by the core. The panel asks for what it
+wants in typed requests; the core builds the query, checks table and column names
+against the database's catalog, and runs it read-only with a time limit.
+
+Desktop tools reach a database through an SSH tunnel. The core listens on a port on
+127.0.0.1 and passes each connection to the database's container, and the tool signs in
+as a user made for it alone, so its password can change or go without touching the apps.
+
+Backups are encrypted with [age](https://age-encryption.org) before they touch the disk.
+The key is the core's; a recovery file, which the panel asks you to save, lets another
+server open them.
 
 ## Game servers
 

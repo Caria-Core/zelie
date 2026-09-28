@@ -1,8 +1,7 @@
 # Contributing
 
-Thanks for your interest in Zelie. The project is at an early stage, so the fastest way
-to help right now is to open an issue with a problem you want solved or a design
-question. Please talk to us in an issue before starting on a large change.
+Thanks for your interest in Zelie. It is pre-alpha, and for now we are not accepting pull
+requests. Issues are welcome: a bug, a problem you want solved or a design question.
 
 ## Building
 
@@ -53,9 +52,9 @@ written inline.
 
 ## Contributor License Agreement
 
-Before your first pull request can be merged, you will be asked to sign a Contributor
-License Agreement. It lets us keep offering Zelie under more than one license. You keep
-the copyright to your work.
+When pull requests open, contributors will be asked to sign a Contributor License
+Agreement first. It lets us keep offering Zelie under more than one license. You keep the
+copyright to your work.
 
 ## Security
 

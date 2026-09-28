@@ -12,7 +12,7 @@ import (
 	"github.com/klauspost/compress/zstd"
 )
 
-// Cut from a mysqldump of a Pelican panel's database, made with
+// Shaped like a mysqldump of a Pelican panel's database, made with
 // --databases, --routines and --triggers.
 const mysqldump = "-- MariaDB dump 10.19  Distrib 10.11.6-MariaDB, for debian-linux-gnu (x86_64)\n" +
 	"--\n-- Host: localhost    Database: panel\n" +

@@ -14,8 +14,8 @@ import (
 	"github.com/Caria-Core/zelie/internal/store"
 )
 
-// Volume limits are checked by measuring, not enforced by the file system
-// (K64): an app can go over for as long as one measurement takes. Tests
+// Volume limits are checked by measuring, not enforced by the file system:
+// an app can go over for as long as one measurement takes. Tests
 // shorten the interval.
 var volumeCheckEvery = time.Minute
 
