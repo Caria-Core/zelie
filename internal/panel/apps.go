@@ -196,7 +196,7 @@ var (
 	errBadCPUs         = msg.Define(http.StatusBadRequest, "app.bad_cpus", "The CPU limit is out of range.")
 	errBadHealthPath   = msg.Define(http.StatusBadRequest, "app.bad_health_path", "The health check path must start with / and hold no spaces.")
 	errBadCommand      = msg.Define(http.StatusBadRequest, "app.bad_command", "A command must be one line of at most 500 characters.")
-	errBadAppName      = msg.Define(http.StatusBadRequest, "app.bad_name", "The name must be up to 40 lowercase letters, digits and dashes, and not start with zelie.")
+	errBadAppName      = msg.Define(http.StatusBadRequest, "app.bad_name", "The name must be up to 40 lowercase letters, digits and dashes. It cannot start with zelie, which Zelie keeps for its own parts.")
 )
 
 // apply copies the fields that were sent onto a and checks the result.

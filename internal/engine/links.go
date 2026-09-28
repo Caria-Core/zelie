@@ -125,7 +125,13 @@ type peers struct {
 	others  map[string][]netip.Addr
 	// what the firewall was last given, to skip rewriting it unchanged
 	applied *firewall
+	// when the host's INPUT chain was last checked
+	inputAt time.Time
 }
+
+// hostInputEvery is how often the host's INPUT chain is checked again: a
+// firewall reloading its own rules can take Zelie's jump away.
+const hostInputEvery = time.Minute
 
 // refresh reads the containers again and brings the firewall up to date.
 func (e *Engine) refresh(ctx context.Context) error {
@@ -179,6 +185,12 @@ func (e *Engine) refreshLocked(ctx context.Context) error {
 		}
 	}
 	fw.sort()
+	if time.Since(p.inputAt) >= hostInputEvery {
+		if err := ensureHostInput(ctx); err != nil {
+			return err
+		}
+		p.inputAt = time.Now()
+	}
 	if p.applied != nil && p.applied.equal(fw) {
 		return nil
 	}

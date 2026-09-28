@@ -14,7 +14,7 @@ export default {
 	'msg.app.bad_health_path': 'The health check path must start with / and hold no spaces.',
 	'msg.app.bad_image': '{image} is not a valid image name.',
 	'msg.app.bad_memory': 'The memory limit must be at least 16 MB.',
-	'msg.app.bad_name': 'The name must be up to 40 lowercase letters, digits and dashes, and not start with zelie.',
+	'msg.app.bad_name': 'The name must be up to 40 lowercase letters, digits and dashes. It cannot start with zelie, which Zelie keeps for its own parts.',
 	'msg.app.bad_port': 'The port must be between 1 and 65535.',
 	'msg.app.bad_repo': 'The repository must look like owner/name.',
 	'msg.app.bad_source': 'The source must be github or image.',

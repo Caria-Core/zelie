@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { server } from '$lib/server.svelte';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { api } from '$lib/api';
@@ -174,7 +175,7 @@
 				<Field label={t('new.port')} type="number" min="1" max="65535" placeholder={github ? '3000' : '80'} bind:value={port} />
 				<Field label={t('new.domain')} placeholder="app.example.com" autocomplete="off" bind:value={domain} />
 			</div>
-			<p class="-mt-2 text-sm text-muted">{t('new.portHint')} {t('new.domainHint')}</p>
+			<p class="-mt-2 text-sm text-muted">{t('new.portHint')} {server.info?.access === 'tunnel' ? t('new.domainHintTunnel') : t('new.domainHint')}</p>
 			<section class="mt-4 flex flex-col gap-4">
 				<div>
 					<h2 class="font-medium">{t('new.more')}</h2>

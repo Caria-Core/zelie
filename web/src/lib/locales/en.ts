@@ -103,6 +103,7 @@ export default {
 	'new.portHint': 'The port the app listens on. Zelie also passes it as PORT.',
 	'new.domain': 'Domain',
 	'new.domainHint': 'Optional. Point its DNS at this server; the certificate comes by itself.',
+	'new.domainHintTunnel': "Optional. In Cloudflare, add the domain to this server's tunnel, sent to the same place as the panel's own address.",
 	'new.memory': 'Memory (MB)',
 	'new.cpus': 'CPUs',
 	'new.more': 'Resources',
