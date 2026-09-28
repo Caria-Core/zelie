@@ -9,7 +9,8 @@ export type Backup = {
 	// Empty for a backup of an app's volumes.
 	engine: Engine | '';
 	// found: made on another server and found in off-site storage.
-	reason: 'scheduled' | 'manual' | 'restore' | 'found';
+	// uploaded: a dump from another server that someone uploaded.
+	reason: 'scheduled' | 'manual' | 'restore' | 'found' | 'uploaded';
 	state: 'running' | 'done' | 'failed';
 	bytes: number;
 	error?: Msg;
@@ -23,6 +24,9 @@ export type Backup = {
 	volumes?: string[];
 	size?: number;
 	changed?: number;
+	// For an uploaded dump: what was taken out or changed so it loads
+	// here, counted by kind (USE, DEFINER, OWNER TO…).
+	adapted?: Record<string, number>;
 	// The off-site copy, if it has one. offsite_at is when it was sent,
 	// or, after a failure, when it is tried again. local is false once
 	// only the off-site copy is left.

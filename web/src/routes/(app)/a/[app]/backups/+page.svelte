@@ -11,8 +11,12 @@
 	import { list, say, t } from '$lib/i18n';
 	import Button from '$lib/ui/Button.svelte';
 	import ErrorText from '$lib/ui/ErrorText.svelte';
+	import RestoreFile from '$lib/ui/RestoreFile.svelte';
 
 	const app = $derived(current.app!);
+	// The layout refreshes the app now and then; only a different app starts
+	// this page over.
+	const appId = $derived(app.id);
 	let data = $state<Backups | null>(null);
 	let links = $state<Link[]>([]);
 	let error = $state('');
@@ -32,7 +36,7 @@
 	}
 
 	$effect(() => {
-		const id = app.id;
+		const id = appId;
 		untrack(() => {
 			data = null;
 			planSaved = true;
@@ -44,7 +48,7 @@
 	// Quicker while a backup, restore or copy runs, so the list shows it end.
 	const moving = $derived(!!data?.running || !!data?.backups.some((b) => b.offsite === 'pending' || b.offsite === 'sending'));
 	$effect(() => {
-		const id = app.id;
+		const id = appId;
 		const timer = setInterval(() => document.visibilityState === 'visible' && refresh(id), moving ? 3000 : 30000);
 		return () => clearInterval(timer);
 	});
@@ -115,8 +119,10 @@
 		scheduled: t('backups.reason.scheduled'),
 		manual: t('backups.reason.manual'),
 		restore: t('backups.reason.restore'),
-		found: t('backups.reason.found')
+		found: t('backups.reason.found'),
+		uploaded: t('backups.reason.uploaded')
 	};
+	const adapted = (b: Backup) => Object.entries(b.adapted ?? {});
 	const apps = $derived(links.map((l) => l.db));
 	const redis = $derived(app.engine === 'redis');
 	// An app that is not a database: its backups hold its volumes.
@@ -157,12 +163,24 @@
 			</p>
 		</div>
 		{#if !noVolumes}
-			<Button
-				onclick={backUp}
-				busy={busy || !!data?.running}
-				disabled={!files && !running}
-				title={!files && !running ? t('backups.notRunning') : ''}><Archive size={16} strokeWidth={1.75} />{t('backups.now')}</Button
-			>
+			<div class="flex flex-wrap gap-2">
+				{#if app.engine}
+					<RestoreFile
+						db={app.id}
+						engine={app.engine}
+						{apps}
+						keepDays={data?.plan.keep_days ?? 7}
+						disabled={busy || !data || data.running || !running}
+						onstarted={() => refresh(app.id)}
+					/>
+				{/if}
+				<Button
+					onclick={backUp}
+					busy={busy || !!data?.running}
+					disabled={!files && !running}
+					title={!files && !running ? t('backups.notRunning') : ''}><Archive size={16} strokeWidth={1.75} />{t('backups.now')}</Button
+				>
+			</div>
 		{/if}
 	</div>
 
@@ -195,14 +213,19 @@
 	<ErrorText message={error} />
 	{#if restoring?.state === 'running'}
 		<p class="flex items-center gap-2 rounded-xl bg-panel px-4 py-3 text-sm">
-			<LoaderCircle size={16} class="shrink-0 animate-spin" />{t(files ? 'backups.restoringApp' : 'backups.restoring', {
-				when: restored ? when(restored) : '',
-				app: app.id
-			})}
+			<LoaderCircle size={16} class="shrink-0 animate-spin" />{#if !restoring.backup}{t('backups.importing')}{:else if restored?.reason === 'uploaded'}{t(
+					'backups.restoringUpload'
+				)}{:else}{t(files ? 'backups.restoringApp' : 'backups.restoring', {
+					when: restored ? when(restored) : '',
+					app: app.id
+				})}{/if}
 		</p>
 	{:else if restoring?.state === 'done'}
 		<p class="rounded-xl bg-ok/10 px-4 py-3 text-sm">
-			{t('backups.restored', { when: restored ? when(restored) : '', safety: restoring.safety ? time(restoring.safety) : '' })}
+			{t(restored?.reason === 'uploaded' ? 'backups.restoredUpload' : 'backups.restored', {
+				when: restored ? when(restored) : '',
+				safety: restoring.safety ? time(restoring.safety) : ''
+			})}
 		</p>
 	{:else if restoring?.state === 'failed'}
 		<p class="rounded-xl border border-danger/30 px-4 py-3 text-sm text-danger">
@@ -276,6 +299,14 @@
 													></span
 												></span
 											>
+										</p>
+									{/if}
+									{#if adapted(b).length}
+										<p class="mt-1 text-sm break-words text-muted">
+											{t('backups.adapted', {
+												n: adapted(b).reduce((n, [, c]) => n + c, 0),
+												list: list(adapted(b).map(([k, c]) => `${k} (${c})`))
+											})}
 										</p>
 									{/if}
 									{#if b.changed}
