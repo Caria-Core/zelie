@@ -12,6 +12,7 @@ import (
 
 	"github.com/Caria-Core/zelie/internal/build"
 	"github.com/Caria-Core/zelie/internal/core"
+	"github.com/Caria-Core/zelie/internal/dataview"
 	"github.com/Caria-Core/zelie/internal/engine"
 	"github.com/Caria-Core/zelie/internal/msg"
 	"github.com/Caria-Core/zelie/internal/secret"
@@ -56,6 +57,11 @@ type Core interface {
 	AppendUpload(ctx context.Context, id string, offset int64, piece io.Reader) (core.Upload, error)
 	RemoveUpload(ctx context.Context, id string) error
 	ImportUpload(ctx context.Context, id, kind string) (core.Backup, error)
+	DataTables(ctx context.Context, app, container, engine string) ([]dataview.Table, error)
+	DataRows(ctx context.Context, app, container, engine string, q dataview.Query) (dataview.Page, error)
+	DataExport(ctx context.Context, app, container, engine string, q dataview.Query, w io.Writer) error
+	DataKeys(ctx context.Context, app, container, pattern, cursor string) (dataview.KeyPage, error)
+	DataKey(ctx context.Context, app, container, key string) (dataview.Value, error)
 }
 
 // Limits an app gets when the request does not say otherwise.

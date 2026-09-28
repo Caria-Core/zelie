@@ -70,6 +70,7 @@ type Server struct {
 	pauses     pauses
 	restores   restores
 	dumps      dumpUploads
+	exports    exports
 	// jobs are backups and restores running in the background.
 	jobs sync.WaitGroup
 	ctx  context.Context // lives as long as the server
@@ -146,6 +147,12 @@ func (s *Server) Handler() http.Handler {
 	web.HandleFunc("GET /api/apps/{app}/backups", s.signedIn(s.listBackups))
 	web.HandleFunc("POST /api/apps/{app}/backups", s.signedIn(s.backUpNow))
 	web.HandleFunc("PUT /api/apps/{app}/backups/plan", s.signedIn(s.setBackupPlan))
+	web.HandleFunc("GET /api/apps/{app}/data/tables", s.signedIn(s.dataTables))
+	web.HandleFunc("POST /api/apps/{app}/data/rows", s.signedIn(s.dataRows))
+	web.HandleFunc("POST /api/apps/{app}/data/export", s.confirmed(s.startExport))
+	web.HandleFunc("GET /api/apps/{app}/data/export/{token}", s.signedIn(s.downloadExport))
+	web.HandleFunc("POST /api/apps/{app}/data/keys", s.signedIn(s.dataKeys))
+	web.HandleFunc("POST /api/apps/{app}/data/key", s.signedIn(s.dataKey))
 	web.HandleFunc("POST /api/apps/{app}/uploads", s.confirmed(s.startDumpUpload))
 	web.HandleFunc("PUT /api/apps/{app}/uploads/{id}", s.signedIn(s.appendDumpUpload))
 	web.HandleFunc("DELETE /api/apps/{app}/uploads/{id}", s.signedIn(s.cancelDumpUpload))
