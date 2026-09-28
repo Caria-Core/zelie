@@ -281,17 +281,17 @@ func (in *Installer) services(ctx context.Context) (bool, string, error) {
 		} else if err := os.WriteFile(file, []byte(units[name]), 0o644); err != nil {
 			return false, "", err
 		}
-		if out, err := in.Exec(ctx, "systemctl", "is-active", services[i]); err != nil || strings.TrimSpace(out) != "active" {
+		if out, err := in.Exec(ctx, "systemctl", "is-active", Services[i]); err != nil || strings.TrimSpace(out) != "active" {
 			continue
 		}
-		if changed || in.staleBinary(ctx, services[i]) {
-			restart = append(restart, services[i])
+		if changed || in.staleBinary(ctx, Services[i]) {
+			restart = append(restart, Services[i])
 		}
 	}
 	if out, err := in.Exec(ctx, "systemctl", "daemon-reload"); err != nil {
 		return false, "", fmt.Errorf("systemctl daemon-reload: %v: %s", err, out)
 	}
-	args := append([]string{"enable", "--now"}, services...)
+	args := append([]string{"enable", "--now"}, Services...)
 	if out, err := in.Exec(ctx, "systemctl", args...); err != nil {
 		return false, "", fmt.Errorf("systemctl enable: %v: %s", err, out)
 	}
@@ -301,7 +301,7 @@ func (in *Installer) services(ctx context.Context) (bool, string, error) {
 			return false, "", fmt.Errorf("systemctl restart: %v: %s", err, out)
 		}
 	}
-	return true, strings.Join(services, ", "), nil
+	return true, strings.Join(Services, ", "), nil
 }
 
 // staleBinary reports whether a running service's process runs a binary

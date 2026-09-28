@@ -5,6 +5,7 @@
 	import { api } from '$lib/api';
 	import { apps, isDatabase, reload, shownState } from '$lib/apps.svelte';
 	import { t } from '$lib/i18n';
+	import { loadServer, server } from '$lib/server.svelte';
 	import { refresh, session } from '$lib/session.svelte';
 	import AppIcon from '$lib/ui/AppIcon.svelte';
 	import ConfirmDialog from '$lib/ui/ConfirmDialog.svelte';
@@ -29,9 +30,16 @@
 			if (!me.logged_in || !me.verified) return goto(me.logged_in && me.enroll ? '/enroll' : '/login');
 			ready = true;
 			await reload();
+			loadServer().catch(() => {});
 			// Apps can stop on their own and deployments move on, so the list
-			// is refreshed while the tab is in view.
-			timer = setInterval(() => document.visibilityState === 'visible' && reload().catch(() => {}), 5000);
+			// is refreshed while the tab is in view. A new release is rare;
+			// the panel looks for one once a day.
+			let ticks = 0;
+			timer = setInterval(() => {
+				if (document.visibilityState !== 'visible') return;
+				reload().catch(() => {});
+				if (++ticks % 120 === 0) loadServer().catch(() => {});
+			}, 5000);
 		})();
 		return () => clearInterval(timer);
 	});
@@ -95,6 +103,15 @@
 			</nav>
 			<div class="flex flex-col gap-0.5 text-sm">
 				<div class="px-1 pb-2"><ThemeSwitch /></div>
+				<a
+					href="/server"
+					class="flex items-center justify-between gap-2 rounded-lg px-2 py-1.5 text-muted hover:bg-hover hover:text-fg {page.url.pathname === '/server'
+						? 'bg-selected text-fg'
+						: ''}"
+					>{t('nav.server')}{#if server.info?.available}<span class="flex items-center gap-1.5 text-xs text-fg"
+							><span class="size-1.5 rounded-full bg-accent"></span>{t('nav.updateAvailable')}</span
+						>{/if}</a
+				>
 				<a
 					href="/backups"
 					class="rounded-lg px-2 py-1.5 text-muted hover:bg-hover hover:text-fg {page.url.pathname === '/backups'

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/Caria-Core/zelie/internal/peer"
+	"github.com/Caria-Core/zelie/internal/version"
 )
 
 // Addrs says where the proxy listens.
@@ -50,6 +51,9 @@ func (p *Proxy) Serve(ctx context.Context, a Addrs, allowed peer.Policy) error {
 	}
 
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /v1/version", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]string{"version": version.Get().Version})
+	})
 	mux.HandleFunc("GET /v1/config", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, p.Config())
 	})
@@ -146,6 +150,32 @@ func (c *Client) Config(ctx context.Context) (Config, error) {
 	var cfg Config
 	err := c.do(ctx, http.MethodGet, nil, &cfg)
 	return cfg, err
+}
+
+// Version asks the running proxy which version it is.
+func (c *Client) Version(ctx context.Context) (string, error) {
+	return getVersion(ctx, c.http, "http://proxy/v1/version")
+}
+
+// getVersion reads {"version": …} from a Zelie process's socket.
+func getVersion(ctx context.Context, client *http.Client, url string) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	var out struct {
+		Version string `json:"version"`
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("%s: %s", url, resp.Status)
+	}
+	err = json.NewDecoder(io.LimitReader(resp.Body, 4<<10)).Decode(&out)
+	return out.Version, err
 }
 
 func (c *Client) Apply(ctx context.Context, cfg Config) error {

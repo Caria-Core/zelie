@@ -42,8 +42,10 @@ type appCore struct {
 	external   map[string]core.ExternalListener
 	extSets    []string     // "app port sealed?" of each SetExternal
 	takenPorts map[int]bool // ports something else on the server holds
-	suggest    string       // the test command builds find
-	buildEnv   []string     // the variables the last build got, opened
+	version    string       // the version the core runs
+	updatedTo  string
+	suggest    string   // the test command builds find
+	buildEnv   []string // the variables the last build got, opened
 	args       map[string][]string
 	cpuUsec    int64
 	testExit   int
@@ -256,6 +258,19 @@ func (c *appCore) SyncExternal(_ context.Context, list []core.ExternalListener) 
 	for _, l := range list {
 		c.external[l.App] = l
 	}
+	return nil
+}
+
+func (c *appCore) UpdateStatus(context.Context) (core.UpdateStatus, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return core.UpdateStatus{Version: c.version}, nil
+}
+
+func (c *appCore) Update(_ context.Context, v string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.updatedTo = v
 	return nil
 }
 

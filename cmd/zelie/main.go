@@ -52,6 +52,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runInstall(args[1:], os.Stdin, stdout, stderr)
 	case "core":
 		return runCore(stderr)
+	case "update-finish":
+		// Run by the core during an update, not by hand.
+		return updateFinish(args[1:], stdout, stderr)
 	case "proxy":
 		return runProxy(args[1:], stderr)
 	case "panel":

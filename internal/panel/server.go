@@ -26,6 +26,7 @@ import (
 	"github.com/Caria-Core/zelie/internal/msg"
 	"github.com/Caria-Core/zelie/internal/peer"
 	"github.com/Caria-Core/zelie/internal/store"
+	"github.com/Caria-Core/zelie/internal/version"
 	"github.com/Caria-Core/zelie/internal/webui"
 )
 
@@ -61,6 +62,10 @@ type Server struct {
 	crashes crashes
 	samples samples
 	sizes   volumeSizes
+	// Releases returns the latest release; tests replace GitHub.
+	Releases func(ctx context.Context) (Release, error)
+	releases releases
+
 	// externalMu keeps two requests from picking the same port.
 	externalMu sync.Mutex
 	// backupBusy holds the databases being backed up or restored.
@@ -96,6 +101,9 @@ func (s *Server) now() time.Time {
 func (s *Server) Handler() http.Handler {
 	local := http.NewServeMux()
 	local.HandleFunc("POST /local/setup-link", s.setupLink)
+	local.HandleFunc("GET /local/version", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]string{"version": version.Get().Version})
+	})
 
 	s.guards = newGuards()
 	web := http.NewServeMux()
@@ -152,6 +160,9 @@ func (s *Server) Handler() http.Handler {
 	web.HandleFunc("GET /api/apps/{app}/data/tables", s.signedIn(s.dataTables))
 	web.HandleFunc("POST /api/apps/{app}/data/rows", s.signedIn(s.dataRows))
 	web.HandleFunc("POST /api/apps/{app}/data/export", s.confirmed(s.startExport))
+	web.HandleFunc("GET /api/server", s.signedIn(s.serverInfo))
+	web.HandleFunc("POST /api/server/check", s.signedIn(s.checkReleaseNow))
+	web.HandleFunc("POST /api/server/update", s.confirmed(s.startUpdate))
 	web.HandleFunc("GET /api/apps/{app}/external", s.signedIn(s.getExternal))
 	web.HandleFunc("POST /api/apps/{app}/external", s.confirmed(s.setExternal))
 	web.HandleFunc("DELETE /api/apps/{app}/external", s.signedIn(s.removeExternal))
@@ -243,6 +254,7 @@ func (s *Server) Serve(ctx context.Context, socket string) error {
 		go s.watchVolumes(ctx)
 		s.syncAllLinks(ctx)
 		s.syncExternal(ctx)
+		go s.runReleaseCheck(ctx)
 		s.runImageSweep(ctx)
 	}()
 	l, err := net.Listen("unix", socket)
@@ -380,6 +392,27 @@ func NewClient(socket string) *Client {
 			return d.DialContext(ctx, "unix", socket)
 		},
 	}}}
+}
+
+// Version asks the running panel which version it is.
+func (c *Client) Version(ctx context.Context) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://panel/local/version", nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	var out struct {
+		Version string `json:"version"`
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", errors.New("panel answered " + resp.Status)
+	}
+	err = json.NewDecoder(io.LimitReader(resp.Body, 4<<10)).Decode(&out)
+	return out.Version, err
 }
 
 // ErrSetupDone means an administrator exists, so there is no setup link.

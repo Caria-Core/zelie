@@ -87,6 +87,7 @@ func runCore(stderr io.Writer) int {
 		Backups:  &backup.Dir{Root: "/var/lib/zelie/backups", Key: backupKey},
 		Offsite:  offsite,
 		External: external,
+		Updater:  newUpdater(),
 	}
 	s.StartExternal(listeners)
 	if err := s.Serve(ctx, core.DefaultSocket); err != nil {

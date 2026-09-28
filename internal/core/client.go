@@ -15,6 +15,7 @@ import (
 	"github.com/Caria-Core/zelie/internal/engine"
 	"github.com/Caria-Core/zelie/internal/msg"
 	"github.com/Caria-Core/zelie/internal/secret"
+	"github.com/Caria-Core/zelie/internal/update"
 )
 
 // DefaultSocket is where the core listens.
@@ -189,6 +190,33 @@ func (c *Client) SyncExternal(ctx context.Context, list []ExternalListener) erro
 		list = []ExternalListener{}
 	}
 	return c.do(ctx, http.MethodPut, "/v1/external", externalSync{Listeners: list}, nil)
+}
+
+// Version asks the running core which version it is.
+func (c *Client) Version(ctx context.Context) (string, error) {
+	var out struct {
+		Version string `json:"version"`
+	}
+	err := c.do(ctx, http.MethodGet, "/v1/version", nil, &out)
+	return out.Version, err
+}
+
+// UpdateStatus is the running version and how the last update went.
+type UpdateStatus struct {
+	Version string         `json:"version"`
+	Last    *update.Result `json:"last,omitempty"`
+}
+
+func (c *Client) UpdateStatus(ctx context.Context) (UpdateStatus, error) {
+	var out UpdateStatus
+	err := c.do(ctx, http.MethodGet, "/v1/update", nil, &out)
+	return out, err
+}
+
+// Update starts an update to version. It returns once the release is
+// downloaded and checked; the services restart after.
+func (c *Client) Update(ctx context.Context, version string) error {
+	return c.do(ctx, http.MethodPost, "/v1/update", updateRequest{Version: version}, nil)
 }
 
 // readError turns an error response into an *Error.

@@ -65,9 +65,11 @@ type Server struct {
 	Offsite *Offsite
 	// External holds the loopback ports of databases open to desktop tools.
 	External *External
-	Paths    engine.Paths
-	Log      *slog.Logger
-	Allowed  peer.Policy
+	// Updater updates Zelie itself; nil where it cannot.
+	Updater *Updater
+	Paths   engine.Paths
+	Log     *slog.Logger
+	Allowed peer.Policy
 	// Host describes the server; tests replace it.
 	Host func() (engine.Host, error)
 
@@ -93,6 +95,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /v1/builds/{app}/cache", s.removeBuildCache)
 	mux.HandleFunc("DELETE /v1/images", s.removeImage)
 	mux.HandleFunc("POST /v1/images/sweep", s.sweepImages)
+	mux.HandleFunc("GET /v1/version", s.version)
+	mux.HandleFunc("GET /v1/update", s.updateStatus)
+	mux.HandleFunc("POST /v1/update", s.startUpdate)
 	mux.HandleFunc("PUT /v1/external", s.syncExternal)
 	mux.HandleFunc("PUT /v1/external/{app}", s.setExternal)
 	mux.HandleFunc("DELETE /v1/external/{app}", s.removeExternal)

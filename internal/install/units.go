@@ -10,8 +10,8 @@ const (
 	ProxyUser = "zelie-proxy"
 )
 
-// The three services, in the order they start.
-var services = []string{"zelie-core", "zelie-proxy", "zelie-panel"}
+// Services are Zelie's own systemd services, in the order they start.
+var Services = []string{"zelie-core", "zelie-proxy", "zelie-panel"}
 
 // Units returns the systemd units for opts, by file name.
 func Units(opts Options) map[string]string {
@@ -96,8 +96,8 @@ WantedBy=multi-user.target
 
 // unitNames lists the unit files in start order.
 func unitNames() []string {
-	out := make([]string, len(services))
-	for i, s := range services {
+	out := make([]string, len(Services))
+	for i, s := range Services {
 		out[i] = s + ".service"
 	}
 	return out
