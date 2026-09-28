@@ -25,6 +25,13 @@ const (
 	BackupFailed  = "failed"
 )
 
+// Where a backup's off-site copy is. A backup that is not sent has none.
+const (
+	OffsitePending = "pending"
+	OffsiteDone    = "done"
+	OffsiteFailed  = "failed"
+)
+
 // BackupPlan says when an app is backed up and for how long its backups
 // are kept.
 type BackupPlan struct {
@@ -35,45 +42,55 @@ type BackupPlan struct {
 	// Stop stops an app for its volume backup instead of copying the
 	// files while it runs.
 	Stop bool
+	// Offsite sends each backup to the off-site storage, when there is
+	// one, where it is kept for OffsiteDays.
+	Offsite     bool
+	OffsiteDays int
 }
 
 // DefaultBackupPlan is what a new database gets: every night at three,
 // kept for a week.
 func DefaultBackupPlan(app string) BackupPlan {
-	return BackupPlan{AppID: app, Enabled: true, Minute: 3 * 60, KeepDays: 7}
+	return BackupPlan{AppID: app, Enabled: true, Minute: 3 * 60, KeepDays: 7, Offsite: true, OffsiteDays: 30}
 }
 
 // AppBackupPlan is what an app has until its plan is changed: the same
 // hours, but off, since volumes such as game worlds can be large.
 func AppBackupPlan(app string) BackupPlan {
-	return BackupPlan{AppID: app, Minute: 3 * 60, KeepDays: 7}
+	return BackupPlan{AppID: app, Minute: 3 * 60, KeepDays: 7, Offsite: true, OffsiteDays: 30}
 }
 
 // BackupPlan returns an app's plan, or ErrNotFound when it has none.
 func (s *Store) BackupPlan(ctx context.Context, app string) (BackupPlan, error) {
 	p := BackupPlan{AppID: app}
-	err := s.db.QueryRowContext(ctx, "SELECT enabled, minute, keep_days, stop FROM backup_plans WHERE app_id = ?", app).
-		Scan(&p.Enabled, &p.Minute, &p.KeepDays, &p.Stop)
+	err := s.db.QueryRowContext(ctx, "SELECT "+planColumns+" FROM backup_plans WHERE app_id = ?", app).
+		Scan(&p.AppID, &p.Enabled, &p.Minute, &p.KeepDays, &p.Stop, &p.Offsite, &p.OffsiteDays)
 	if errors.Is(err, sql.ErrNoRows) {
 		return p, ErrNotFound
 	}
 	return p, err
 }
 
+const planColumns = "app_id, enabled, minute, keep_days, stop, offsite, offsite_days"
+
 // SetBackupPlan saves a plan. Backups already made are kept for the new
-// number of days, counted from when each was made.
+// numbers of days, counted from when each was made.
 func (s *Store) SetBackupPlan(ctx context.Context, p BackupPlan) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `INSERT INTO backup_plans (app_id, enabled, minute, keep_days, stop) VALUES (?, ?, ?, ?, ?)
-		ON CONFLICT (app_id) DO UPDATE SET enabled = excluded.enabled, minute = excluded.minute, keep_days = excluded.keep_days, stop = excluded.stop`,
-		p.AppID, p.Enabled, p.Minute, p.KeepDays, p.Stop); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO backup_plans (`+planColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT (app_id) DO UPDATE SET enabled = excluded.enabled, minute = excluded.minute, keep_days = excluded.keep_days,
+			stop = excluded.stop, offsite = excluded.offsite, offsite_days = excluded.offsite_days`,
+		p.AppID, p.Enabled, p.Minute, p.KeepDays, p.Stop, p.Offsite, p.OffsiteDays); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, "UPDATE backups SET keep_until = created_at + ? WHERE app_id = ?", p.KeepDays*86400, p.AppID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, "UPDATE backups SET offsite_until = created_at + ? WHERE app_id = ? AND offsite != ''", p.OffsiteDays*86400, p.AppID); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -81,7 +98,7 @@ func (s *Store) SetBackupPlan(ctx context.Context, p BackupPlan) error {
 
 // BackupPlans returns every plan.
 func (s *Store) BackupPlans(ctx context.Context) ([]BackupPlan, error) {
-	rows, err := s.db.QueryContext(ctx, "SELECT app_id, enabled, minute, keep_days, stop FROM backup_plans ORDER BY app_id")
+	rows, err := s.db.QueryContext(ctx, "SELECT "+planColumns+" FROM backup_plans ORDER BY app_id")
 	if err != nil {
 		return nil, err
 	}
@@ -89,7 +106,7 @@ func (s *Store) BackupPlans(ctx context.Context) ([]BackupPlan, error) {
 	var out []BackupPlan
 	for rows.Next() {
 		var p BackupPlan
-		if err := rows.Scan(&p.AppID, &p.Enabled, &p.Minute, &p.KeepDays, &p.Stop); err != nil {
+		if err := rows.Scan(&p.AppID, &p.Enabled, &p.Minute, &p.KeepDays, &p.Stop, &p.Offsite, &p.OffsiteDays); err != nil {
 			return nil, err
 		}
 		out = append(out, p)
@@ -117,18 +134,32 @@ type Backup struct {
 	FinishedAt time.Time // zero while running
 	KeepUntil  time.Time
 	RestoredAt time.Time // zero if it was never put back
+
+	// The off-site copy: its state (empty when there is none), why it
+	// failed, how often it was tried, when it was sent or is tried
+	// again, and until when it is kept.
+	Offsite      string
+	OffsiteError *msg.Msg
+	OffsiteTries int
+	OffsiteAt    time.Time
+	OffsiteUntil time.Time
+	// Local is false once only the off-site copy is left.
+	Local bool
 }
 
-const backupColumns = "id, app_id, engine, reason, state, file, bytes, error, error_msg, created_at, finished_at, keep_until, restored_at, volumes, size, changed"
+const backupColumns = `id, app_id, engine, reason, state, file, bytes, error, error_msg, created_at, finished_at, keep_until, restored_at, volumes, size, changed,
+	offsite, offsite_error, offsite_error_msg, offsite_tries, offsite_at, offsite_until, local`
 
 func scanBackup(row scanner) (Backup, error) {
 	var b Backup
-	var created, keep int64
+	var created, keep, offsiteAt, offsiteUntil int64
 	var finished, restored sql.NullInt64
-	var volumes, text, js string
+	var volumes, text, js, otext, ojs string
 	err := row.Scan(&b.ID, &b.AppID, &b.Engine, &b.Reason, &b.State, &b.File, &b.Bytes, &text, &js, &created, &finished, &keep, &restored,
-		&volumes, &b.Size, &b.Changed)
+		&volumes, &b.Size, &b.Changed, &b.Offsite, &otext, &ojs, &b.OffsiteTries, &offsiteAt, &offsiteUntil, &b.Local)
 	b.Error = readMsg(text, js)
+	b.OffsiteError = readMsg(otext, ojs)
+	b.OffsiteAt, b.OffsiteUntil = timeOrZero(offsiteAt), timeOrZero(offsiteUntil)
 	if errors.Is(err, sql.ErrNoRows) {
 		return b, ErrNotFound
 	}
@@ -143,6 +174,13 @@ func scanBackup(row scanner) (Backup, error) {
 		b.RestoredAt = time.Unix(restored.Int64, 0)
 	}
 	return b, err
+}
+
+func timeOrZero(unix int64) time.Time {
+	if unix == 0 {
+		return time.Time{}
+	}
+	return time.Unix(unix, 0)
 }
 
 // StartBackup records a backup that is about to be made and returns its id.
@@ -209,14 +247,30 @@ func (s *Store) Backups(ctx context.Context, app string) ([]Backup, error) {
 	return out, rows.Err()
 }
 
-// ExpiredBackups returns the backups whose time is up. The newest backup
-// made of an app that still exists is never among them: if backups stop
-// working, the last good one stays.
+// ExpiredBackups returns the backups whose file here is due to go. The
+// newest backup made of an app that still exists is never among them: if
+// backups stop working, the last good one stays.
 func (s *Store) ExpiredBackups(ctx context.Context, now time.Time) ([]Backup, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT `+backupColumns+` FROM backups b WHERE keep_until < ? AND state != ?
+	return s.queryBackups(ctx, `SELECT `+backupColumns+` FROM backups b WHERE local = 1 AND keep_until < ? AND state != ?
 		AND NOT (app_id IN (SELECT id FROM apps) AND state = ?
 			AND id = (SELECT max(id) FROM backups WHERE app_id = b.app_id AND state = ?))
 		ORDER BY id`, now.Unix(), BackupRunning, BackupDone, BackupDone)
+}
+
+// ExpiredOffsite returns the backups left only off-site whose time is up
+// there too.
+func (s *Store) ExpiredOffsite(ctx context.Context, now time.Time) ([]Backup, error) {
+	return s.queryBackups(ctx, "SELECT "+backupColumns+" FROM backups WHERE local = 0 AND offsite_until < ? ORDER BY id", now.Unix())
+}
+
+// OffsiteDue returns the backups to send now, oldest first.
+func (s *Store) OffsiteDue(ctx context.Context, now time.Time) ([]Backup, error) {
+	return s.queryBackups(ctx, "SELECT "+backupColumns+" FROM backups WHERE state = ? AND local = 1 AND offsite IN (?, ?) AND offsite_at <= ? ORDER BY id",
+		BackupDone, OffsitePending, OffsiteFailed, now.Unix())
+}
+
+func (s *Store) queryBackups(ctx context.Context, q string, args ...any) ([]Backup, error) {
+	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -230,6 +284,47 @@ func (s *Store) ExpiredBackups(ctx context.Context, now time.Time) ([]Backup, er
 		out = append(out, b)
 	}
 	return out, rows.Err()
+}
+
+// SendOffsite marks a backup to be sent now, and kept off-site until.
+func (s *Store) SendOffsite(ctx context.Context, id int64, until time.Time) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE backups SET offsite = ?, offsite_error = '', offsite_error_msg = '', offsite_tries = 0,
+		offsite_at = 0, offsite_until = ? WHERE id = ?`, OffsitePending, until.Unix(), id)
+	return oneRow(res, err)
+}
+
+// OffsiteSent records that a backup's copy is off-site.
+func (s *Store) OffsiteSent(ctx context.Context, id int64, at time.Time) error {
+	res, err := s.db.ExecContext(ctx, "UPDATE backups SET offsite = ?, offsite_error = '', offsite_error_msg = '', offsite_at = ? WHERE id = ?",
+		OffsiteDone, at.Unix(), id)
+	return oneRow(res, err)
+}
+
+// OffsiteFailedAt records a failed send, to be tried again at next.
+func (s *Store) OffsiteFailedAt(ctx context.Context, id int64, failure msg.Msg, tries int, next time.Time) error {
+	text, js := msgColumns(&failure)
+	res, err := s.db.ExecContext(ctx, "UPDATE backups SET offsite = ?, offsite_error = ?, offsite_error_msg = ?, offsite_tries = ?, offsite_at = ? WHERE id = ?",
+		OffsiteFailed, text, js, tries, next.Unix(), id)
+	return oneRow(res, err)
+}
+
+// DropOffsiteQueue forgets the backups still waiting to be sent, when
+// there is no longer anywhere to send them.
+func (s *Store) DropOffsiteQueue(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE backups SET offsite = '', offsite_error = '', offsite_error_msg = '', offsite_tries = 0,
+		offsite_at = 0, offsite_until = 0 WHERE offsite IN (?, ?)`, OffsitePending, OffsiteFailed)
+	return err
+}
+
+// SetLocal records whether a backup's file is here. One brought back from
+// off-site is kept here until keep.
+func (s *Store) SetLocal(ctx context.Context, id int64, local bool, keep time.Time) error {
+	q, args := "UPDATE backups SET local = ? WHERE id = ?", []any{local, id}
+	if local {
+		q, args = "UPDATE backups SET local = 1, keep_until = ? WHERE id = ?", []any{keep.Unix(), id}
+	}
+	res, err := s.db.ExecContext(ctx, q, args...)
+	return oneRow(res, err)
 }
 
 func (s *Store) DeleteBackup(ctx context.Context, id int64) error {

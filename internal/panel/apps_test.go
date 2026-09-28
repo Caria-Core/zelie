@@ -55,7 +55,8 @@ type appCore struct {
 	mounts      map[string][]engine.VolumeMount // by container
 	overlapping bool                            // two containers had the same volume running
 
-	bk coreBackups
+	bk  coreBackups
+	off coreOffsite
 	// Containers another request removes first: removing them again finds
 	// nothing.
 	vanishing map[string]bool

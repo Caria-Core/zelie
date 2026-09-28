@@ -43,6 +43,12 @@ type Core interface {
 	BackUpVolumes(ctx context.Context, app string, vols []core.VolumeRef, live bool) (core.Backup, error)
 	RestoreVolumes(ctx context.Context, app, name string, vols []core.VolumeRef, size int64) error
 	RecoveryKey(ctx context.Context, host string, w io.Writer) error
+	Offsite(ctx context.Context) (core.OffsiteInfo, error)
+	SetOffsite(ctx context.Context, cfg core.OffsiteConfig) (core.OffsiteInfo, error)
+	RemoveOffsite(ctx context.Context) error
+	UploadBackup(ctx context.Context, app, name string) error
+	RemoveOffsiteBackup(ctx context.Context, app, name string) error
+	FetchBackup(ctx context.Context, app, name string) error
 }
 
 // Limits an app gets when the request does not say otherwise.

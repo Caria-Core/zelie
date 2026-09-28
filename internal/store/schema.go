@@ -229,5 +229,19 @@ ALTER TABLE backups ADD COLUMN changed INTEGER NOT NULL DEFAULT 0;
 -- translate: JSON of msg.Msg. The error columns keep the English text.
 ALTER TABLE deployments ADD COLUMN error_msg TEXT NOT NULL DEFAULT '';
 ALTER TABLE backups ADD COLUMN error_msg TEXT NOT NULL DEFAULT '';
+`, `
+-- Copies of backups in off-site storage (S3). offsite is '' for a backup
+-- that is not sent, then pending, done or failed; offsite_at is when it
+-- was sent, or when to try again. local is 0 once the file here is gone
+-- and only the off-site copy is left, until offsite_until.
+ALTER TABLE backup_plans ADD COLUMN offsite INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE backup_plans ADD COLUMN offsite_days INTEGER NOT NULL DEFAULT 30;
+ALTER TABLE backups ADD COLUMN offsite TEXT NOT NULL DEFAULT '';
+ALTER TABLE backups ADD COLUMN offsite_error TEXT NOT NULL DEFAULT '';
+ALTER TABLE backups ADD COLUMN offsite_error_msg TEXT NOT NULL DEFAULT '';
+ALTER TABLE backups ADD COLUMN offsite_tries INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE backups ADD COLUMN offsite_at INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE backups ADD COLUMN offsite_until INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE backups ADD COLUMN local INTEGER NOT NULL DEFAULT 1;
 `,
 }

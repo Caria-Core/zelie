@@ -161,6 +161,9 @@ func (s *Server) makeBackup(ctx context.Context, a store.App, reason string) (st
 	if ferr := s.Store.FinishBackup(context.WithoutCancel(ctx), b.ID, info.Name, info.Bytes, failure, s.now()); ferr != nil {
 		return b, ferr
 	}
+	if err == nil {
+		s.queueOffsite(ctx, b, plan)
+	}
 	b, _ = s.Store.Backup(ctx, b.ID)
 	return b, err
 }
@@ -257,25 +260,6 @@ func (s *Server) backupDue(ctx context.Context, a store.App, p store.BackupPlan)
 	return last.State == store.BackupFailed && len(tries) < backupTries && now.Sub(last.CreatedAt) >= backupRetry, nil
 }
 
-func (s *Server) pruneBackups(ctx context.Context) {
-	expired, err := s.Store.ExpiredBackups(ctx, s.now())
-	if err != nil {
-		s.Log.Error("backups: list expired", "err", err)
-		return
-	}
-	for _, b := range expired {
-		if b.File != "" {
-			if err := s.Core.RemoveBackup(ctx, b.AppID, b.File); err != nil && !isNotFound(err) {
-				s.Log.Error("backups: remove", "app", b.AppID, "backup", b.File, "err", err)
-				continue
-			}
-		}
-		if err := s.Store.DeleteBackup(ctx, b.ID); err != nil {
-			s.Log.Error("backups: forget", "id", b.ID, "err", err)
-		}
-	}
-}
-
 type backupJSON struct {
 	ID         int64      `json:"id"`
 	App        string     `json:"app"`
@@ -291,11 +275,34 @@ type backupJSON struct {
 	Volumes    []string   `json:"volumes,omitempty"`
 	Size       int64      `json:"size,omitempty"`
 	Changed    int        `json:"changed,omitempty"`
+	// Offsite is where its off-site copy is: pending, sending, done or
+	// failed, or empty for none. Local is false when only that copy is
+	// left.
+	Offsite      string     `json:"offsite,omitempty"`
+	OffsiteError *msg.Msg   `json:"offsite_error,omitempty"`
+	OffsiteAt    *time.Time `json:"offsite_at,omitempty"`
+	OffsiteUntil *time.Time `json:"offsite_until,omitempty"`
+	Local        bool       `json:"local"`
 }
 
-func backupOut(b store.Backup) backupJSON {
+func (s *Server) backupOut(b store.Backup) backupJSON {
 	out := backupJSON{ID: b.ID, App: b.AppID, Engine: b.Engine, Reason: b.Reason, State: b.State, Bytes: b.Bytes, Error: b.Error,
-		CreatedAt: b.CreatedAt, KeepUntil: b.KeepUntil, Volumes: b.Volumes, Size: b.Size, Changed: b.Changed}
+		CreatedAt: b.CreatedAt, KeepUntil: b.KeepUntil, Volumes: b.Volumes, Size: b.Size, Changed: b.Changed,
+		Offsite: b.Offsite, Local: b.Local}
+	switch {
+	case b.Offsite == store.OffsiteFailed:
+		out.OffsiteError = b.OffsiteError
+		if b.OffsiteAt.Before(never) {
+			out.OffsiteAt = &b.OffsiteAt // when it is tried again
+		}
+	case b.Offsite != "" && s.uploading.has(strconv.FormatInt(b.ID, 10)):
+		out.Offsite = "sending"
+	case b.Offsite == store.OffsiteDone:
+		out.OffsiteAt = &b.OffsiteAt
+	}
+	if b.Offsite != "" {
+		out.OffsiteUntil = &b.OffsiteUntil
+	}
 	if !b.FinishedAt.IsZero() {
 		out.FinishedAt = &b.FinishedAt
 	}
@@ -310,6 +317,13 @@ type backupPlanJSON struct {
 	Minute   int  `json:"minute"`
 	KeepDays int  `json:"keep_days"`
 	Stop     bool `json:"stop"`
+	// Left out, they stay as they are.
+	Offsite     *bool `json:"offsite,omitempty"`
+	OffsiteDays *int  `json:"offsite_days,omitempty"`
+}
+
+func planOut(p store.BackupPlan) backupPlanJSON {
+	return backupPlanJSON{p.Enabled, p.Minute, p.KeepDays, p.Stop, &p.Offsite, &p.OffsiteDays}
 }
 
 type backupsJSON struct {
@@ -320,6 +334,8 @@ type backupsJSON struct {
 	Volumes []string `json:"volumes"`
 	// Running is set while a backup or restore of the database runs.
 	Running bool `json:"running"`
+	// OffsiteSet says there is off-site storage to send backups to.
+	OffsiteSet bool `json:"offsite_set"`
 	// RecoverySavedAt is when the recovery file was last saved; without
 	// it the backups cannot be opened if the server is lost.
 	RecoverySavedAt *time.Time `json:"recovery_saved_at"`
@@ -344,8 +360,8 @@ func (s *Server) listBackups(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, "list backups", err)
 		return
 	}
-	out := backupsJSON{Plan: backupPlanJSON{plan.Enabled, plan.Minute, plan.KeepDays, plan.Stop}, Backups: []backupJSON{},
-		Volumes: []string{}, Running: s.backupBusy.has(a.ID), TimeZone: zoneLabel(s.now())}
+	out := backupsJSON{Plan: planOut(plan), Backups: []backupJSON{}, Volumes: []string{}, Running: s.backupBusy.has(a.ID),
+		OffsiteSet: s.offsiteSet(ctx), TimeZone: zoneLabel(s.now())}
 	if !a.IsDatabase() {
 		vols, err := s.Store.Volumes(ctx, a.ID)
 		if err != nil {
@@ -360,7 +376,7 @@ func (s *Server) listBackups(w http.ResponseWriter, r *http.Request) {
 		out.Restore = &last
 	}
 	for _, b := range list {
-		out.Backups = append(out.Backups, backupOut(b))
+		out.Backups = append(out.Backups, s.backupOut(b))
 	}
 	if at, err := s.Store.RecoverySavedAt(ctx); err == nil && !at.IsZero() {
 		out.RecoverySavedAt = &at
@@ -379,7 +395,7 @@ func (s *Server) listDeletedBackups(w http.ResponseWriter, r *http.Request) {
 	out := []backupJSON{}
 	for _, b := range list {
 		if b.State == store.BackupDone {
-			out = append(out, backupOut(b))
+			out = append(out, s.backupOut(b))
 		}
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -420,18 +436,37 @@ func (s *Server) setBackupPlan(w http.ResponseWriter, r *http.Request) {
 		writeError(w, errBadKeep.Err())
 		return
 	}
+	old, err := s.planFor(r.Context(), a)
+	if err != nil {
+		s.fail(w, "load backup plan", err)
+		return
+	}
+	if req.Offsite == nil {
+		req.Offsite = &old.Offsite
+	}
+	if req.OffsiteDays == nil {
+		req.OffsiteDays = &old.OffsiteDays
+	}
+	// The off-site copy is the one that outlives this server, so it is
+	// never deleted before the backup here.
+	if *req.OffsiteDays < req.KeepDays || *req.OffsiteDays > 3650 {
+		writeError(w, errOffsiteKeep.Err())
+		return
+	}
 	if a.IsDatabase() {
 		req.Stop = false // a dump is consistent while the database runs
 	} else if req.Enabled && !s.hasVolumes(w, r, a) {
 		return
 	}
-	p := store.BackupPlan{AppID: a.ID, Enabled: req.Enabled, Minute: req.Minute, KeepDays: req.KeepDays, Stop: req.Stop}
+	p := store.BackupPlan{AppID: a.ID, Enabled: req.Enabled, Minute: req.Minute, KeepDays: req.KeepDays, Stop: req.Stop,
+		Offsite: *req.Offsite, OffsiteDays: *req.OffsiteDays}
 	if err := s.Store.SetBackupPlan(r.Context(), p); err != nil {
 		s.fail(w, "save backup plan", err)
 		return
 	}
-	s.Log.Info("backup plan changed", "app", a.ID, "enabled", p.Enabled, "minute", p.Minute, "keep_days", p.KeepDays, "stop", p.Stop, "user", loginFrom(r.Context()).account.ID)
-	writeJSON(w, http.StatusOK, req)
+	s.Log.Info("backup plan changed", "app", a.ID, "enabled", p.Enabled, "minute", p.Minute, "keep_days", p.KeepDays, "stop", p.Stop,
+		"offsite", p.Offsite, "offsite_days", p.OffsiteDays, "user", loginFrom(r.Context()).account.ID)
+	writeJSON(w, http.StatusOK, planOut(p))
 }
 
 func (s *Server) backupFrom(w http.ResponseWriter, r *http.Request) (store.Backup, bool) {
@@ -466,6 +501,10 @@ func (s *Server) downloadBackup(w http.ResponseWriter, r *http.Request) {
 	// What is inside, from the core's name: sql, rdb or tar.
 	ext := strings.SplitN(b.File, ".", 2)[1]
 	name := fmt.Sprintf("%s-%s.%s", b.AppID, b.CreatedAt.Format("2006-01-02-1504"), ext)
+	if err := s.ensureLocal(r.Context(), &b); err != nil {
+		s.coreFailed(w, "fetch backup", err)
+		return
+	}
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Content-Disposition", `attachment; filename="`+name+`"`)
 	w.Header().Set("Cache-Control", "no-store")
@@ -484,9 +523,17 @@ func (s *Server) deleteBackup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer s.backupBusy.done(b.AppID)
-	if err := s.Core.RemoveBackup(r.Context(), b.AppID, b.File); err != nil && !isNotFound(err) {
-		s.coreFailed(w, "remove backup", err)
-		return
+	if b.Local {
+		if err := s.Core.RemoveBackup(r.Context(), b.AppID, b.File); err != nil && !isNotFound(err) {
+			s.coreFailed(w, "remove backup", err)
+			return
+		}
+	}
+	if b.Offsite == store.OffsiteDone {
+		if err := s.removeOffsite(r.Context(), b); err != nil && !isNotFound(err) {
+			s.coreFailed(w, "remove off-site backup", err)
+			return
+		}
 	}
 	if err := s.Store.DeleteBackup(r.Context(), b.ID); err != nil {
 		s.fail(w, "delete backup", err)
@@ -629,6 +676,10 @@ func (s *Server) restoreBackup(w http.ResponseWriter, r *http.Request) {
 
 // runRestore backs up what is there, then puts the backup back.
 func (s *Server) runRestore(ctx context.Context, a store.App, b store.Backup, user int64) (out restoreJSON) {
+	if err := s.ensureLocal(ctx, &b); err != nil {
+		s.Log.Error("restore: fetch backup", "app", a.ID, "backup", b.File, "err", err)
+		return restoreJSON{Backup: b.ID, State: "failed", Error: new(backupFailure(err)), Restarted: []string{}, At: s.now()}
+	}
 	if !a.IsDatabase() {
 		return s.runVolumeRestore(ctx, a, b, user)
 	}

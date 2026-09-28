@@ -63,6 +63,10 @@ type Server struct {
 	sizes   volumeSizes
 	// backupBusy holds the databases being backed up or restored.
 	backupBusy keyset
+	// uploading holds the ids of backups being sent off-site, and
+	// uploadKick wakes the sender when there is a new one.
+	uploading  keyset
+	uploadKick chan struct{}
 	pauses     pauses
 	restores   restores
 	// jobs are backups and restores running in the background.
@@ -146,6 +150,10 @@ func (s *Server) Handler() http.Handler {
 	web.HandleFunc("POST /api/backups/{id}/restore", s.confirmed(s.restoreBackup))
 	web.HandleFunc("DELETE /api/backups/{id}", s.confirmed(s.deleteBackup))
 	web.HandleFunc("GET /api/backups/recovery", s.confirmed(s.recoveryFile))
+	web.HandleFunc("POST /api/backups/{id}/offsite", s.signedIn(s.sendNow))
+	web.HandleFunc("GET /api/offsite", s.signedIn(s.getOffsite))
+	web.HandleFunc("PUT /api/offsite", s.confirmed(s.setOffsite))
+	web.HandleFunc("DELETE /api/offsite", s.confirmed(s.removeOffsiteStorage))
 	web.HandleFunc("GET /api/host", s.signedIn(s.hostInfo))
 	web.HandleFunc("GET /api/github", s.signedIn(s.githubStatus))
 	web.HandleFunc("POST /api/github/manifest", s.confirmed(s.githubManifest))
@@ -180,6 +188,7 @@ func (s *Server) Serve(ctx context.Context, socket string) error {
 		return err
 	}
 	s.ctx = ctx
+	s.uploadKick = make(chan struct{}, 1)
 	if err := s.Store.FailUnfinished(ctx, s.now()); err != nil {
 		return err
 	}
@@ -190,6 +199,7 @@ func (s *Server) Serve(ctx context.Context, socket string) error {
 	go s.watchVolumes(ctx)
 	go s.syncAllLinks(ctx)
 	go s.runBackups(ctx)
+	go s.runUploads(ctx)
 	l, err := net.Listen("unix", socket)
 	if err != nil {
 		return err
