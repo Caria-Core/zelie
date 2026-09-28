@@ -6,6 +6,7 @@
 	import { ago } from '$lib/format';
 	import { t } from '$lib/i18n';
 	import Links from './Links.svelte';
+	import OutsideAccess from './OutsideAccess.svelte';
 
 	// How apps reach a database. The password is never shown: Zelie hands
 	// it to the apps linked to the database, and to nobody else.
@@ -63,4 +64,5 @@
 		</ul>
 	</section>
 	<Links {app} />
+	<OutsideAccess {app} />
 </div>
