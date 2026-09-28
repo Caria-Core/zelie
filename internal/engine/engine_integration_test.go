@@ -291,6 +291,58 @@ func TestRemoveFreesNetwork(t *testing.T) {
 	if strings.TrimSpace(string(b)) != "" {
 		t.Errorf("IP lease %s still held after remove: %s", ip, b)
 	}
+	// It was the network's last container, so the network went with it.
+	nets, _ := e.networks.all()
+	for _, nw := range nets {
+		if nw.Name == "it-a" {
+			t.Errorf("network it-a is still kept: %+v", nw)
+			if _, err := net.InterfaceByName(nw.bridge()); err == nil {
+				t.Errorf("bridge %s is still there", nw.bridge())
+			}
+		}
+	}
+}
+
+// TestNetworkStaysWhileUsed removes one of two containers on a network: the
+// network stays for the other, and goes with it.
+func TestNetworkStaysWhileUsed(t *testing.T) {
+	e := connect(t)
+	ctx := context.Background()
+	for _, id := range []string{"it-net-one", "it-net-two"} {
+		run(t, e, Spec{ID: id, Network: "it-shared", Image: testImage, Args: []string{"sleep", "120"},
+			MemoryBytes: 32 << 20, CPUs: 0.1, Pids: 8})
+	}
+	kept := func() (network, bool) {
+		nets, _ := e.networks.all()
+		for _, nw := range nets {
+			if nw.Name == "it-shared" {
+				return nw, true
+			}
+		}
+		return network{}, false
+	}
+	nw, ok := kept()
+	if !ok {
+		t.Fatal("no network it-shared")
+	}
+	if err := e.Remove(ctx, "it-net-one"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := kept(); !ok {
+		t.Fatal("the network went while a container was still on it")
+	}
+	if _, err := net.InterfaceByName(nw.bridge()); err != nil {
+		t.Errorf("bridge %s went while in use: %v", nw.bridge(), err)
+	}
+	if err := e.Remove(ctx, "it-net-two"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := kept(); ok {
+		t.Error("the network stayed after its last container")
+	}
+	if _, err := net.InterfaceByName(nw.bridge()); err == nil {
+		t.Errorf("bridge %s stayed", nw.bridge())
+	}
 }
 
 const builderImage = "docker.io/moby/buildkit:v0.33.0"

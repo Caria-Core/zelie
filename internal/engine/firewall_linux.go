@@ -1,11 +1,14 @@
 package engine
 
 import (
+	"encoding/binary"
 	"fmt"
+	"net"
 
 	"github.com/google/nftables"
 	"github.com/google/nftables/binaryutil"
 	"github.com/google/nftables/expr"
+	"github.com/mdlayher/netlink"
 	"golang.org/x/sys/unix"
 )
 
@@ -157,4 +160,29 @@ func ifname(key expr.MetaKey, name string) []expr.Any {
 		&expr.Meta{Key: key, Register: 1},
 		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: b},
 	}
+}
+
+// deleteLink removes a network interface, such as a network's bridge. One
+// that is already gone is not an error.
+func deleteLink(name string) error {
+	ifi, err := net.InterfaceByName(name)
+	if err != nil {
+		return nil
+	}
+	c, err := netlink.Dial(unix.NETLINK_ROUTE, nil)
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	// struct ifinfomsg: family, padding, type, index, flags, change.
+	msg := make([]byte, 16)
+	binary.NativeEndian.PutUint32(msg[4:], uint32(ifi.Index))
+	_, err = c.Execute(netlink.Message{
+		Header: netlink.Header{Type: unix.RTM_DELLINK, Flags: netlink.Request | netlink.Acknowledge},
+		Data:   msg,
+	})
+	if err != nil {
+		return fmt.Errorf("delete %s: %w", name, err)
+	}
+	return nil
 }

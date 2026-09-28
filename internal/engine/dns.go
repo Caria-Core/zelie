@@ -25,7 +25,7 @@ type dnsServer struct {
 	upstream []string // host:port
 
 	mu        sync.Mutex
-	listening map[netip.Addr]bool
+	listening map[netip.Addr][]*dns.Server
 	ctx       context.Context
 	errs      chan error
 }
@@ -39,6 +39,10 @@ func (e *Engine) StartDNS(ctx context.Context) (<-chan error, error) {
 	d.ctx = ctx
 	d.errs = make(chan error, 1)
 	d.mu.Unlock()
+	// Networks left over from before, with no container on them, go first.
+	if err := e.freeUnusedNetworks(ctx); err != nil {
+		return nil, err
+	}
 	nets, err := e.networks.all()
 	if err != nil {
 		return nil, err
@@ -56,7 +60,7 @@ func (e *Engine) StartDNS(ctx context.Context) (<-chan error, error) {
 func (d *dnsServer) listen(addr netip.Addr) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if d.ctx == nil || d.listening[addr] {
+	if d.ctx == nil || d.listening[addr] != nil {
 		return nil
 	}
 	// The gateway address only exists once the network's first container
@@ -93,10 +97,21 @@ func (d *dnsServer) listen(addr netip.Addr) error {
 		}
 	}()
 	if d.listening == nil {
-		d.listening = map[netip.Addr]bool{}
+		d.listening = map[netip.Addr][]*dns.Server{}
 	}
-	d.listening[addr] = true
+	d.listening[addr] = servers
 	return nil
+}
+
+// stop shuts the server on addr down, for a network that is gone.
+func (d *dnsServer) stop(addr netip.Addr) {
+	d.mu.Lock()
+	servers := d.listening[addr]
+	delete(d.listening, addr)
+	d.mu.Unlock()
+	for _, s := range servers {
+		s.Shutdown()
+	}
 }
 
 func (d *dnsServer) serve(w dns.ResponseWriter, req *dns.Msg) {

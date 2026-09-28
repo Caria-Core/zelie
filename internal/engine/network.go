@@ -122,6 +122,34 @@ func (n *networks) ensure(name string) (network, error) {
 	return network{}, errors.New("no free network left")
 }
 
+// release forgets a network, with its address range and DNS settings, and
+// returns it. The caller makes sure no container is on it.
+func (n *networks) release(name string) (network, bool, error) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	m, err := n.load()
+	if err != nil {
+		return network{}, false, err
+	}
+	nw, ok := m[name]
+	if !ok {
+		return nw, false, nil
+	}
+	delete(m, name)
+	b, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		return nw, false, err
+	}
+	if _, err := writeIfChanged(n.file(), b, 0o600); err != nil {
+		return nw, false, err
+	}
+	// The address allocator keeps its leases in a directory named after the
+	// CNI network.
+	os.RemoveAll(filepath.Join(n.paths.Data, "ipam", "zelie-"+name))
+	os.Remove(filepath.Join(n.paths.Data, "resolv-"+name+".conf"))
+	return nw, true, nil
+}
+
 // confList is the CNI configuration for a network.
 //
 // Networks are kept apart by Zelie's own firewall rules (applyFirewall),
@@ -248,4 +276,42 @@ func nameservers(file string) []string {
 		out = append(out, a.String())
 	}
 	return out
+}
+
+// freeNetwork lets a network go once no container is on it: its bridge,
+// its DNS server and its address range. Without this every app ever made
+// would keep its network, and new ones would run out. The caller holds
+// createMu, so no container can join the network meanwhile; the next one
+// to need it makes it again.
+func (e *Engine) freeNetwork(ctx context.Context, name string) error {
+	on, err := e.client.Containers(ctx, fmt.Sprintf("labels.%q==%s", labelNetwork, name))
+	if err != nil || len(on) > 0 {
+		return err
+	}
+	nw, ok, err := e.networks.release(name)
+	if err != nil || !ok {
+		return err
+	}
+	e.dns.stop(nw.gateway())
+	return deleteLink(nw.bridge())
+}
+
+// freeUnusedNetworks lets every network with no container on it go, as the
+// core starts.
+func (e *Engine) freeUnusedNetworks(ctx context.Context) error {
+	ctx = e.ctx(ctx)
+	e.createMu.Lock()
+	defer e.createMu.Unlock()
+	nets, err := e.networks.all()
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, nw := range nets {
+		errs = append(errs, e.freeNetwork(ctx, nw.Name))
+	}
+	if err := errors.Join(errs...); err != nil {
+		return err
+	}
+	return e.refresh(ctx)
 }

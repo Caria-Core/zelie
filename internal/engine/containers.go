@@ -608,6 +608,11 @@ func (e *Engine) Remove(ctx context.Context, id string) error {
 		}
 		errs = append(errs, netns.LoadNetNS(path).Remove())
 	}
+	if name := labels[labelNetwork]; name != "" {
+		e.createMu.Lock()
+		errs = append(errs, e.freeNetwork(ctx, name))
+		e.createMu.Unlock()
+	}
 	errs = append(errs, os.RemoveAll(e.containerDir(id)))
 	errs = append(errs, e.refresh(ctx))
 	// A new container with the same name must not start with the old one's
