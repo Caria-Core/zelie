@@ -15,7 +15,7 @@ one server is not enough, the same panel will run several.
 > **Pre-alpha.** Zelie is in early development. There is no release yet, and it is not
 > ready for production or for any server you care about.
 
-![Zelie's home page: three apps and two databases, all live](docs/images/overview.png)
+![Zelie's home page: three apps and two databases, all live](docs/images/home.png)
 
 ## What it does
 
