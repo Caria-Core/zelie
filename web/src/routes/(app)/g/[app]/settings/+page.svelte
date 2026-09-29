@@ -1,15 +1,19 @@
 <script lang="ts">
-	import { RotateCcw, Trash } from '@lucide/svelte';
+	import { RotateCcw, RotateCw, Trash } from '@lucide/svelte';
+	import { untrack } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { api } from '$lib/api';
 	import { reload } from '$lib/apps.svelte';
 	import { ask } from '$lib/ask.svelte';
 	import { messageOf } from '$lib/errors';
-	import { game, gameState, loadGame, setAutoUpdate } from '$lib/games.svelte';
+	import { game, gameState, loadGame, power, saveResources, setAutoUpdate } from '$lib/games.svelte';
+	import { host, loadHost, megabytes } from '$lib/host.svelte';
 	import { t } from '$lib/i18n';
+	import { sizeSteps } from '$lib/volumes';
 	import Button from '$lib/ui/Button.svelte';
 	import ErrorText from '$lib/ui/ErrorText.svelte';
 	import Field from '$lib/ui/Field.svelte';
+	import Resources from '$lib/ui/Resources.svelte';
 
 	const g = $derived(game.info!);
 	const phase = $derived(gameState(g));
@@ -18,6 +22,62 @@
 	let error = $state('');
 	let busy = $state(false);
 	let typed = $state('');
+
+	// The limits in the form. The page polls the server, so they are filled
+	// once and again after a save.
+	let memory = $state(0);
+	let cpus = $state(0);
+	let disk = $state(0);
+	let sized = $state(false);
+	let sizing = $state(false);
+	let restarting = $state(false);
+	let saved = $state(false);
+	let sizeError = $state('');
+	const up = $derived(phase === 'running' || phase === 'starting');
+	const diskMB = $derived(host.info ? host.info.disk_bytes / 2 ** 20 : 102400);
+	const resized = $derived(memory !== g.memory_mb || cpus !== g.cpus || disk !== g.disk_mb);
+
+	function fill() {
+		[memory, cpus, disk] = [g.memory_mb, g.cpus, g.disk_mb];
+	}
+
+	$effect(() => {
+		loadHost();
+		g.id;
+		untrack(() => {
+			if (!sized) fill();
+			sized = true;
+		});
+	});
+
+	async function saveSizes() {
+		sizing = true;
+		sizeError = '';
+		saved = false;
+		try {
+			await saveResources(g.id, { memory_mb: memory, cpus, disk_mb: disk });
+			fill();
+			saved = true;
+		} catch (err) {
+			sizeError = messageOf(err);
+		} finally {
+			sizing = false;
+		}
+	}
+
+	async function restart() {
+		if (!(await ask({ title: t('game.restartConfirm', { server: g.id }), text: t('game.restartConfirmText'), action: t('game.restart') }))) return;
+		restarting = true;
+		sizeError = '';
+		try {
+			await power(g.id, 'restart');
+			saved = false;
+		} catch (err) {
+			sizeError = messageOf(err);
+		} finally {
+			restarting = false;
+		}
+	}
 
 	async function reinstall() {
 		if (!(await ask({ title: t('settings.reinstallConfirm', { server: g.id }), text: t('settings.reinstallConfirmText'), action: t('settings.reinstall') }))) return;
@@ -62,6 +122,40 @@
 </script>
 
 <div class="flex max-w-xl flex-col gap-10">
+	<form
+		class="flex flex-col gap-5"
+		onsubmit={(e) => {
+			e.preventDefault();
+			if (resized && !sizing) saveSizes();
+		}}
+	>
+		<div>
+			<h2 class="font-medium">{t('settings.resourcesTitle')}</h2>
+			<p class="text-sm text-muted">{t('settings.gameResourcesLead')}</p>
+		</div>
+		{#if sized}
+			<Resources bind:memory bind:cpus app={g.id} game />
+			<div class="flex flex-col gap-1.5">
+				<label for="disk" class="text-sm font-medium">{t('game.new.disk')}</label>
+				<select id="disk" class="h-10 w-40 rounded-xl border border-line bg-bg px-3 text-[15px]" bind:value={disk}>
+					{#each sizeSteps(diskMB, disk) as mb (mb)}<option value={mb}>{megabytes(mb)}</option>{/each}
+				</select>
+				<p class="text-sm text-muted">{t('settings.diskHint')}</p>
+			</div>
+		{/if}
+		<ErrorText message={sizeError} />
+		<div class="flex flex-wrap items-center gap-3">
+			<Button type="submit" busy={sizing} disabled={!resized}>{t('startup.save')}</Button>
+			{#if saved && !resized}<span class="text-sm text-muted" role="status">{t('startup.saved')}</span>{/if}
+		</div>
+		{#if saved && !resized && up}
+			<div class="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-line px-4 py-3">
+				<p class="text-sm">{t('settings.resourcesRestart')}</p>
+				<Button type="button" kind="secondary" class="!h-8 !px-4" busy={restarting} onclick={restart}><RotateCw size={14} strokeWidth={1.75} />{t('startup.restart')}</Button>
+			</div>
+		{/if}
+	</form>
+
 	<section class="flex flex-col gap-3">
 		<div>
 			<h2 class="font-medium">{t('settings.reinstallTitle')}</h2>

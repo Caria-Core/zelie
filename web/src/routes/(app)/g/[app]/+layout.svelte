@@ -1,10 +1,12 @@
 <script lang="ts">
-	import { Check, Copy, Download, Ellipsis, Play, RotateCw, Skull, Square } from '@lucide/svelte';
+	import { Check, Copy, Cpu, Download, Ellipsis, HardDrive, MemoryStick, Play, RotateCw, Skull, Square } from '@lucide/svelte';
 	import { untrack } from 'svelte';
 	import { page } from '$app/state';
+	import { api } from '$lib/api';
 	import { ask } from '$lib/ask.svelte';
 	import { messageOf } from '$lib/errors';
 	import { address, defaultPort, game, gameState, loadGame, power, updateSteam } from '$lib/games.svelte';
+	import { megabytes, type Usage } from '$lib/host.svelte';
 	import { say, t } from '$lib/i18n';
 	import AppIcon from '$lib/ui/AppIcon.svelte';
 	import Button from '$lib/ui/Button.svelte';
@@ -42,6 +44,31 @@
 		tick();
 		return () => clearTimeout(timer);
 	});
+
+	// What the server uses, asked for while it runs and shown on every tab.
+	let usage = $state<Usage | null>(null);
+	const live = $derived(phase === 'starting' || phase === 'running' || phase === 'stopping');
+	$effect(() => {
+		const server = id;
+		usage = null;
+		if (!live) return;
+		let stopped = false;
+		let timer: ReturnType<typeof setTimeout>;
+		const tick = async () => {
+			if (stopped) return;
+			if (document.visibilityState === 'visible') {
+				const u = await api<Usage>('GET', `/apps/${encodeURIComponent(server)}/usage`).catch(() => null);
+				if (!stopped) usage = u;
+			}
+			timer = setTimeout(tick, 3000);
+		};
+		tick();
+		return () => {
+			stopped = true;
+			clearTimeout(timer);
+		};
+	});
+	const cores = (c: number) => (Number.isInteger(c) ? String(c) : c.toFixed(2).replace(/0$/, ''));
 
 	async function run(action: 'start' | 'stop' | 'restart' | 'kill') {
 		acting = true;
@@ -146,6 +173,20 @@
 								</button>
 							</span>
 						{/if}
+					</p>
+					<p class="mt-1.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted tabular-nums" title={usage?.running ? t('app.usageTitle') : t('game.limitsTitle')}>
+						{#if usage?.running && usage.memory_bytes !== undefined}
+							<span class="inline-flex items-center gap-1.5"
+								><MemoryStick size={15} strokeWidth={1.75} />{t('app.usageMemory', { used: megabytes(usage.memory_bytes / 2 ** 20), limit: megabytes(g.memory_mb) })}</span
+							>
+							<span class="inline-flex items-center gap-1.5"
+								><Cpu size={15} strokeWidth={1.75} />{t('app.usageCpu', { used: usage.cpu === undefined || usage.cpu < 0.01 ? '0' : cores(usage.cpu), limit: cores(g.cpus) })}</span
+							>
+						{:else}
+							<span class="inline-flex items-center gap-1.5"><MemoryStick size={15} strokeWidth={1.75} />{t('game.limitMemory', { limit: megabytes(g.memory_mb) })}</span>
+							<span class="inline-flex items-center gap-1.5"><Cpu size={15} strokeWidth={1.75} />{t('game.limitCpu', { limit: cores(g.cpus) })}</span>
+						{/if}
+						<span class="inline-flex items-center gap-1.5"><HardDrive size={15} strokeWidth={1.75} />{t('game.limitDisk', { limit: megabytes(g.disk_mb) })}</span>
 					</p>
 				</div>
 			</div>

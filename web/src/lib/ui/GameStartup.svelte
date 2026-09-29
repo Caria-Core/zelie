@@ -6,17 +6,24 @@
 	import { messageOf } from '$lib/errors';
 	import { game, gameState, power, saveSettings } from '$lib/games.svelte';
 	import { say, t } from '$lib/i18n';
+	import { session } from '$lib/session.svelte';
 	import Button from '$lib/ui/Button.svelte';
 	import ErrorText from '$lib/ui/ErrorText.svelte';
 
 	const g = $derived(game.info!);
 	const phase = $derived(gameState(g));
 	const up = $derived(phase === 'running' || phase === 'starting');
+	// The egg's locks are for other users; administrators may change anything.
+	const admin = $derived(!!session.me?.admin);
+	const other = '__other';
 
 	// What is in the form. The page polls the server, so the form is filled
 	// once and only reset by a save.
 	let values = $state<Record<string, string>>({});
-	let image = $state('');
+	// An image of the egg's list, or `other` with the reference typed below.
+	let imageChoice = $state('');
+	let imageOther = $state('');
+	let startup = $state('');
 	let ready = false;
 	let busy = $state(false);
 	let restarting = $state(false);
@@ -25,8 +32,11 @@
 	let saved = $state(false);
 
 	function reset() {
-		values = Object.fromEntries(g.variables.filter((v) => v.editable).map((v) => [v.env, v.value]));
-		image = g.image;
+		values = Object.fromEntries(g.variables.filter((v) => v.editable && !v.port).map((v) => [v.env, v.value]));
+		const listed = g.images.some((img) => img.ref === g.image);
+		imageChoice = listed ? g.image : other;
+		imageOther = listed ? '' : g.image;
+		startup = g.startup;
 	}
 
 	$effect(() => {
@@ -37,8 +47,10 @@
 		});
 	});
 
-	const changed = $derived(g.variables.filter((v) => v.editable && values[v.env] !== v.value).map((v) => v.env));
-	const dirty = $derived(changed.length > 0 || image !== g.image);
+	const image = $derived(imageChoice === other ? imageOther.trim() : imageChoice);
+	const changed = $derived(g.variables.filter((v) => v.editable && !v.port && values[v.env] !== v.value).map((v) => v.env));
+	const startupChanged = $derived(admin && startup.trim() !== g.startup);
+	const dirty = $derived(changed.length > 0 || (image !== g.image && !!image) || startupChanged);
 
 	async function save() {
 		busy = true;
@@ -48,7 +60,13 @@
 		try {
 			const variables: Record<string, string> = {};
 			for (const env of changed) variables[env] = values[env];
-			await saveSettings(g.id, { image: image !== g.image ? image : undefined, variables });
+			// The egg's own command is saved as empty, so it stays the egg's.
+			const command = startup.trim() === g.egg_startup ? '' : startup.trim();
+			await saveSettings(g.id, {
+				image: image !== g.image ? image : undefined,
+				startup: startupChanged ? command : undefined,
+				variables
+			});
 			reset();
 			saved = true;
 		} catch (err) {
@@ -93,18 +111,51 @@
 	}}
 >
 	<section class="flex flex-col gap-3">
-		{@render heading(t('startup.command'), t('startup.commandLead'))}
-		<pre class="overflow-x-auto rounded-2xl bg-panel p-4 font-mono text-[13px] leading-relaxed break-all whitespace-pre-wrap">{g.startup_preview}</pre>
+		{@render heading(t('startup.command'), admin ? t('startup.commandAdminLead') : t('startup.commandLead'))}
+		{#if admin}
+			<textarea
+				bind:value={startup}
+				aria-label={t('startup.command')}
+				rows="3"
+				maxlength="4096"
+				autocapitalize="off"
+				spellcheck="false"
+				class="min-h-24 w-full resize-y rounded-2xl border border-line bg-bg p-4 font-mono text-[13px] leading-relaxed outline-none transition focus:border-muted"
+			></textarea>
+			<div class="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 text-xs text-muted">
+				<span>{t('startup.commandPlaceholders')}</span>
+				{#if startup.trim() !== g.egg_startup}
+					<button type="button" class="underline decoration-line underline-offset-2 hover:text-fg hover:decoration-fg" onclick={() => (startup = g.egg_startup)}>{t('startup.resetCommand')}</button>
+				{/if}
+			</div>
+			{#if !startupChanged}
+				<pre class="overflow-x-auto rounded-2xl bg-panel p-4 font-mono text-[13px] leading-relaxed break-all whitespace-pre-wrap">{g.startup_preview}</pre>
+			{/if}
+		{:else}
+			<pre class="overflow-x-auto rounded-2xl bg-panel p-4 font-mono text-[13px] leading-relaxed break-all whitespace-pre-wrap">{g.startup_preview}</pre>
+		{/if}
 	</section>
 
 	<section class="flex flex-col gap-3">
 		{@render heading(t('startup.image'), t('startup.imageLead'))}
-		{#if g.images.length > 1}
-			<select bind:value={image} aria-label={t('startup.image')} class="h-10 w-full min-w-0 rounded-xl border border-line bg-bg px-3 font-mono text-sm outline-none transition focus:border-muted">
+		{#if g.images.length > 1 || admin}
+			<select bind:value={imageChoice} aria-label={t('startup.image')} class="h-10 w-full min-w-0 rounded-xl border border-line bg-bg px-3 font-mono text-sm outline-none transition focus:border-muted">
 				{#each g.images as img (img.ref)}
 					<option value={img.ref}>{img.label === img.ref ? img.ref : `${img.label} (${img.ref})`}</option>
 				{/each}
+				{#if admin}<option value={other}>{t('startup.otherImage')}</option>{/if}
 			</select>
+			{#if imageChoice === other}
+				<input
+					bind:value={imageOther}
+					aria-label={t('startup.otherImageField')}
+					placeholder="ghcr.io/org/image:tag"
+					autocomplete="off"
+					autocapitalize="off"
+					spellcheck="false"
+					class="h-10 w-full min-w-0 rounded-xl border border-line bg-bg px-3.5 font-mono text-sm outline-none transition focus:border-muted"
+				/>
+			{/if}
 		{:else}
 			<p class="font-mono text-sm break-all">{g.image}</p>
 		{/if}
@@ -118,11 +169,14 @@
 					{@const id = `var-${v.env}`}
 					<li class="flex flex-col gap-1.5 px-4 py-3">
 						<div class="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-							<label for={v.editable ? id : undefined} class="text-[15px] font-medium">{v.name}</label>
+							<label for={v.editable && !v.port ? id : undefined} class="text-[15px] font-medium">{v.name}</label>
 							<span class="font-mono text-xs text-muted">{v.env}</span>
 						</div>
 						{#if v.description}<p class="text-sm text-muted">{v.description}</p>{/if}
-						{#if v.editable}
+						{#if v.port}
+							<p class="font-mono text-sm break-all">{v.value || '—'}</p>
+							<p class="text-xs text-muted">{t('startup.portVariable')} <a href="/g/{g.id}/network" class="underline hover:text-fg">{t('startup.portVariableLink')}</a></p>
+						{:else if v.editable}
 							<input
 								{id}
 								bind:value={values[v.env]}
@@ -138,6 +192,7 @@
 							{#if v.default !== values[v.env]}
 								<p class="text-xs text-muted">{t('startup.default', { value: v.default || t('startup.empty') })}</p>
 							{/if}
+							{#if v.locked}<p class="text-xs text-muted">{t('startup.lockedForUsers')}</p>{/if}
 						{:else}
 							<p class="font-mono text-sm break-all">{v.value || '—'}</p>
 							<p class="text-xs text-muted">{t('startup.locked')}</p>

@@ -9,6 +9,10 @@ export type GameVariable = {
 	value: string;
 	default: string;
 	editable: boolean;
+	// The egg keeps non-admin users from changing it; administrators can.
+	locked?: boolean;
+	// It holds one of the server's ports, which are chosen on the Network tab.
+	port?: boolean;
 	rules?: string[];
 };
 
@@ -35,6 +39,8 @@ export type Game = {
 	image: string;
 	images: { label: string; ref: string }[];
 	startup: string;
+	// The egg's own command, which resetting goes back to.
+	egg_startup: string;
 	// The startup command with the saved values filled in.
 	startup_preview: string;
 	memory_mb: number;
@@ -93,10 +99,28 @@ export async function acceptEula(id: string): Promise<void> {
 	await api('POST', `/games/${encodeURIComponent(id)}/eula`);
 }
 
-// Saves the image and the editable variables the server starts with next.
-// Only the variables given change.
-export async function saveSettings(id: string, settings: { image?: string; variables: Record<string, string> }): Promise<Game> {
+// Saves the image, startup command and editable variables the server starts
+// with next. Only what is given changes; an empty startup goes back to the
+// egg's own.
+export async function saveSettings(id: string, settings: { image?: string; startup?: string; variables: Record<string, string> }): Promise<Game> {
 	const out = await api<Game>('PUT', `/games/${encodeURIComponent(id)}/variables`, settings);
+	game.info = out;
+	return out;
+}
+
+// Changes the limits. Memory and CPUs apply from the next start.
+export async function saveResources(id: string, sizes: { memory_mb: number; cpus: number; disk_mb: number }): Promise<Game> {
+	const out = await api<Game>('PUT', `/games/${encodeURIComponent(id)}/resources`, sizes);
+	game.info = out;
+	return out;
+}
+
+// Which pool allocations (by id) fill each role of the server's ports.
+export type PortPlan = { primary: number; variables: Record<string, number>; extra: number[] };
+
+// Changes the ports of a stopped server.
+export async function savePorts(id: string, plan: PortPlan): Promise<Game> {
+	const out = await api<Game>('PUT', `/games/${encodeURIComponent(id)}/ports`, plan);
 	game.info = out;
 	return out;
 }

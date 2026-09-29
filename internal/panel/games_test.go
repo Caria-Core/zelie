@@ -728,6 +728,9 @@ func TestAdministratorsSetWhatTheEggLocks(t *testing.T) {
 	if code, out = e.b.do("PUT", "/api/games/survival/variables", map[string]any{"variables": map[string]string{"SLOTS": "5"}}); code != http.StatusOK || out["startup"] != "java -jar other.jar {{SERVER_PORT}}" {
 		t.Errorf("kept: %d %v", code, out)
 	}
+	if out["egg_startup"] != "java -Xmx{{SERVER_MEMORY}}M -jar server.jar --port {{SERVER_PORT}}" {
+		t.Errorf("egg startup %v", out["egg_startup"])
+	}
 	if code, out = e.b.do("PUT", "/api/games/survival/variables", map[string]any{"startup": ""}); code != http.StatusOK ||
 		out["startup"] != "java -Xmx{{SERVER_MEMORY}}M -jar server.jar --port {{SERVER_PORT}}" {
 		t.Errorf("reset: %d %v", code, out)

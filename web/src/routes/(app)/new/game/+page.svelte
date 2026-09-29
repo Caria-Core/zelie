@@ -4,14 +4,16 @@
 	import { api, ApiError } from '$lib/api';
 	import { apps, reload } from '$lib/apps.svelte';
 	import { messageOf } from '$lib/errors';
-	import { eulaLink, type Allocation, type EggPreview, type PortRange } from '$lib/games.svelte';
+	import { eulaLink, type Allocation, type EggPreview } from '$lib/games.svelte';
 	import { host, loadHost, megabytes } from '$lib/host.svelte';
 	import { say, t } from '$lib/i18n';
+	import { freePorts, portLabel } from '$lib/ports';
 	import { defaultSize, sizeSteps } from '$lib/volumes';
 	import Button from '$lib/ui/Button.svelte';
 	import ErrorText from '$lib/ui/ErrorText.svelte';
 	import Field from '$lib/ui/Field.svelte';
 	import Lead from '$lib/ui/Lead.svelte';
+	import PoolAdd from '$lib/ui/PoolAdd.svelte';
 	import Resources from '$lib/ui/Resources.svelte';
 
 	// memory_mb, disk_mb and ports are what the game needs, for games that need more than most.
@@ -42,15 +44,42 @@
 	let problems = $state<Record<string, string>>({});
 
 	let pool = $state<Allocation[] | null>(null);
-	let range = $state('');
-	let suggestion = $state('');
-	let adding = $state(false);
 	let addOpen = $state(false);
 	let poolError = $state('');
 
-	const free = $derived((pool ?? []).filter((a) => !a.app).length);
+	const freeList = $derived(freePorts(pool ?? []));
+	const free = $derived(freeList.length);
+
+	// The ports of the server by role: the one players join on, then one for
+	// each port variable the egg has, as many as the server takes. What the
+	// server would pick by itself is filled in; a choice replaces it.
+	type Role = { key: string; label: string; env: string };
+	const roles = $derived.by(() => {
+		const list: Role[] = [{ key: '', label: t('game.new.rolePrimary'), env: '' }];
+		const vars = preview?.port_variables ?? [];
+		for (let i = 1; i < ports && i <= vars.length; i++) list.push({ key: vars[i - 1].env, label: vars[i - 1].name, env: vars[i - 1].env });
+		return list;
+	});
+	// Allocation ids picked by hand, by role key.
+	let picks = $state<Record<string, number>>({});
+	const taken = $derived(new Set(roles.flatMap((r) => (r.key in picks ? [picks[r.key]] : []))));
+	const shown = $derived.by(() => {
+		const spare = freeList.filter((a) => !taken.has(a.id));
+		let next = 0;
+		const out: Record<string, number | undefined> = {};
+		for (const r of roles) out[r.key] = picks[r.key] ?? spare[next++]?.id;
+		return out;
+	});
+	const optionsFor = (r: Role) => freeList.filter((a) => a.id === shown[r.key] || !Object.values(shown).includes(a.id));
+	// Ports past the named roles come from the pool without a choice.
+	const unnamed = $derived(Math.max(0, ports - roles.length));
+
 	const diskMB = $derived(host.info ? host.info.disk_bytes / 2 ** 20 : 102400);
-	const editable = $derived(preview?.variables.filter((v) => v.editable) ?? []);
+	// Variables with a port are set by the ports step; the ones the egg
+	// locks are only offered to administrators, out of the way.
+	const shownVars = $derived(preview?.variables.filter((v) => v.editable && !v.port) ?? []);
+	const editable = $derived(shownVars.filter((v) => !v.locked));
+	const lockedVars = $derived(shownVars.filter((v) => v.locked));
 	const needsEula = $derived(preview?.features.includes('eula') ?? false);
 	const cardName = $derived(catalog.find((c) => c.id === chosen)?.name ?? '');
 	const urlValid = $derived(/^https:\/\/\S+$/.test(eggUrl.trim()));
@@ -86,6 +115,7 @@
 			image = preview.images[0]?.ref ?? '';
 			values = Object.fromEntries(preview.variables.map((v) => [v.env, v.value]));
 			problems = {};
+			picks = {};
 			eula = false;
 			if (!named) name = suggestName(preview.name);
 			const entry = catalog.find((c) => c.id === chosen);
@@ -110,36 +140,12 @@
 			pool = await api<Allocation[]>('GET', '/nodes/1/allocations');
 		} catch (err) {
 			poolError = messageOf(err);
-			return;
-		}
-		if (!free) await suggest();
-	}
-
-	async function suggest() {
-		try {
-			const r = await api<PortRange>('GET', '/nodes/1/allocations/suggest');
-			suggestion = r.ports;
-			range = r.ports;
-			poolError = '';
-		} catch (err) {
-			suggestion = '';
-			poolError = messageOf(err);
 		}
 	}
 
-	async function addToPool(e: SubmitEvent) {
-		e.preventDefault();
-		adding = true;
-		poolError = '';
-		try {
-			await api('POST', '/nodes/1/allocations', { ports: range.trim() });
-			addOpen = false;
-			await loadPool();
-		} catch (err) {
-			poolError = messageOf(err);
-		} finally {
-			adding = false;
-		}
+	async function added() {
+		addOpen = false;
+		await loadPool();
 	}
 
 	function toPorts(e: SubmitEvent) {
@@ -150,7 +156,7 @@
 
 	function toSettings() {
 		error = '';
-		if (editable.length || needsEula) step = 4;
+		if (shownVars.length || needsEula) step = 4;
 		else create();
 	}
 
@@ -158,14 +164,14 @@
 	function stepFor(code: string): number {
 		if (/^game\.(bad_variable|variable_locked|unknown_variable|eula_required)$/.test(code)) return 4;
 		if (/^(game\.(bad_memory|bad_cpus|bad_image)|app\.(bad_name|exists))$/.test(code)) return 2;
-		if (/^(allocation\.|game\.bad_ports)/.test(code)) return 3;
+		if (/^(allocation\.|game\.(bad_ports|no_port_role))/.test(code)) return 3;
 		return step;
 	}
 
 	async function create() {
 		problems = {};
 		error = '';
-		for (const v of editable) {
+		for (const v of shownVars) {
 			if (!values[v.env].trim() && v.rules?.includes('required')) problems[v.env] = t('game.new.required', { name: v.name });
 		}
 		if (Object.keys(problems).length) {
@@ -181,8 +187,17 @@
 				cpus,
 				disk_mb: disk,
 				ports,
-				variables: Object.fromEntries(editable.map((v) => [v.env, values[v.env]]))
+				// What is left as the egg has it needs no saying, and a locked
+				// default is not the customer's to have chosen.
+				variables: Object.fromEntries(shownVars.filter((v) => values[v.env] !== v.value).map((v) => [v.env, values[v.env]]))
 			};
+			const byHand = roles.filter((r) => r.key in picks);
+			if (byHand.length) {
+				body.allocations = {
+					primary: picks[''] ?? 0,
+					variables: Object.fromEntries(byHand.filter((r) => r.env).map((r) => [r.env, picks[r.key]]))
+				};
+			}
 			if (needsEula) body.accept_eula = eula;
 			if (chosen === 'url') body.egg_url = eggUrl.trim();
 			else body.egg = chosen;
@@ -312,21 +327,11 @@
 			{#if pool === null}
 				<p class="text-sm text-muted">{poolError || t('game.new.portsLoading')}</p>
 			{:else if free === 0 || addOpen}
-				<form class="flex flex-col gap-3 rounded-2xl border border-line p-4" onsubmit={addToPool}>
-					<p class="text-[15px]">
-						<span class="font-medium">{suggestion ? t('game.new.found', { ports: suggestion.replace('-', '–') }) : t('game.new.foundNone')}</span>
-						<span class="text-muted">{' ' + t('game.new.foundLead')}</span>
-					</p>
-					<Field label={t('game.new.poolPorts')} hint={t('game.new.poolPortsHint')} placeholder="25565-25664" required autocomplete="off" bind:value={range} />
-					<div class="flex items-center gap-3">
-						<Button type="submit" busy={adding} disabled={!range.trim()}>{t('game.new.addPool')}</Button>
-						{#if addOpen}<Button kind="quiet" type="button" onclick={() => (addOpen = false)}>{t('common.cancel')}</Button>{/if}
-					</div>
-				</form>
+				<PoolAdd onadded={added} oncancel={addOpen ? () => (addOpen = false) : undefined} />
 			{:else}
 				<p class="text-sm text-muted">
 					{t('game.new.free', { n: free })}
-					<button type="button" class="text-fg underline decoration-line underline-offset-2 hover:decoration-fg" onclick={() => ((addOpen = true), suggest())}>{t('game.new.addMore')}</button>
+					<button type="button" class="text-fg underline decoration-line underline-offset-2 hover:decoration-fg" onclick={() => (addOpen = true)}>{t('game.new.addMore')}</button>
 				</p>
 			{/if}
 			<ErrorText message={poolError && pool !== null ? poolError : ''} />
@@ -334,13 +339,31 @@
 				<div class="max-w-48">
 					<Field label={t('game.new.portCount')} hint={t('game.new.portCountHint')} type="number" min="1" max={Math.min(16, free)} bind:value={portsText} />
 				</div>
-				{#if preview?.port_variables.length}
+				<ul class="flex flex-col divide-y divide-line rounded-2xl border border-line" aria-label={t('game.new.roles')}>
+					{#each roles as r (r.key)}
+						<li class="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 px-4 py-3">
+							<label for="port-{r.key || 'primary'}" class="min-w-0 text-[15px]">
+								{r.label}{#if r.env}<span class="ml-1.5 font-mono text-xs text-muted">· {r.env}</span>{/if}
+							</label>
+							<select
+								id="port-{r.key || 'primary'}"
+								class="h-10 min-w-28 rounded-xl border border-line bg-bg px-3 font-mono text-[15px]"
+								value={shown[r.key]}
+								onchange={(e) => (picks[r.key] = Number(e.currentTarget.value))}
+							>
+								{#each optionsFor(r) as a (a.id)}<option value={a.id}>{portLabel(a)}</option>{/each}
+							</select>
+						</li>
+					{/each}
+				</ul>
+				{#if unnamed > 0}<p class="text-sm text-muted">{t('game.new.unnamedPorts', { n: unnamed })}</p>{/if}
+				{#if preview?.port_variables.length && ports > 1}
 					<p class="text-sm text-muted">{t('game.new.portVariables', { names: preview.port_variables.map((v) => v.name).join(', ') })}</p>
 				{/if}
 			{/if}
 			<ErrorText message={error} />
 			<div class="flex items-center gap-3">
-				<Button disabled={free < ports || ports > 16 || free === 0} onclick={toSettings} busy={busy}>{editable.length || needsEula ? t('common.continue') : t('game.new.create')}</Button>
+				<Button disabled={free < ports || ports > 16 || free === 0} onclick={toSettings} busy={busy}>{shownVars.length || needsEula ? t('common.continue') : t('game.new.create')}</Button>
 				<Button kind="quiet" type="button" onclick={() => ((error = ''), (step = 2))}>{t('new.back')}</Button>
 			</div>
 		</section>
@@ -354,7 +377,7 @@
 		>
 			<div>
 				<h2 class="font-medium">{t('game.new.settingsTitle', { egg: cardName || preview.name })}</h2>
-				{#if editable.length}<p class="text-sm text-muted">{t('game.new.settingsLead')}</p>{/if}
+				{#if shownVars.length}<p class="text-sm text-muted">{t('game.new.settingsLead')}</p>{/if}
 			</div>
 			{#each editable as v (v.env)}
 				<div class="flex flex-col gap-1.5">
@@ -362,6 +385,20 @@
 					<ErrorText message={problems[v.env] ?? ''} />
 				</div>
 			{/each}
+			{#if lockedVars.length}
+				<details class="rounded-2xl border border-line px-4 py-3">
+					<summary class="cursor-pointer text-[15px]">{t('game.new.lockedVars', { n: lockedVars.length })}</summary>
+					<div class="mt-4 flex flex-col gap-5">
+						{#each lockedVars as v (v.env)}
+							<div class="flex flex-col gap-1.5">
+								<Field label={v.name} hint={v.description} placeholder={v.default} autocomplete="off" bind:value={values[v.env]} oninput={() => delete problems[v.env]} />
+								<p class="text-xs text-muted">{t('startup.lockedForUsers')}</p>
+								<ErrorText message={problems[v.env] ?? ''} />
+							</div>
+						{/each}
+					</div>
+				</details>
+			{/if}
 			{#if needsEula}
 				<div class="flex flex-col gap-1.5">
 					<label class="flex items-start gap-2.5 text-[15px]">

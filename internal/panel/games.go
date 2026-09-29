@@ -550,6 +550,8 @@ type gameJSON struct {
 	Image       string          `json:"image"`
 	Images      []gameImageJSON `json:"images"`
 	Startup     string          `json:"startup"`
+	// EggStartup is the egg's own command, which an empty one restores.
+	EggStartup string `json:"egg_startup"`
 	// StartupPreview is the startup command with the saved values filled in,
 	// as the next start will run it.
 	StartupPreview string             `json:"startup_preview"`
@@ -587,7 +589,7 @@ func (s *Server) gameOut(ctx context.Context, a store.App) (gameJSON, error) {
 		return gameJSON{}, err
 	}
 	out := gameJSON{
-		ID: a.ID, Egg: e.Name, Description: e.Description, Image: g.Image, Startup: g.Startup,
+		ID: a.ID, Egg: e.Name, Description: e.Description, Image: g.Image, Startup: g.Startup, EggStartup: e.Startup,
 		MemoryMB: a.MemoryMB, CPUs: a.CPUs,
 		Images:    []gameImageJSON{},
 		Ports:     []gamePortJSON{},
