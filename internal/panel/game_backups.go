@@ -60,7 +60,7 @@ func (s *Server) quiesceGame(ctx context.Context, a store.App) (resume func()) {
 	for {
 		select {
 		case line := <-lines:
-			if strings.Contains(strings.ToLower(ansi.ReplaceAllString(line, "")), "saved the") {
+			if strings.Contains(strings.ToLower(ansi().ReplaceAllString(line, "")), "saved the") {
 				return
 			}
 		case <-timeout.C:
