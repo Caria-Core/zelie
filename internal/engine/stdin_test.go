@@ -65,7 +65,8 @@ func TestWriteStdin(t *testing.T) {
 	// While the engine holds the pipe the reader sees no end of file, and
 	// once it lets go it does.
 	r.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
-	if n, err := r.Read(buf); n != 0 || !errors.Is(err, os.ErrDeadlineExceeded) {
+	// Linux waits for the deadline; macOS cannot poll a pipe and says so.
+	if n, err := r.Read(buf); n != 0 || !(errors.Is(err, os.ErrDeadlineExceeded) || errors.Is(err, syscall.EAGAIN)) {
 		t.Errorf("read %d bytes, %v, before the pipe closed", n, err)
 	}
 	e.closeStdin(id)
