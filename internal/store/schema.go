@@ -370,5 +370,30 @@ ALTER TABLE game_servers ADD COLUMN eula_accepted_at INTEGER;
 -- game, or has not been looked at yet.
 ALTER TABLE game_servers ADD COLUMN steam_app_id INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE game_servers ADD COLUMN steam_auto_update INTEGER NOT NULL DEFAULT 0;
+`, `
+-- SFTP for game servers. An account's public keys let it log in to the
+-- servers it may manage; a key belongs to one account only, so it says who
+-- is logging in. A server's SFTP password is kept as an argon2id hash and
+-- shown once. The port is the one the SFTP service listens on.
+CREATE TABLE ssh_keys (
+	id          INTEGER PRIMARY KEY,
+	user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+	name        TEXT NOT NULL,
+	fingerprint TEXT NOT NULL UNIQUE,
+	public_key  BLOB NOT NULL,
+	created_at  INTEGER NOT NULL
+) STRICT;
+CREATE INDEX ssh_keys_user ON ssh_keys(user_id);
+
+CREATE TABLE sftp_passwords (
+	app_id     TEXT PRIMARY KEY REFERENCES apps(id) ON DELETE CASCADE,
+	hash       TEXT NOT NULL,
+	created_at INTEGER NOT NULL
+) STRICT;
+
+CREATE TABLE sftp_config (
+	node_id INTEGER PRIMARY KEY REFERENCES nodes(id),
+	port    INTEGER NOT NULL CHECK (port BETWEEN 1024 AND 65535)
+) STRICT;
 `,
 }

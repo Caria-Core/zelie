@@ -43,6 +43,10 @@ type Server struct {
 	// DataDir holds files that do not belong in the database, such as
 	// deployment logs.
 	DataDir string
+	// SFTPUID is the user the SFTP service runs as; it returns 0 while
+	// there is no such user. It is looked up on each request because the
+	// service may be set up after the panel starts, by an update.
+	SFTPUID func() uint32
 	// ProxyUID is the user the proxy runs as. Requests from it are web
 	// traffic; requests from root come from the zelie command on the server.
 	ProxyUID uint32
@@ -82,6 +86,7 @@ type Server struct {
 	imageUpdates imageUpdates
 	// steam is what Steam last said the newest builds of games are.
 	steam steamTracker
+	sftp  sftpState
 
 	// externalMu keeps two requests from picking the same port.
 	externalMu sync.Mutex
@@ -234,6 +239,14 @@ func (s *Server) Handler() http.Handler {
 	web.HandleFunc("GET /api/games/{app}/files/download", s.managesGame(s.downloadGameFile))
 	web.HandleFunc("POST /api/games/{app}/files/compress", s.managesGame(s.compressGameFiles))
 	web.HandleFunc("POST /api/games/{app}/files/extract", s.managesGame(s.extractGameFile))
+	web.HandleFunc("GET /api/games/{app}/sftp", s.managesGame(s.getGameSFTP))
+	web.HandleFunc("POST /api/games/{app}/sftp/password", s.confirmed(requireAdmin(s.newGameSFTPPassword)))
+	web.HandleFunc("DELETE /api/games/{app}/sftp/password", s.confirmed(requireAdmin(s.removeGameSFTPPassword)))
+	web.HandleFunc("GET /api/sftp", s.signedIn(s.getSFTP))
+	web.HandleFunc("PUT /api/sftp", s.adminOnly(s.setSFTP))
+	web.HandleFunc("GET /api/account/ssh-keys", s.signedIn(s.listSSHKeys))
+	web.HandleFunc("POST /api/account/ssh-keys", s.confirmed(s.addSSHKey))
+	web.HandleFunc("DELETE /api/account/ssh-keys/{id}", s.confirmed(s.deleteSSHKey))
 	web.HandleFunc("POST /api/games/{app}/reinstall", s.adminOnly(s.reinstallGame))
 	web.HandleFunc("PUT /api/games/{app}/steam", s.adminOnly(s.setSteam))
 	web.HandleFunc("POST /api/games/{app}/steam/update", s.adminOnly(s.updateSteam))
@@ -257,7 +270,7 @@ func (s *Server) Handler() http.Handler {
 	// must come from the panel's own pages.
 	webSafe := secureHeaders(http.NewCrossOriginProtection().Handler(web))
 
-	return peer.Require(peer.Policy{UIDs: []uint32{s.ProxyUID}}, s.Log, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	main := peer.Require(peer.Policy{UIDs: []uint32{s.ProxyUID}}, s.Log, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p, _ := peer.From(r.Context())
 		if p.UID == 0 {
 			local.ServeHTTP(w, r)
@@ -265,6 +278,17 @@ func (s *Server) Handler() http.Handler {
 		}
 		webSafe.ServeHTTP(w, r)
 	}))
+	// The SFTP service gets its own routes and none of the others.
+	sftpOnly := s.sftpRoutes()
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if p, ok := peer.From(r.Context()); ok && s.SFTPUID != nil {
+			if uid := s.SFTPUID(); uid != 0 && p.UID == uid {
+				sftpOnly.ServeHTTP(w, r)
+				return
+			}
+		}
+		main.ServeHTTP(w, r)
+	})
 }
 
 // waitForCore returns once the core answers, or false when ctx ends first.
