@@ -5,7 +5,10 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/pkg/sftp"
@@ -103,5 +106,71 @@ func sftpCheck(c *client) error {
 		return fmt.Errorf("server.properties reads %q", b)
 	}
 	fmt.Printf("server.properties: %d bytes\n", len(b))
+	return sftpWrite(c, fx)
+}
+
+// sftpWrite uploads, renames and removes a file, as a person moving a plugin
+// in would, and checks the panel sees what SFTP wrote, owned by the server's
+// user, and that no path leads out of the server's files.
+func sftpWrite(c *client, fx *sftp.Client) error {
+	step("upload, rename and remove a file over SFTP")
+	const text = "written over SFTP\n"
+	if err := fx.Mkdir("/sftp-check"); err != nil {
+		return err
+	}
+	f, err := fx.Create("/sftp-check/upload.tmp")
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write([]byte(text)); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if err := fx.Rename("/sftp-check/upload.tmp", "/sftp-check/hello.txt"); err != nil {
+		return err
+	}
+	// SFTP does not say who owns a file, so look on the disk.
+	disk, err := filepath.Glob("/var/lib/zelie/volumes/*/sftp-check/hello.txt")
+	if err != nil || len(disk) != 1 {
+		return fmt.Errorf("the uploaded file on the disk: %v %v", disk, err)
+	}
+	fi, err := os.Stat(disk[0])
+	if err != nil {
+		return err
+	}
+	if st := fi.Sys().(*syscall.Stat_t); st.Uid != 988 || st.Gid != 988 {
+		return fmt.Errorf("the uploaded file is owned by %d:%d, want 988:988", st.Uid, st.Gid)
+	}
+	got, err := c.send("GET", "/api/games/"+gameID+"/files/content?path=sftp-check/hello.txt", nil)
+	if err != nil {
+		return err
+	}
+	if string(got) != text {
+		return fmt.Errorf("the panel reads the uploaded file as %q", got)
+	}
+
+	step("stay inside the server's files")
+	for _, p := range []string{"/../../../../etc/passwd", "../../../../etc/passwd", "/sftp-check/../../../etc/passwd"} {
+		if f, err := fx.Open(p); err == nil {
+			b, _ := io.ReadAll(f)
+			f.Close()
+			if strings.Contains(string(b), "root:") {
+				return fmt.Errorf("%s reached the machine's /etc/passwd", p)
+			}
+		}
+	}
+
+	if err := fx.Remove("/sftp-check/hello.txt"); err != nil {
+		return err
+	}
+	if err := fx.RemoveDirectory("/sftp-check"); err != nil {
+		return err
+	}
+	if _, err := fx.Stat("/sftp-check"); err == nil {
+		return errors.New("the removed folder is still there")
+	}
 	return nil
 }
