@@ -102,6 +102,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /v1/forwards/{app}", s.setForwards)
 	mux.HandleFunc("DELETE /v1/forwards/{app}", s.clearForwards)
 	mux.HandleFunc("GET /v1/ports", s.usedPorts)
+	mux.HandleFunc("GET /v1/address", s.publicAddress)
 	mux.HandleFunc("POST /v1/installs", s.install)
 	mux.HandleFunc("POST /v1/builds", s.build)
 	mux.HandleFunc("DELETE /v1/builds/{app}/cache", s.removeBuildCache)

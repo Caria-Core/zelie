@@ -167,6 +167,7 @@ export default {
 	'msg.login.wrong': 'Wrong email or password.',
 	'msg.logs.none': 'This container has no logs yet.',
 	'msg.logs.unreadable': 'The logs could not be read.',
+	'msg.node.bad_address': '{address} is not a name or an IP address players can connect to.',
 	'msg.offsite.bad_bucket': 'A bucket name has 3 to 63 lowercase letters, digits, dots and dashes.',
 	'msg.offsite.bad_endpoint': 'The address must look like https://s3.example.com, with nothing after the host name.',
 	'msg.offsite.bad_prefix': 'The folder has letters, digits, dots, dashes and underscores, with a / between its parts.',

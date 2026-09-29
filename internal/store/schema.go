@@ -355,5 +355,10 @@ CREATE TABLE game_servers (
 	install_id    INTEGER,
 	installed_at  INTEGER
 ) STRICT;
+`, `
+-- The name or address players use to reach this node's game servers, when
+-- the administrator sets one. Empty means the address Zelie finds on the
+-- machine's network cards.
+ALTER TABLE nodes ADD COLUMN public_address TEXT NOT NULL DEFAULT '';
 `,
 }

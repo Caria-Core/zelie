@@ -152,6 +152,14 @@ container, and one that lets exactly that traffic through; where ufw or another 
 firewall is present, the same opening is made there. The rules follow the container when
 it restarts with a new address, and go when the server is deleted.
 
+The address the panel shows players is not the one the panel was opened with, which may
+be a tunnel that game traffic never crosses. The core reads the machine's network cards
+and picks the first public IPv4 address, leaving out its own bridges and the container
+runtimes' interfaces. A machine behind NAT has none, so the panel shows the private
+address of the card the default route uses and says players outside the network may not
+reach it. Nothing is asked of an outside service. The administrator can replace the
+address with a name or IP of their own on the Server page.
+
 A game server runs as an ordinary user, 988 inside its container as in Wings. Before
 each start the core gives that user every file of the server's volume and edits the
 config files the egg lists, staying inside the volume however a link in it points. The

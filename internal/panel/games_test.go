@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Caria-Core/zelie/internal/core"
 	"github.com/Caria-Core/zelie/internal/egg"
 	"github.com/Caria-Core/zelie/internal/engine"
 	"github.com/Caria-Core/zelie/internal/store"
@@ -101,6 +102,7 @@ func (e *appEnv) install(t *testing.T, app string) store.Deployment {
 
 func TestCreateGameAndInstall(t *testing.T) {
 	e, eggs := newGameEnv(t)
+	e.core.address = core.PublicAddress{Address: "203.0.113.7"}
 	code, out := e.b.do("POST", "/api/games", map[string]any{
 		"name": "survival", "egg": "minecraft-paper", "memory_mb": 2048, "cpus": 2,
 		"variables": map[string]string{"VERSION": "1.20.4"}, "ports": 2,
@@ -161,6 +163,9 @@ func TestCreateGameAndInstall(t *testing.T) {
 	ports := out["ports"].([]any)
 	if len(ports) != 2 || ports[0].(map[string]any)["port"] != 25565.0 || ports[0].(map[string]any)["default"] != true || ports[1].(map[string]any)["default"] != false {
 		t.Errorf("ports: %v", ports)
+	}
+	if ports[0].(map[string]any)["address"] != "203.0.113.7" {
+		t.Errorf("port address: %v", ports[0])
 	}
 	vars := out["variables"].([]any)
 	if len(vars) != 3 || vars[0].(map[string]any)["value"] != "1.20.4" || vars[0].(map[string]any)["description"] != "What to install." || vars[1].(map[string]any)["editable"] != false {

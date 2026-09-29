@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Caria-Core/zelie/internal/core"
 	"github.com/Caria-Core/zelie/internal/store"
 )
 
@@ -161,6 +162,8 @@ func TestAllocationsNeedLogin(t *testing.T) {
 		{"GET", "/api/nodes/1/allocations"},
 		{"GET", "/api/nodes/1/allocations/suggest"},
 		{"POST", "/api/nodes/1/allocations"},
+		{"GET", "/api/nodes/1"},
+		{"PUT", "/api/nodes/1"},
 		{"DELETE", "/api/nodes/1/allocations/1"},
 	} {
 		if code, _ := out.do(r[0], r[1], nil); code != http.StatusUnauthorized {
@@ -262,4 +265,48 @@ func containsAll(s string, parts ...string) bool {
 		}
 	}
 	return true
+}
+
+func TestValidAddress(t *testing.T) {
+	for _, s := range []string{"play.example.com", "example", "a-b.example.org", "203.0.113.7", "2001:db8::1", "Play.Example.COM.", strings.Repeat("a", 63) + ".com"} {
+		if !validAddress(s) {
+			t.Errorf("%q refused", s)
+		}
+	}
+	for _, s := range []string{"", "-a.com", "a-.com", "a..com", "a b.com", "http://x.com", "x.com:25565", "under_score.com", "fe80::1%eth0", strings.Repeat("a", 64) + ".com", strings.Repeat("a.", 130) + "com", "é.com"} {
+		if validAddress(s) {
+			t.Errorf("%q accepted", s)
+		}
+	}
+}
+
+func TestNodeAddressAPI(t *testing.T) {
+	e := newAppEnv(t)
+	e.core.address = core.PublicAddress{Address: "192.168.1.20", Private: true}
+
+	code, out := e.b.do("GET", "/api/nodes/1", nil)
+	if code != http.StatusOK || out["address"] != "192.168.1.20" || out["detected"] != "192.168.1.20" || out["private"] != true || out["override"] != "" || out["name"] != "This server" {
+		t.Fatalf("detected: %d %v", code, out)
+	}
+	if code, out := e.b.do("GET", "/api/nodes/7", nil); code != http.StatusNotFound || out["code"] != "allocation.no_node" {
+		t.Errorf("another node: %d %v", code, out)
+	}
+
+	code, out = e.b.do("PUT", "/api/nodes/1", map[string]any{"public_address": " play.example.com "})
+	if code != http.StatusOK || out["address"] != "play.example.com" || out["override"] != "play.example.com" || out["private"] != false || out["detected"] != "192.168.1.20" {
+		t.Fatalf("override: %d %v", code, out)
+	}
+	if code, out := e.b.do("GET", "/api/nodes/1", nil); code != http.StatusOK || out["address"] != "play.example.com" {
+		t.Errorf("override kept: %d %v", code, out)
+	}
+	if code, out := e.b.do("PUT", "/api/nodes/1", map[string]any{"public_address": "not a name"}); code != http.StatusBadRequest || out["code"] != "node.bad_address" {
+		t.Errorf("bad address: %d %v", code, out)
+	}
+	if n, _ := e.s.Store.Node(context.Background(), 1); n.PublicAddress != "play.example.com" {
+		t.Errorf("a refused address changed the node: %q", n.PublicAddress)
+	}
+	code, out = e.b.do("PUT", "/api/nodes/1", map[string]any{"public_address": ""})
+	if code != http.StatusOK || out["address"] != "192.168.1.20" || out["private"] != true || out["override"] != "" {
+		t.Errorf("cleared: %d %v", code, out)
+	}
 }

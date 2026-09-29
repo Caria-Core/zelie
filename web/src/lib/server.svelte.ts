@@ -21,3 +21,14 @@ export async function loadServer(): Promise<ServerInfo> {
 	server.info = await api<ServerInfo>('GET', '/server');
 	return server.info;
 }
+
+// Where players reach this machine's game servers.
+export type NodeInfo = {
+	id: number;
+	name: string;
+	address: string;
+	detected: string;
+	// The address is one found on a network card that is not public.
+	private: boolean;
+	override: string;
+};

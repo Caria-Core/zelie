@@ -78,8 +78,9 @@ type appCore struct {
 	links map[string][]engine.Link
 
 	forwards  map[string][]engine.Forward
-	cleared   []string // apps whose forwards were cleared
-	usedPorts []int    // what the machine holds
+	cleared   []string           // apps whose forwards were cleared
+	usedPorts []int              // what the machine holds
+	address   core.PublicAddress // what the network cards say
 
 	volumes     map[string]bool
 	sizes       map[string]int64
@@ -478,6 +479,12 @@ func (c *appCore) UsedPorts(context.Context) ([]int, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return slices.Clone(c.usedPorts), nil
+}
+
+func (c *appCore) PublicAddress(context.Context) (core.PublicAddress, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.address, nil
 }
 
 func (c *appCore) UpdateStatus(context.Context) (core.UpdateStatus, error) {

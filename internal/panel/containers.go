@@ -33,6 +33,7 @@ type Core interface {
 	SetForwards(ctx context.Context, app string, forwards []engine.Forward) error
 	ClearForwards(ctx context.Context, app string) error
 	UsedPorts(ctx context.Context) ([]int, error)
+	PublicAddress(ctx context.Context) (core.PublicAddress, error)
 	Build(ctx context.Context, app, version string, env, sealedEnv []string, source io.Reader, out io.Writer) (build.Result, error)
 	Wait(ctx context.Context, id string) (int, error)
 	SecretKey(ctx context.Context) (secret.PublicKey, error)

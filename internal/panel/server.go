@@ -207,6 +207,8 @@ func (s *Server) Handler() http.Handler {
 	web.HandleFunc("GET /api/offsite/found", s.signedIn(s.findOffsite))
 	web.HandleFunc("POST /api/offsite/found", s.signedIn(s.addFound))
 	web.HandleFunc("POST /api/backups/keys", s.confirmed(s.addOldKey))
+	web.HandleFunc("GET /api/nodes/{node}", s.signedIn(s.getNode))
+	web.HandleFunc("PUT /api/nodes/{node}", s.adminOnly(s.setNode))
 	web.HandleFunc("GET /api/nodes/{node}/allocations", s.adminOnly(s.listAllocations))
 	web.HandleFunc("GET /api/nodes/{node}/allocations/suggest", s.adminOnly(s.suggestAllocations))
 	web.HandleFunc("POST /api/nodes/{node}/allocations", s.adminOnly(s.addAllocations))

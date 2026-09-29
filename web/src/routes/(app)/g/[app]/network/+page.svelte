@@ -1,8 +1,18 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
+	import { api } from '$lib/api';
 	import { address, game } from '$lib/games.svelte';
 	import { t } from '$lib/i18n';
+	import type { NodeInfo } from '$lib/server.svelte';
 
 	const g = $derived(game.info!);
+	let node = $state<NodeInfo | null>(null);
+
+	onMount(() => {
+		api<NodeInfo>('GET', '/nodes/1')
+			.then((n) => (node = n))
+			.catch(() => {});
+	});
 </script>
 
 <div class="flex max-w-2xl flex-col gap-6">
@@ -21,4 +31,10 @@
 		{/each}
 	</ul>
 	<p class="text-sm text-muted">{t('network.defaultHint')}</p>
+	{#if node?.private}
+		<p class="text-sm text-muted">
+			{t('network.private')}
+			<a href="/server" class="underline hover:text-fg">{t('network.privateLink')}</a>
+		</p>
+	{/if}
 </div>

@@ -8,9 +8,10 @@
 	import { messageOf } from '$lib/errors';
 	import { ago, date } from '$lib/format';
 	import { t } from '$lib/i18n';
-	import { loadServer, server, type ServerInfo } from '$lib/server.svelte';
+	import { loadServer, server, type NodeInfo, type ServerInfo } from '$lib/server.svelte';
 	import Button from '$lib/ui/Button.svelte';
 	import ErrorText from '$lib/ui/ErrorText.svelte';
+	import Field from '$lib/ui/Field.svelte';
 	import Lead from '$lib/ui/Lead.svelte';
 
 	let error = $state('');
@@ -19,9 +20,37 @@
 	let updating = $state('');
 
 	const info = $derived(server.info);
+	let node = $state<NodeInfo | null>(null);
+	let override = $state('');
+	let savingAddress = $state(false);
+	let addressError = $state('');
+	let addressSaved = $state(false);
+
 	onMount(() => {
 		loadServer().catch((err) => (error = messageOf(err)));
+		api<NodeInfo>('GET', '/nodes/1')
+			.then((n) => {
+				node = n;
+				override = n.override;
+			})
+			.catch((err) => (addressError = messageOf(err)));
 	});
+
+	async function saveAddress(e: SubmitEvent) {
+		e.preventDefault();
+		savingAddress = true;
+		addressError = '';
+		addressSaved = false;
+		try {
+			node = await api<NodeInfo>('PUT', '/nodes/1', { public_address: override.trim() });
+			override = node.override;
+			addressSaved = true;
+		} catch (err) {
+			addressError = messageOf(err);
+		} finally {
+			savingAddress = false;
+		}
+	}
 
 	async function check() {
 		busy = true;
@@ -179,6 +208,34 @@
 				{/if}
 			</dl>
 		</section>
+
+		{#if node}
+			<section class="flex flex-col gap-4">
+				<div>
+					<h2 class="font-medium">{t('server.gameAddress')}</h2>
+					<p class="text-sm text-muted">{t('server.gameAddressLead')}</p>
+				</div>
+				<p class="text-sm text-muted">
+					{#if !node.detected}{t('server.detectedNone')}{:else if node.private}{t('server.detectedPrivate', { address: node.detected })}{:else}{t('server.detected', { address: node.detected })}{/if}
+				</p>
+				<form class="flex flex-col gap-4" onsubmit={saveAddress}>
+					<Field
+						label={t('server.addressOverride')}
+						hint={t('server.addressHint')}
+						placeholder="play.example.com"
+						autocomplete="off"
+						autocapitalize="off"
+						spellcheck="false"
+						bind:value={override}
+					/>
+					<div class="flex items-center gap-3">
+						<Button type="submit" busy={savingAddress}>{t('server.saveAddress')}</Button>
+						{#if addressSaved}<CircleCheck size={16} strokeWidth={1.75} class="text-muted" />{/if}
+					</div>
+					<ErrorText message={addressError} />
+				</form>
+			</section>
+		{/if}
 	{:else}
 		<ErrorText message={error} />
 	{/if}

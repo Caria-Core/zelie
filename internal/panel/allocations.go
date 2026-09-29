@@ -297,3 +297,88 @@ func (s *Server) assign(ctx context.Context, app string, p placement) error {
 	}
 	return s.Store.AssignAllocations(ctx, app, ids)
 }
+
+var errBadPublicAddress = msg.Define(http.StatusBadRequest, "node.bad_address", "{address} is not a name or an IP address players can connect to.")
+
+// maxHostname is the longest name DNS allows.
+const maxHostname = 253
+
+// validAddress says whether s is a hostname or an IP address literal.
+func validAddress(s string) bool {
+	if a, err := netip.ParseAddr(s); err == nil {
+		return a.Zone() == ""
+	}
+	if s == "" || len(s) > maxHostname {
+		return false
+	}
+	for label := range strings.SplitSeq(strings.TrimSuffix(s, "."), ".") {
+		if label == "" || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, c := range label {
+			if c != '-' && (c < '0' || c > '9') && (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+type nodeJSON struct {
+	ID   int64  `json:"id"`
+	Name string `json:"name"`
+	// Address is what players connect to: the override, or else the one
+	// found on the machine.
+	Address  string `json:"address"`
+	Detected string `json:"detected"`
+	// Private says the address is a detected one that is not public.
+	Private  bool   `json:"private"`
+	Override string `json:"override"`
+}
+
+// nodeOut describes a node. A core that cannot say leaves the detected
+// address empty, which the override still covers.
+func (s *Server) nodeOut(ctx context.Context, n store.Node) nodeJSON {
+	found, err := s.Core.PublicAddress(ctx)
+	if err != nil {
+		s.Log.Warn("detect address", "err", err)
+	}
+	out := nodeJSON{ID: n.ID, Name: n.Name, Address: found.Address, Detected: found.Address, Private: found.Private, Override: n.PublicAddress}
+	if n.PublicAddress != "" {
+		out.Address, out.Private = n.PublicAddress, false
+	}
+	return out
+}
+
+func (s *Server) getNode(w http.ResponseWriter, r *http.Request) {
+	n, ok := s.nodeFrom(w, r)
+	if !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, s.nodeOut(r.Context(), n))
+}
+
+func (s *Server) setNode(w http.ResponseWriter, r *http.Request) {
+	n, ok := s.nodeFrom(w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		PublicAddress string `json:"public_address"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	addr := strings.TrimSpace(req.PublicAddress)
+	if addr != "" && !validAddress(addr) {
+		writeError(w, errBadPublicAddress.Err("address", truncate(addr, 64)))
+		return
+	}
+	if err := s.Store.SetPublicAddress(r.Context(), n.ID, addr); err != nil {
+		s.fail(w, "set public address", err)
+		return
+	}
+	s.Log.Info("game address set", "node", n.ID, "address", addr, "user", loginFrom(r.Context()).account.ID)
+	n.PublicAddress = addr
+	writeJSON(w, http.StatusOK, s.nodeOut(r.Context(), n))
+}

@@ -29,21 +29,31 @@ func (e *TakenError) Is(target error) bool { return target == ErrExists }
 
 // Node is a machine that runs servers.
 type Node struct {
-	ID        int64
-	Name      string
-	CreatedAt time.Time
+	ID   int64
+	Name string
+	// PublicAddress is what the administrator says players connect to. It
+	// is empty when they left it to Zelie to find one.
+	PublicAddress string
+	CreatedAt     time.Time
 }
 
 // Node returns the node, or ErrNotFound.
 func (s *Store) Node(ctx context.Context, id int64) (Node, error) {
 	var n Node
 	var created int64
-	err := s.db.QueryRowContext(ctx, "SELECT id, name, created_at FROM nodes WHERE id = ?", id).Scan(&n.ID, &n.Name, &created)
+	err := s.db.QueryRowContext(ctx, "SELECT id, name, public_address, created_at FROM nodes WHERE id = ?", id).Scan(&n.ID, &n.Name, &n.PublicAddress, &created)
 	if errors.Is(err, sql.ErrNoRows) {
 		return n, ErrNotFound
 	}
 	n.CreatedAt = time.Unix(created, 0)
 	return n, err
+}
+
+// SetPublicAddress sets the address players use for a node's servers. An
+// empty one goes back to the detected address.
+func (s *Store) SetPublicAddress(ctx context.Context, id int64, address string) error {
+	res, err := s.db.ExecContext(ctx, "UPDATE nodes SET public_address = ? WHERE id = ?", address, id)
+	return oneRow(res, err)
 }
 
 // Allocation is a port a node may give to a server. It covers TCP and UDP.

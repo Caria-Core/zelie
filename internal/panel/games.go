@@ -378,6 +378,8 @@ type gamePortJSON struct {
 	ID   int64  `json:"id"`
 	IP   string `json:"ip"`
 	Port int    `json:"port"`
+	// Address is the host players connect to for this port.
+	Address string `json:"address"`
 	// Default is the port players connect to and SERVER_PORT holds.
 	Default bool `json:"default"`
 }
@@ -458,8 +460,18 @@ func (s *Server) gameOut(ctx context.Context, a store.App) (gameJSON, error) {
 	if err != nil {
 		return out, err
 	}
+	var node string
+	if len(ports) > 0 {
+		if n, err := s.Store.Node(ctx, store.ThisNode); err == nil {
+			node = s.nodeOut(ctx, n).Address
+		}
+	}
 	for _, p := range ports {
-		out.Ports = append(out.Ports, gamePortJSON{ID: p.ID, IP: p.IP, Port: p.Port, Default: p.Port == a.Port})
+		host := node
+		if p.IP != store.AnyAddress {
+			host = p.IP
+		}
+		out.Ports = append(out.Ports, gamePortJSON{ID: p.ID, IP: p.IP, Port: p.Port, Address: host, Default: p.Port == a.Port})
 	}
 	out.Variables = variablesOut(e, g.Variables)
 	return out, nil

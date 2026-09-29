@@ -12,7 +12,7 @@ export type GameVariable = {
 	rules?: string[];
 };
 
-export type GamePort = { id: number; ip: string; port: number; default: boolean };
+export type GamePort = { id: number; ip: string; port: number; address: string; default: boolean };
 
 export type Game = {
 	id: string;
@@ -67,10 +67,11 @@ export async function power(id: string, action: 'start' | 'stop' | 'restart' | '
 	await Promise.all([loadGame(id), reloadList()]);
 }
 
-// Players connect to the address of the server itself. A port open on every
-// address is reached by the name the panel was opened with.
+// Players connect straight to the machine, not through the panel's address,
+// which may be a tunnel. The panel says which host that is; the name the panel
+// was opened with is only the last resort, when it found none.
 export function address(p: GamePort): string {
-	const host = p.ip === '0.0.0.0' ? location.hostname : p.ip;
+	const host = p.address || location.hostname;
 	return `${host.includes(':') ? `[${host}]` : host}:${p.port}`;
 }
 

@@ -134,3 +134,26 @@ func TestAssignAllocations(t *testing.T) {
 		t.Errorf("%d allocations left", len(all))
 	}
 }
+
+func TestPublicAddress(t *testing.T) {
+	ctx := context.Background()
+	s := open(t)
+	if n, _ := s.Node(ctx, ThisNode); n.PublicAddress != "" {
+		t.Errorf("starts empty: %q", n.PublicAddress)
+	}
+	if err := s.SetPublicAddress(ctx, ThisNode, "play.example.com"); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := s.Node(ctx, ThisNode); n.PublicAddress != "play.example.com" {
+		t.Errorf("address = %q", n.PublicAddress)
+	}
+	if err := s.SetPublicAddress(ctx, ThisNode, ""); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := s.Node(ctx, ThisNode); n.PublicAddress != "" {
+		t.Errorf("not cleared: %q", n.PublicAddress)
+	}
+	if err := s.SetPublicAddress(ctx, 9, "x.example"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("a node that is not there: %v", err)
+	}
+}
