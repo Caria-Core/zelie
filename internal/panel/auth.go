@@ -22,7 +22,7 @@ import (
 const sealTOTP = "totp secret"
 
 var (
-	errTooMany     = msg.Define(http.StatusTooManyRequests, "login.too_many", "Too many attempts. Try again in {minutes, plural, one {# minute} other {# minutes}}.")
+	errTooMany     = msg.Define(http.StatusTooManyRequests, "login.too_many", "Too many attempts. Wait {minutes} min and try again.")
 	errBadLogin    = msg.Define(http.StatusUnauthorized, "login.wrong", "Wrong email or password.")
 	errBadCode     = msg.Define(http.StatusUnauthorized, "login.bad_code", "That code did not work.")
 	errNoCeremony  = msg.Define(http.StatusBadRequest, "login.expired", "This step has expired. Start again.")

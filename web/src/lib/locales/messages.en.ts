@@ -121,7 +121,7 @@ export default {
 	'msg.login.no_totp': 'This account has no authenticator app.',
 	'msg.login.password_first': 'Log in with your password first.',
 	'msg.login.pow': 'Your browser has to solve a short check first.',
-	'msg.login.too_many': 'Too many attempts. Try again in {minutes, plural, one {# minute} other {# minutes}}.',
+	'msg.login.too_many': 'Too many attempts. Wait {minutes} min and try again.',
 	'msg.login.wrong': 'Wrong email or password.',
 	'msg.logs.none': 'This container has no logs yet.',
 	'msg.logs.unreadable': 'The logs could not be read.',
