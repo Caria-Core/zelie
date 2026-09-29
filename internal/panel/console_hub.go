@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/netip"
 	"os"
 	"strings"
 	"sync"
@@ -435,16 +436,31 @@ func (c *consoleHistory) forget(app string) {
 // watchGame follows a server's console from its start: to see when the
 // game says it is ready, and to keep the lines for whoever opens the
 // console. It stops when the container has exited and its output is read.
-func (s *Server) watchGame(app, container string, e *egg.Egg) {
+func (s *Server) watchGame(a store.App, container string, e *egg.Egg) {
+	app := a.ID
+	if a.IsFiles() {
+		// Generic eggs keep a placeholder where a game's ready line goes.
+		// Their app is up once it runs, or once it answers on its port.
+		e = new(*e)
+		e.Done = nil
+	}
 	done := e.DoneMatcher()
 	eula := e.HasFeature(egg.FeatureEULA)
 	h := s.consoles.hub(app)
 	ctx, cancel := context.WithCancel(s.baseContext())
 	h.replace(container, cancel)
 	matched := done.Empty()
-	if matched {
+	answers := a.IsFiles() && a.Domain != ""
+	if matched && !answers {
 		// The egg says nothing to wait for.
 		s.gameRuns.advance(app, container)
+	}
+	if answers {
+		s.watchers.Add(1)
+		go func() {
+			defer s.watchers.Done()
+			s.awaitAnswer(ctx, a, container, h)
+		}()
 	}
 	s.watchers.Add(2)
 	go func() {
@@ -596,5 +612,35 @@ func (s *Server) readInstall(h *consoleHub, g store.GameServer, installing bool)
 	if !installing {
 		// The last of it has been read.
 		h.installID = 0
+	}
+}
+
+// awaitAnswer moves a files app with a domain from starting to running once
+// its port answers HTTP, the way the proxy will ask. An app that never
+// answers stays starting, and its console says what Zelie is waiting for.
+func (s *Server) awaitAnswer(ctx context.Context, a store.App, container string, h *consoleHub) {
+	deadline := time.Now().Add(startupLimit)
+	told := false
+	for {
+		if st, err := s.containerStatus(ctx, container); err == nil && st.State == "running" && st.IP.IsValid() {
+			addr := netip.AddrPortFrom(st.IP, uint16(a.Port)).String()
+			if code, err := s.healthCheck(ctx, "http://"+addr+a.HealthPath, a.Domain); err == nil && code < 500 {
+				s.gameRuns.advance(a.ID, container)
+				return
+			}
+		}
+		wait := startupPoll
+		if time.Now().After(deadline) {
+			if !told {
+				told = true
+				h.push(container, "line", fmt.Sprintf("Zelie has not seen the app answer on port %d yet. For %s to work it has to listen on 0.0.0.0:%d, which is the SERVER_PORT and PORT variables.", a.Port, a.Domain, a.Port))
+			}
+			wait = 5 * time.Second
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(wait):
+		}
 	}
 }

@@ -221,6 +221,7 @@ func (s *Server) Handler() http.Handler {
 	web.HandleFunc("GET /api/eggs/catalog", s.adminOnly(s.eggCatalog))
 	web.HandleFunc("POST /api/eggs/preview", s.adminOnly(s.eggPreview))
 	web.HandleFunc("POST /api/games", s.adminOnly(s.createGame))
+	web.HandleFunc("POST /api/apps/files", s.adminOnly(s.createFilesApp))
 	web.HandleFunc("GET /api/games/{app}", s.adminOnly(s.getGame))
 	web.HandleFunc("POST /api/games/{app}/eula", s.adminOnly(s.acceptEULA))
 	web.HandleFunc("PUT /api/games/{app}/variables", s.managesGame(s.updateGameSettings))

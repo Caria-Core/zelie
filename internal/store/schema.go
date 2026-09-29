@@ -370,5 +370,11 @@ ALTER TABLE game_servers ADD COLUMN eula_accepted_at INTEGER;
 -- game, or has not been looked at yet.
 ALTER TABLE game_servers ADD COLUMN steam_app_id INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE game_servers ADD COLUMN steam_auto_update INTEGER NOT NULL DEFAULT 0;
+`, `
+-- A files app runs an egg like a game server, but is an app: it has a domain,
+-- database links and metrics, and no ports of its own. Its source column
+-- stays 'image', because a CHECK cannot be widened in place; the store
+-- reports the source as 'files' when this is set.
+ALTER TABLE apps ADD COLUMN files INTEGER NOT NULL DEFAULT 0;
 `,
 }

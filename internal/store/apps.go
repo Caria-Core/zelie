@@ -15,6 +15,9 @@ import (
 const (
 	SourceImage  = "image"
 	SourceGitHub = "github"
+	// SourceFiles is an app that runs the files in its volume with the
+	// startup command of an egg.
+	SourceFiles = "files"
 )
 
 // App is something Zelie keeps running.
@@ -67,6 +70,13 @@ func (a App) IsDatabase() bool { return a.Engine != "" }
 // IsGame reports whether the app is a game server.
 func (a App) IsGame() bool { return a.Kind == KindGame }
 
+// IsFiles reports whether the app runs the files in its volume.
+func (a App) IsFiles() bool { return a.Source == SourceFiles }
+
+// RunsEgg reports whether the app is started from an egg: a game server or a
+// files app.
+func (a App) RunsEgg() bool { return a.IsGame() || a.IsFiles() }
+
 // Detected is how the last build built an app.
 type Detected struct {
 	Builder string `json:"builder,omitempty"` // dockerfile or railpack
@@ -77,15 +87,19 @@ type Detected struct {
 // ErrExists is returned when a name or domain is already taken.
 var ErrExists = errors.New("already exists")
 
-const appColumns = "id, source, image, repo, branch, port, domain, memory_mb, cpus, auto_deploy, health_path, test_command, stopped, build_command, start_command, detected, restart_pulls, engine, engine_version, kind, created_at"
+const appColumns = "id, source, image, repo, branch, port, domain, memory_mb, cpus, auto_deploy, health_path, test_command, stopped, build_command, start_command, detected, restart_pulls, engine, engine_version, kind, files, created_at"
 
 func scanApp(row scanner) (App, error) {
 	var a App
 	var created int64
 	var test sql.NullString
 	var detected string
+	var files bool
 	err := row.Scan(&a.ID, &a.Source, &a.Image, &a.Repo, &a.Branch, &a.Port, &a.Domain, &a.MemoryMB, &a.CPUs, &a.AutoDeploy, &a.HealthPath, &test, &a.Stopped,
-		&a.BuildCommand, &a.StartCommand, &detected, &a.RestartPulls, &a.Engine, &a.EngineVersion, &a.Kind, &created)
+		&a.BuildCommand, &a.StartCommand, &detected, &a.RestartPulls, &a.Engine, &a.EngineVersion, &a.Kind, &files, &created)
+	if files {
+		a.Source = SourceFiles
+	}
 	a.CreatedAt = time.Unix(created, 0)
 	json.Unmarshal([]byte(detected), &a.Detected)
 	a.TestCommand, a.TestSet = test.String, test.Valid
@@ -96,9 +110,13 @@ func scanApp(row scanner) (App, error) {
 }
 
 func (s *Store) CreateApp(ctx context.Context, a App) error {
-	_, err := s.db.ExecContext(ctx, "INSERT INTO apps ("+appColumns+") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-		a.ID, a.Source, a.Image, a.Repo, a.Branch, a.Port, a.Domain, a.MemoryMB, a.CPUs, a.AutoDeploy, a.HealthPath, a.testColumn(), a.Stopped,
-		a.BuildCommand, a.StartCommand, "{}", a.RestartPulls, a.Engine, a.EngineVersion, a.kind(), a.CreatedAt.Unix())
+	source := a.Source
+	if a.IsFiles() {
+		source = SourceImage
+	}
+	_, err := s.db.ExecContext(ctx, "INSERT INTO apps ("+appColumns+") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		a.ID, source, a.Image, a.Repo, a.Branch, a.Port, a.Domain, a.MemoryMB, a.CPUs, a.AutoDeploy, a.HealthPath, a.testColumn(), a.Stopped,
+		a.BuildCommand, a.StartCommand, "{}", a.RestartPulls, a.Engine, a.EngineVersion, a.kind(), a.IsFiles(), a.CreatedAt.Unix())
 	return uniqueErr(err)
 }
 

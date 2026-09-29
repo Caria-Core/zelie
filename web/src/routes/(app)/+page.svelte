@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { ArrowUpRight } from '@lucide/svelte';
-	import { apps, engineLabel, gameListState, isDatabase, isGame, shortVersion, shownState } from '$lib/apps.svelte';
+	import { apps, engineLabel, gameListState, isDatabase, isFiles, isGame, runtimeLabel, shortVersion, shownState } from '$lib/apps.svelte';
 	import { ago } from '$lib/format';
 	import { t } from '$lib/i18n';
 	import AppIcon from '$lib/ui/AppIcon.svelte';
@@ -39,10 +39,10 @@
 									<div class="min-w-0 flex-1">
 										<a href="/{g.game ? 'g' : 'a'}/{a.id}" class="block truncate font-medium after:absolute after:inset-0">{a.id}</a>
 										<p class="truncate text-sm text-muted">
-											{a.engine ? `${engineLabel[a.engine]} ${a.engine_version}` : g.game ? t('game.kind') : a.source === 'github' ? a.repo : a.image}
+											{a.engine ? `${engineLabel[a.engine]} ${a.engine_version}` : g.game ? t('game.kind') : isFiles(a) ? (runtimeLabel[a.runtime ?? ''] ?? a.runtime) : a.source === 'github' ? a.repo : a.image}
 										</p>
 									</div>
-									<StateDot state={g.game ? gameListState(a) : shownState(a)} />
+									<StateDot state={g.game || isFiles(a) ? gameListState(a) : shownState(a)} />
 								</div>
 								<div class="flex items-center justify-between gap-2 text-sm text-muted">
 									{#if a.domain}
@@ -54,14 +54,14 @@
 											><span class="truncate">{a.domain}</span><ArrowUpRight size={14} class="shrink-0" /></a
 										>
 									{:else}<span></span>{/if}
-									{#if a.latest && !g.game}
+									{#if a.latest && !g.game && !isFiles(a)}
 										<span class="flex shrink-0 items-center gap-2">
 											<span class="font-mono text-xs">{shortVersion(a.latest.version)}</span>
 											<DeployState state={a.latest.state} />
 										</span>
 									{/if}
 								</div>
-								{#if a.latest && !g.game}<p class="-mt-2 text-xs text-muted/80">{ago(a.latest.created_at)}</p>{/if}
+								{#if a.latest && !g.game && !isFiles(a)}<p class="-mt-2 text-xs text-muted/80">{ago(a.latest.created_at)}</p>{/if}
 							</li>
 						{/each}
 					</ul>

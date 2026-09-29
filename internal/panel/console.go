@@ -167,7 +167,7 @@ func (s *Server) consoleAccess(ctx context.Context, c consoleClaims) (store.Acco
 		return acct, store.App{}, err
 	}
 	a, err := s.Store.App(ctx, c.App)
-	if err == nil && !a.IsGame() {
+	if err == nil && !a.RunsEgg() {
 		err = store.ErrNotFound
 	}
 	if err != nil {

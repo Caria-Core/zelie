@@ -56,6 +56,8 @@ var (
 	errStopToInstall = msg.Define(http.StatusConflict, "game.stop_to_reinstall", "Stop the server before installing it again.")
 	errEULARequired  = msg.Define(http.StatusBadRequest, "game.eula_required", "This game needs you to accept its EULA first.")
 	errNoEULA        = msg.Define(http.StatusConflict, "game.no_eula", "This game has no EULA to accept.")
+	errBadEggKind    = msg.Define(http.StatusBadRequest, "game.bad_egg_kind", "The kind must be empty or runtime.")
+	errRuntimeEgg    = msg.Define(http.StatusBadRequest, "game.runtime_egg", "{egg} runs your own files. Create it with New app, Files.")
 	errNotAnApp      = msg.Define(http.StatusConflict, "game.not_an_app", "This is a game server, which has its own page.")
 	errInstallExit   = msg.Define(0, "game.install_failed", "The install script exited with code {code}.")
 	errInstallTime   = msg.Define(0, "game.install_timeout", "The install did not finish within {minutes} minutes.")
@@ -109,9 +111,21 @@ type catalogEntryJSON struct {
 	Ports    int   `json:"ports,omitempty"`
 }
 
+// eggCatalog lists the games, or with ?kind=runtime the generic eggs that run
+// a user's own files. The two are offered in different places.
 func (s *Server) eggCatalog(w http.ResponseWriter, r *http.Request) {
-	out := make([]catalogEntryJSON, 0, len(egg.Catalog))
-	for _, e := range egg.Catalog {
+	kind := egg.KindGame
+	switch r.URL.Query().Get("kind") {
+	case "":
+	case string(egg.KindRuntime):
+		kind = egg.KindRuntime
+	default:
+		writeError(w, errBadEggKind.Err())
+		return
+	}
+	entries := egg.OfKind(kind)
+	out := make([]catalogEntryJSON, 0, len(entries))
+	for _, e := range entries {
 		out = append(out, catalogEntryJSON{ID: e.ID, Name: e.Name, Game: e.Game, MemoryMB: e.MemoryMB, DiskMB: e.DiskMB, Ports: e.Ports})
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -134,6 +148,10 @@ type gameRequest struct {
 	// the "eula" feature (Minecraft) ask for. Zelie writes it into the
 	// server's files before each start.
 	AcceptEULA bool `json:"accept_eula"`
+
+	// runtime is set when the egg is read to make a files app, which may
+	// use the generic eggs.
+	runtime bool
 }
 
 // loadEgg fetches the egg the request names. Its error is a *msg.Error.
@@ -145,6 +163,9 @@ func (s *Server) loadEgg(ctx context.Context, req gameRequest) (e *egg.Egg, sour
 		entry, ok := egg.Lookup(req.Egg)
 		if !ok {
 			return nil, "", nil, errNoEgg.Err("egg", truncate(req.Egg, 64))
+		}
+		if entry.Kind == egg.KindRuntime && !req.runtime {
+			return nil, "", nil, errRuntimeEgg.Err("egg", entry.Name)
 		}
 		source = entry.ID
 		e, raw, err = s.eggs().Catalog(ctx, entry)
@@ -179,8 +200,9 @@ const maxVariableBytes = 8 << 10
 // gameVariables merges the request's values into the server's current ones,
 // or into the egg's defaults where base has none, and checks each value that
 // is new against its rules. Only variables the egg lets users edit may be
-// set. Its error is a *msg.Error.
-func gameVariables(e *egg.Egg, base, given map[string]string) (map[string]string, *msg.Error) {
+// set, unless unlock lets every one of them change, as a files app does: its
+// owner is the one who would have locked them. Its error is a *msg.Error.
+func gameVariables(e *egg.Egg, base, given map[string]string, unlock bool) (map[string]string, *msg.Error) {
 	known := make(map[string]egg.Variable, len(e.Variables))
 	for _, v := range e.Variables {
 		known[v.Env] = v
@@ -190,7 +212,7 @@ func gameVariables(e *egg.Egg, base, given map[string]string) (map[string]string
 		if !ok {
 			return nil, errUnknownVar.Err("name", truncate(name, 64))
 		}
-		if !v.UserEditable {
+		if !v.UserEditable && !unlock {
 			return nil, errLockedVar.Err("name", name)
 		}
 	}
@@ -275,7 +297,7 @@ func (s *Server) createGame(w http.ResponseWriter, r *http.Request) {
 		writeError(w, bad)
 		return
 	}
-	vars, bad := gameVariables(e, nil, req.Variables)
+	vars, bad := gameVariables(e, nil, req.Variables, false)
 	if bad != nil {
 		writeError(w, bad)
 		return
@@ -525,7 +547,7 @@ func (s *Server) gameOut(ctx context.Context, a store.App) (gameJSON, error) {
 		}
 		out.Ports = append(out.Ports, gamePortJSON{ID: p.ID, IP: p.IP, Port: p.Port, Address: host, Default: p.Port == a.Port, UsedBy: portUses(e, g.Variables, p.Port)})
 	}
-	out.Variables = variablesOut(e, g.Variables)
+	out.Variables = variablesOut(e, g.Variables, a.IsFiles())
 	// Without the node, only the placeholder for its name stays as written.
 	this, _ := s.Store.Node(ctx, store.ThisNode)
 	out.StartupPreview = egg.Expand(g.Startup, gameVars(a, g, this), a.Port)
@@ -538,8 +560,8 @@ func featuresOut(e *egg.Egg) []string {
 }
 
 // variablesOut lists the egg's variables with the values a server has, or
-// the defaults when values is nil.
-func variablesOut(e *egg.Egg, values map[string]string) []gameVariableJSON {
+// the defaults when values is nil. unlock shows every variable as editable.
+func variablesOut(e *egg.Egg, values map[string]string, unlock bool) []gameVariableJSON {
 	out := make([]gameVariableJSON, 0, len(e.Variables))
 	for _, v := range e.Variables {
 		name := v.Name
@@ -552,7 +574,7 @@ func variablesOut(e *egg.Egg, values map[string]string) []gameVariableJSON {
 		}
 		out = append(out, gameVariableJSON{
 			Env: v.Env, Name: name, Description: v.Description, Value: value, Default: v.Default,
-			Editable: v.UserEditable, Rules: v.Rules,
+			Editable: v.UserEditable || unlock, Rules: v.Rules,
 		})
 	}
 	return out
@@ -582,22 +604,36 @@ func (s *Server) eggPreview(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	e, _, _, err := s.loadEgg(r.Context(), gameRequest{Egg: req.Egg, EggURL: req.EggURL})
+	e, _, _, err := s.loadEgg(r.Context(), gameRequest{Egg: req.Egg, EggURL: req.EggURL, runtime: isRuntimeEgg(req.Egg)})
 	if err != nil {
 		s.failWith(w, "load egg", err)
 		return
 	}
-	out := eggPreviewJSON{Name: e.Name, Description: e.Description, Startup: e.Startup, Images: []gameImageJSON{}, Variables: variablesOut(e, nil), Features: featuresOut(e), PortVariables: portVariableNames(e)}
+	runtime := isRuntimeEgg(req.Egg)
+	var values map[string]string
+	if runtime {
+		// What a new files app starts with, so the form shows it.
+		values = withFilesDefaults(e, nil)
+	}
+	out := eggPreviewJSON{Name: e.Name, Description: e.Description, Startup: e.Startup, Images: []gameImageJSON{}, Variables: variablesOut(e, values, runtime), Features: featuresOut(e), PortVariables: portVariableNames(e)}
 	for _, img := range e.Images {
 		out.Images = append(out.Images, gameImageJSON{Label: img.Label, Ref: img.Ref})
 	}
 	writeJSON(w, http.StatusOK, out)
 }
 
-// gameFrom loads the game server in the path.
+// isRuntimeEgg tells a catalog id that names a generic egg.
+func isRuntimeEgg(id string) bool {
+	e, ok := egg.Lookup(id)
+	return ok && e.Kind == egg.KindRuntime
+}
+
+// gameFrom loads the game server in the path. A files app answers as well:
+// it is started from an egg the same way, and the console, files and startup
+// pages of both are these endpoints.
 func (s *Server) gameFrom(w http.ResponseWriter, r *http.Request) (store.App, store.GameServer, bool) {
 	a, err := s.Store.App(r.Context(), r.PathValue("app"))
-	if err == nil && !a.IsGame() {
+	if err == nil && !a.RunsEgg() {
 		err = store.ErrNotFound
 	}
 	var g store.GameServer
@@ -672,7 +708,7 @@ func (s *Server) updateGameSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	vars, bad := gameVariables(e, g.Variables, req.Variables)
+	vars, bad := gameVariables(e, g.Variables, req.Variables, a.IsFiles())
 	if bad != nil {
 		writeError(w, bad)
 		return

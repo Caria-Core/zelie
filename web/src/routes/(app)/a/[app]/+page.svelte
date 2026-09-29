@@ -4,6 +4,7 @@
 	import { current, load, rollback } from '$lib/current.svelte';
 	import { messageOf } from '$lib/errors';
 	import DatabaseOverview from '$lib/ui/DatabaseOverview.svelte';
+	import FilesOverview from '$lib/ui/FilesOverview.svelte';
 	import ErrorText from '$lib/ui/ErrorText.svelte';
 	import { ago } from '$lib/format';
 	import { say, t } from '$lib/i18n';
@@ -48,12 +49,18 @@
 	}
 </script>
 
-{#if app.engine}
-	<DatabaseOverview {app} />
-	<h2 class="-mb-2 font-medium">{t('db.history')}</h2>
+{#if app.source === 'files'}
+	<FilesOverview {app} />
+{:else}
+	{#if app.engine}
+		<DatabaseOverview {app} />
+		<h2 class="-mb-2 font-medium">{t('db.history')}</h2>
+	{/if}
+	<ErrorText message={error} />
 {/if}
-<ErrorText message={error} />
-{#if app.deployments.length === 0}
+{#if app.source === 'files'}
+	<!-- Its installs and restarts are on the console, not in a list of builds. -->
+{:else if app.deployments.length === 0}
 	<p class="text-muted">{t('app.noDeployments')}</p>
 {:else}
 	<ul class="flex flex-col divide-y divide-line rounded-2xl border border-line">

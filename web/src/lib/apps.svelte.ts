@@ -19,10 +19,12 @@ export type Deployment = {
 export type App = {
 	id: string;
 	kind: 'app' | 'game';
-	source: 'github' | 'image';
+	source: 'github' | 'image' | 'files';
 	image?: string;
 	repo?: string;
 	branch?: string;
+	// The catalog id of the egg a files app runs, such as nodejs.
+	runtime?: string;
 	port: number;
 	domain?: string;
 	memory_mb: number;
@@ -60,8 +62,12 @@ export const engineLabel: Record<Engine, string> = { postgres: 'PostgreSQL', mar
 
 export const isDatabase = (a: App): boolean => !!a.engine;
 export const isGame = (a: App): boolean => a.kind === 'game';
+// A files app runs the files in its volume, started from an egg like a game server.
+export const isFiles = (a: App): boolean => a.source === 'files';
 
-// A game server's state for the lists: its install counts, and a server that
+export const runtimeLabel: Record<string, string> = { nodejs: 'Node.js', python: 'Python', bun: 'Bun', deno: 'Deno', java: 'Java' };
+
+// A game server's or files app's state for the lists: its install counts, and a server that
 // was never started is stopped, not "not deployed".
 export function gameListState(a: App): string {
 	const d = a.latest;
