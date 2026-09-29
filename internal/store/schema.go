@@ -370,5 +370,40 @@ ALTER TABLE game_servers ADD COLUMN eula_accepted_at INTEGER;
 -- game, or has not been looked at yet.
 ALTER TABLE game_servers ADD COLUMN steam_app_id INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE game_servers ADD COLUMN steam_auto_update INTEGER NOT NULL DEFAULT 0;
+`, `
+-- Schedules of a game server: a cron expression and an ordered list of tasks
+-- to run when it fires. last_slot is the minute the schedule last fired for
+-- (or was created or changed at), so a restart does not run a slot twice.
+-- last_run is when a run last started; last_state is running, done, failed
+-- or skipped.
+CREATE TABLE schedules (
+	id           INTEGER PRIMARY KEY,
+	app_id       TEXT NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
+	name         TEXT NOT NULL,
+	cron         TEXT NOT NULL,
+	only_running INTEGER NOT NULL DEFAULT 0,
+	enabled      INTEGER NOT NULL DEFAULT 1,
+	created_at   INTEGER NOT NULL,
+	last_slot    INTEGER NOT NULL DEFAULT 0,
+	last_run     INTEGER NOT NULL DEFAULT 0,
+	last_state   TEXT NOT NULL DEFAULT '',
+	last_error   TEXT NOT NULL DEFAULT '',
+	last_error_msg TEXT NOT NULL DEFAULT ''
+) STRICT;
+CREATE INDEX schedules_app ON schedules(app_id, id);
+
+-- The tasks of a schedule in the order they run. action is command, power or
+-- backup; data is the console command or the power action. delay is the
+-- seconds to wait before the task.
+CREATE TABLE schedule_tasks (
+	id          INTEGER PRIMARY KEY,
+	schedule_id INTEGER NOT NULL REFERENCES schedules(id) ON DELETE CASCADE,
+	position    INTEGER NOT NULL,
+	action      TEXT NOT NULL CHECK (action IN ('command', 'power', 'backup')),
+	data        TEXT NOT NULL DEFAULT '',
+	delay       INTEGER NOT NULL DEFAULT 0,
+	keep_going  INTEGER NOT NULL DEFAULT 0
+) STRICT;
+CREATE INDEX schedule_tasks_schedule ON schedule_tasks(schedule_id, position);
 `,
 }

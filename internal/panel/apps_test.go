@@ -71,7 +71,9 @@ type appCore struct {
 	prepareNote []string
 	prepareErr  error
 	stdinErr    error
-	stubborn    bool // ignores the stop command and SIGTERM; only a kill ends it
+	// stdinHook sees each line written to a console, without the lock held.
+	stdinHook func(id, line string)
+	stubborn  bool // ignores the stop command and SIGTERM; only a kill ends it
 	// A volume was prepared while a container had it running.
 	preparedBusy bool
 
@@ -218,11 +220,12 @@ func (c *appCore) PrepareVolume(_ context.Context, name string, req core.Prepare
 
 func (c *appCore) WriteStdin(_ context.Context, id string, data []byte) error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if c.stdinErr != nil {
+		c.mu.Unlock()
 		return c.stdinErr
 	}
 	if _, ok := c.containers[id]; !ok {
+		c.mu.Unlock()
 		return &core.Error{Status: http.StatusNotFound, Message: "container not found"}
 	}
 	if c.consoles == nil {
@@ -231,6 +234,11 @@ func (c *appCore) WriteStdin(_ context.Context, id string, data []byte) error {
 	c.consoles[id] = append(c.consoles[id], string(data))
 	if string(data) == "stop\n" && !c.stubborn {
 		c.exitLocked(id)
+	}
+	hook := c.stdinHook
+	c.mu.Unlock()
+	if hook != nil {
+		hook(id, string(data))
 	}
 	return nil
 }

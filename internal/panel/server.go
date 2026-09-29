@@ -92,6 +92,8 @@ type Server struct {
 	uploading  keyset
 	uploadKick chan struct{}
 	pauses     pauses
+	// schedulesBusy holds the schedules whose tasks are running.
+	schedulesBusy keyset
 	// gameRuns and watchers follow the game servers' containers.
 	gameRuns gameRuns
 	watchers sync.WaitGroup
@@ -234,6 +236,18 @@ func (s *Server) Handler() http.Handler {
 	web.HandleFunc("GET /api/games/{app}/files/download", s.managesGame(s.downloadGameFile))
 	web.HandleFunc("POST /api/games/{app}/files/compress", s.managesGame(s.compressGameFiles))
 	web.HandleFunc("POST /api/games/{app}/files/extract", s.managesGame(s.extractGameFile))
+	web.HandleFunc("GET /api/games/{app}/backups", s.gameBackups(s.listBackups))
+	web.HandleFunc("POST /api/games/{app}/backups", s.gameBackups(s.backUpNow))
+	web.HandleFunc("PUT /api/games/{app}/backups/plan", s.gameBackups(s.setBackupPlan))
+	web.HandleFunc("GET /api/games/{app}/backups/{id}/download", s.gameBackups(s.downloadBackup))
+	web.HandleFunc("POST /api/games/{app}/backups/{id}/restore", s.gameBackupsConfirmed(s.restoreBackup))
+	web.HandleFunc("DELETE /api/games/{app}/backups/{id}", s.gameBackupsConfirmed(s.deleteBackup))
+	web.HandleFunc("POST /api/games/{app}/backups/{id}/offsite", s.gameBackups(s.sendNow))
+	web.HandleFunc("GET /api/games/{app}/schedules", s.managesGame(s.listSchedules))
+	web.HandleFunc("POST /api/games/{app}/schedules", s.managesGame(s.createSchedule))
+	web.HandleFunc("PUT /api/games/{app}/schedules/{id}", s.managesGame(s.updateSchedule))
+	web.HandleFunc("DELETE /api/games/{app}/schedules/{id}", s.managesGame(s.deleteSchedule))
+	web.HandleFunc("POST /api/games/{app}/schedules/{id}/run", s.managesGame(s.runScheduleNow))
 	web.HandleFunc("POST /api/games/{app}/reinstall", s.adminOnly(s.reinstallGame))
 	web.HandleFunc("PUT /api/games/{app}/steam", s.adminOnly(s.setSteam))
 	web.HandleFunc("POST /api/games/{app}/steam/update", s.adminOnly(s.updateSteam))
@@ -302,6 +316,9 @@ func (s *Server) Serve(ctx context.Context, socket string) error {
 	if err := s.Store.FailUnfinishedInstalls(ctx); err != nil {
 		return err
 	}
+	if err := s.Store.FailUnfinishedRuns(ctx); err != nil {
+		return err
+	}
 	go s.runBackups(ctx)
 	go s.runUploads(ctx)
 	// Everything that watches containers needs the core, which may still be
@@ -321,6 +338,7 @@ func (s *Server) Serve(ctx context.Context, socket string) error {
 		go s.runImageCheck(ctx)
 		go s.runSteamCheck(ctx)
 		go s.runMetrics(ctx)
+		go s.runSchedules(ctx)
 		s.runImageSweep(ctx)
 	}()
 	l, err := net.Listen("unix", socket)

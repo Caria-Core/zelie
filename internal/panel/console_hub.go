@@ -210,6 +210,7 @@ type consoleHub struct {
 	state     string
 	subs      map[*consoleSub]struct{}
 	stopPoll  context.CancelFunc
+	taps      map[chan string]struct{}
 
 	// The install log being read, and how far.
 	installMu    sync.Mutex
@@ -247,9 +248,32 @@ func (h *consoleHub) push(container, kind, text string) {
 			return
 		}
 		h.lines = appendRing(h.lines, text)
+		for tap := range h.taps {
+			select {
+			case tap <- text:
+			default:
+			}
+		}
 	}
 	for sub := range h.subs {
 		sub.push(b, true)
+	}
+}
+
+// tap returns the lines the console prints from now on, for code that waits
+// for one. A tap that is not read loses lines. Call stop when done.
+func (h *consoleHub) tap() (lines <-chan string, stop func()) {
+	ch := make(chan string, 256)
+	h.mu.Lock()
+	if h.taps == nil {
+		h.taps = map[chan string]struct{}{}
+	}
+	h.taps[ch] = struct{}{}
+	h.mu.Unlock()
+	return ch, func() {
+		h.mu.Lock()
+		delete(h.taps, ch)
+		h.mu.Unlock()
 	}
 }
 

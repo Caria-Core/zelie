@@ -28,6 +28,8 @@ const (
 	// BackupReinstall is taken just before a game server's install runs
 	// again.
 	BackupReinstall = "reinstall"
+	// BackupSchedule is made by a task of a game server's schedule.
+	BackupSchedule = "schedule"
 )
 
 // Backup states.

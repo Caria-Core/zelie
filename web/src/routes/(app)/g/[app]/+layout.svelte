@@ -99,6 +99,8 @@
 		{ href: `/g/${id}`, label: t('game.tab.console') },
 		{ href: `/g/${id}/files`, label: t('game.tab.files') },
 		{ href: `/g/${id}/startup`, label: t('game.tab.startup') },
+		{ href: `/g/${id}/backups`, label: t('game.tab.backups') },
+		{ href: `/g/${id}/schedules`, label: t('game.tab.schedules') },
 		{ href: `/g/${id}/network`, label: t('game.tab.network') },
 		{ href: `/g/${id}/settings`, label: t('game.tab.settings') }
 	]);

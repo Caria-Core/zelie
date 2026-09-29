@@ -10,7 +10,7 @@ export type Backup = {
 	engine: Engine | '';
 	// found: made on another server and found in off-site storage.
 	// uploaded: a dump from another server that someone uploaded.
-	reason: 'scheduled' | 'manual' | 'restore' | 'found' | 'uploaded' | 'update' | 'upgrade' | 'reinstall';
+	reason: 'scheduled' | 'manual' | 'restore' | 'found' | 'uploaded' | 'update' | 'upgrade' | 'reinstall' | 'schedule';
 	state: 'running' | 'done' | 'failed';
 	bytes: number;
 	error?: Msg;
@@ -81,6 +81,8 @@ export type Backups = {
 	recovery_saved_at: string | null;
 	time_zone: string;
 	restore?: Restore;
+	// A Minecraft server is told to save before it is backed up while it runs.
+	flush?: boolean;
 };
 
 export function bytes(n: number): string {
