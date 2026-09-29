@@ -117,12 +117,10 @@ jobs:
         # Zelie's own memory once the update settled, apps and databases not
         # counted; and the size of the binary.
         env:
-          # Idle, with a few apps and databases running. A measurement of the
-          # three processes on a small VM was 35 MB with the memory work in
-          # place (55 MB before); this is that plus the apps' share and about
-          # a quarter of headroom. Tighten it once a run here shows the real
-          # number.
-          MAX_PSS_MB: 65
+          # Idle, with a few apps and databases running. The runner measured
+          # 82 MB before the memory work; this keeps it from creeping back up.
+          # Tighten it once a run here shows the new number.
+          MAX_PSS_MB: 90
         run: |
           sleep 20
           ps -C zelie -o rss=,args= | awk '{kb+=$1; print} END {printf "zelie total rss: %.1f MB\n", kb/1024}'

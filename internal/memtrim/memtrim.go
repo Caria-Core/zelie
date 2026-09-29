@@ -43,5 +43,4 @@ func trim() {
 	if sample[0].Value.Kind() == metrics.KindUint64 && sample[0].Value.Uint64() > keepFree {
 		debug.FreeOSMemory()
 	}
-	unmapCode()
 }
