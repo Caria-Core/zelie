@@ -14,6 +14,7 @@
 	import Field from '$lib/ui/Field.svelte';
 	import Lead from '$lib/ui/Lead.svelte';
 	import RecoveryCodes from '$lib/ui/RecoveryCodes.svelte';
+	import SSHKeys from '$lib/ui/SSHKeys.svelte';
 
 	type Account = {
 		email: string;
@@ -272,6 +273,8 @@
 				</RecoveryCodes>
 			{/if}
 		</section>
+
+		<SSHKeys />
 
 		<section class={section}>
 			<div class="flex flex-wrap items-baseline justify-between gap-2">

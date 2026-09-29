@@ -4,6 +4,7 @@
 	import { address, game } from '$lib/games.svelte';
 	import { t } from '$lib/i18n';
 	import type { NodeInfo } from '$lib/server.svelte';
+	import SFTPAccess from '$lib/ui/SFTPAccess.svelte';
 
 	const g = $derived(game.info!);
 	let node = $state<NodeInfo | null>(null);
@@ -45,4 +46,5 @@
 			<a href="/server" class="underline hover:text-fg">{t('network.privateLink')}</a>
 		</p>
 	{/if}
+	<SFTPAccess id={g.id} />
 </div>

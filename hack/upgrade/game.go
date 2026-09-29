@@ -168,7 +168,7 @@ func game(c *client, stateFile string) error {
 	if m.Crashes != 0 {
 		return fmt.Errorf("Zelie brought the server back %d times", m.Crashes)
 	}
-	return nil
+	return sftpCheck(c)
 }
 
 func (c *client) gameStatus() (gameStatus, error) {

@@ -13,6 +13,7 @@
 	import ErrorText from '$lib/ui/ErrorText.svelte';
 	import Field from '$lib/ui/Field.svelte';
 	import Lead from '$lib/ui/Lead.svelte';
+	import SFTPPort from '$lib/ui/SFTPPort.svelte';
 
 	let error = $state('');
 	let busy = $state(false);
@@ -236,6 +237,7 @@
 				</form>
 			</section>
 		{/if}
+		<SFTPPort />
 	{:else}
 		<ErrorText message={error} />
 	{/if}

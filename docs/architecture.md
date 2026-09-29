@@ -3,19 +3,24 @@
 This document describes how Zelie is put together and why. Parts of it, such as game
 servers, updates and several servers, describe plans the code has not reached yet.
 
-## One binary, three processes
+## One binary, four processes
 
-Zelie ships as a single `zelie` binary. On a server it runs as three processes:
+Zelie ships as a single `zelie` binary. On a server it runs as four processes:
 
 - **The core** runs as root. It talks to containerd, sets up networks and firewall
   rules, and manages disks. It does not listen on the network. It accepts a small set of
   typed requests, such as "start this container", over a Unix socket. The kernel tells it
-  which user is on the other end, and only root and the panel get an answer.
+  which user is on the other end, and only root and the panel get an answer, apart from the
+  SFTP server, which may use the file routes.
 - **The panel** runs as an unprivileged user. It serves the web interface and the API,
   handles logins, and receives webhooks from GitHub. It does not listen on the network
   either: the proxy hands it web traffic over a Unix socket.
 - **The proxy** runs as its own unprivileged user and may only bind ports 80 and 443. It
   terminates HTTPS and forwards each domain to the container that serves it.
+- **The SFTP server** runs as its own unprivileged user and listens on port 2222 by
+  default, or on another port chosen on the Server page. It has no access to the volumes.
+  It asks the panel who may log in to which game server, and passes every file operation to
+  the core. The core lets its user call the file routes and no others.
 
 Keeping these apart means a bug in the web interface gives an attacker an unprivileged
 account and a short list of allowed requests, not root on the server. It also means the
@@ -154,6 +159,18 @@ file, and every file written belongs to the user the game runs as. Archives are 
 into one folder and stopped at the first entry that would leave it, a link that points out
 of it, a device file, or a size or entry count over the limit. Unlike preparing the files
 for a start, this works while the server runs.
+
+SFTP uses the same file operations. A login is either an SSH key that an administrator added
+to their account, or the server's own SFTP password, which is shown once and kept as an
+argon2id hash. The password of an account is never accepted, so SFTP is no way around its
+second step. The user name is the server's name, for keys and passwords alike, since a key
+belongs to one account only and says who is logging in. The server speaks only the `sftp`
+subsystem: no shell, no commands, no port forwarding. Wrong passwords are counted per
+address and per server, as on the login page, and one address may hold only a few
+connections open. Files are written whole, through a temporary file in the core, so an
+upload that breaks halfway leaves the old file as it was; for the same reason a file can
+only be written from start to end, which every common SFTP program does. The host key is
+made on first start and its fingerprint is shown on the Server page.
 
 Players connect straight to the game server, not through the proxy. The administrator
 gives Zelie a pool of ports, as in Pterodactyl and Pelican, and each server takes some of

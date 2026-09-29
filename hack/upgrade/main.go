@@ -2,7 +2,8 @@
 // holds. CI installs the last release, runs "upgrade seed" to give it an
 // administrator, an app, a database and a backup, puts the new binary in
 // place the way the panel's update does, and runs "upgrade check". After
-// that, "upgrade game" runs a real game server on the updated panel.
+// that, "upgrade game" runs a real game server on the updated panel and
+// reads its files over SFTP.
 //
 // It talks to the panel over HTTP as a person would, through the proxy's
 // tunnel port, so it needs a tunnel-mode install.
