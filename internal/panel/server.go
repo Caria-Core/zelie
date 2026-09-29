@@ -97,6 +97,8 @@ type Server struct {
 	uploading  keyset
 	uploadKick chan struct{}
 	pauses     pauses
+	// schedulesBusy holds the schedules whose tasks are running.
+	schedulesBusy keyset
 	// gameRuns and watchers follow the game servers' containers.
 	gameRuns gameRuns
 	watchers sync.WaitGroup
@@ -226,6 +228,7 @@ func (s *Server) Handler() http.Handler {
 	web.HandleFunc("GET /api/eggs/catalog", s.adminOnly(s.eggCatalog))
 	web.HandleFunc("POST /api/eggs/preview", s.adminOnly(s.eggPreview))
 	web.HandleFunc("POST /api/games", s.adminOnly(s.createGame))
+	web.HandleFunc("POST /api/apps/files", s.adminOnly(s.createFilesApp))
 	web.HandleFunc("GET /api/games/{app}", s.adminOnly(s.getGame))
 	web.HandleFunc("POST /api/games/{app}/eula", s.adminOnly(s.acceptEULA))
 	web.HandleFunc("PUT /api/games/{app}/variables", s.managesGame(s.updateGameSettings))
@@ -239,6 +242,18 @@ func (s *Server) Handler() http.Handler {
 	web.HandleFunc("GET /api/games/{app}/files/download", s.managesGame(s.downloadGameFile))
 	web.HandleFunc("POST /api/games/{app}/files/compress", s.managesGame(s.compressGameFiles))
 	web.HandleFunc("POST /api/games/{app}/files/extract", s.managesGame(s.extractGameFile))
+	web.HandleFunc("GET /api/games/{app}/backups", s.gameBackups(s.listBackups))
+	web.HandleFunc("POST /api/games/{app}/backups", s.gameBackups(s.backUpNow))
+	web.HandleFunc("PUT /api/games/{app}/backups/plan", s.gameBackups(s.setBackupPlan))
+	web.HandleFunc("GET /api/games/{app}/backups/{id}/download", s.gameBackups(s.downloadBackup))
+	web.HandleFunc("POST /api/games/{app}/backups/{id}/restore", s.gameBackupsConfirmed(s.restoreBackup))
+	web.HandleFunc("DELETE /api/games/{app}/backups/{id}", s.gameBackupsConfirmed(s.deleteBackup))
+	web.HandleFunc("POST /api/games/{app}/backups/{id}/offsite", s.gameBackups(s.sendNow))
+	web.HandleFunc("GET /api/games/{app}/schedules", s.managesGame(s.listSchedules))
+	web.HandleFunc("POST /api/games/{app}/schedules", s.managesGame(s.createSchedule))
+	web.HandleFunc("PUT /api/games/{app}/schedules/{id}", s.managesGame(s.updateSchedule))
+	web.HandleFunc("DELETE /api/games/{app}/schedules/{id}", s.managesGame(s.deleteSchedule))
+	web.HandleFunc("POST /api/games/{app}/schedules/{id}/run", s.managesGame(s.runScheduleNow))
 	web.HandleFunc("GET /api/games/{app}/sftp", s.managesGame(s.getGameSFTP))
 	web.HandleFunc("POST /api/games/{app}/sftp/password", s.confirmed(requireAdmin(s.newGameSFTPPassword)))
 	web.HandleFunc("DELETE /api/games/{app}/sftp/password", s.confirmed(requireAdmin(s.removeGameSFTPPassword)))
@@ -326,6 +341,9 @@ func (s *Server) Serve(ctx context.Context, socket string) error {
 	if err := s.Store.FailUnfinishedInstalls(ctx); err != nil {
 		return err
 	}
+	if err := s.Store.FailUnfinishedRuns(ctx); err != nil {
+		return err
+	}
 	go s.runBackups(ctx)
 	go s.runUploads(ctx)
 	// Everything that watches containers needs the core, which may still be
@@ -346,6 +364,7 @@ func (s *Server) Serve(ctx context.Context, socket string) error {
 		go s.runImageCheck(ctx)
 		go s.runSteamCheck(ctx)
 		go s.runMetrics(ctx)
+		go s.runSchedules(ctx)
 		s.runImageSweep(ctx)
 	}()
 	l, err := net.Listen("unix", socket)

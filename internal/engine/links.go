@@ -28,7 +28,7 @@ const maxLinks = 32
 
 // CheckLinks reports whether links may be set on app.
 func CheckLinks(app string, links []Link) error {
-	if !validID.MatchString(app) {
+	if !validID().MatchString(app) {
 		return fmt.Errorf("app id %q must be lowercase letters, digits and dashes", app)
 	}
 	if len(links) > maxLinks {
@@ -37,11 +37,11 @@ func CheckLinks(app string, links []Link) error {
 	names := map[string]bool{}
 	for _, l := range links {
 		switch {
-		case !validID.MatchString(l.Name):
+		case !validID().MatchString(l.Name):
 			return fmt.Errorf("link name %q must be lowercase letters, digits and dashes", l.Name)
 		case l.Name == "localhost" || l.Name == app:
 			return fmt.Errorf("link name %q is taken", l.Name)
-		case !validID.MatchString(l.To):
+		case !validID().MatchString(l.To):
 			return fmt.Errorf("app id %q must be lowercase letters, digits and dashes", l.To)
 		case l.To == app:
 			return errors.New("an app cannot link to itself")

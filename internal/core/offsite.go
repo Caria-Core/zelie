@@ -199,9 +199,11 @@ var (
 )
 
 var (
-	validPrefix   = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,62}(/[A-Za-z0-9][A-Za-z0-9._-]{0,62}){0,7}$`)
-	validBucket   = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$`)
-	validRegionID = regexp.MustCompile(`^[a-z0-9-]{1,32}$`)
+	validPrefix = sync.OnceValue(func() *regexp.Regexp {
+		return regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,62}(/[A-Za-z0-9][A-Za-z0-9._-]{0,62}){0,7}$`)
+	})
+	validBucket   = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$`) })
+	validRegionID = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^[a-z0-9-]{1,32}$`) })
 )
 
 func checkOffsite(c OffsiteConfig) error {
@@ -210,13 +212,13 @@ func checkOffsite(c OffsiteConfig) error {
 		u.RawQuery != "" || u.User != nil || u.Fragment != "" {
 		return errOffsiteEndpoint.Err()
 	}
-	if !validBucket.MatchString(c.Bucket) {
+	if !validBucket().MatchString(c.Bucket) {
 		return errOffsiteBucket.Err()
 	}
-	if c.Region != "" && !validRegionID.MatchString(c.Region) {
+	if c.Region != "" && !validRegionID().MatchString(c.Region) {
 		return errOffsiteRegion.Err()
 	}
-	if !validPrefix.MatchString(c.Prefix) {
+	if !validPrefix().MatchString(c.Prefix) {
 		return errOffsitePrefix.Err()
 	}
 	if c.AccessKey == "" || c.SecretKey == "" {

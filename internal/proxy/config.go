@@ -10,6 +10,7 @@ import (
 	"net/netip"
 	"regexp"
 	"strings"
+	"sync"
 
 	"github.com/Caria-Core/zelie/internal/engine"
 )
@@ -41,11 +42,13 @@ type Config struct {
 // upstreams is where routes may point. Tests widen it to reach a local server.
 var upstreams = engine.NetworkRange
 
-var hostname = regexp.MustCompile(`^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$`)
+var hostname = sync.OnceValue(func() *regexp.Regexp {
+	return regexp.MustCompile(`^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$`)
+})
 
 // ValidDomain reports whether h, in lower case, is a domain name the proxy
 // can route.
-func ValidDomain(h string) bool { return hostname.MatchString(h) }
+func ValidDomain(h string) bool { return hostname().MatchString(h) }
 
 // Validate rejects anything the proxy should not serve. Upstreams must be
 // container addresses: apart from the panel's own socket, the proxy is never a
@@ -104,7 +107,7 @@ func (c *Config) checkHost(h string) (string, error) {
 		return "", fmt.Errorf("%s: IP addresses need tls mode %q for now", host, TLSSelfSigned)
 	case err == nil && !ip.IsGlobalUnicast():
 		return "", fmt.Errorf("%s is not a usable address", host)
-	case err != nil && !hostname.MatchString(host):
+	case err != nil && !hostname().MatchString(host):
 		return "", fmt.Errorf("%q is not a valid domain name", h)
 	}
 	return host, nil

@@ -50,6 +50,12 @@ func TestFilesChangedWhileTheGameRuns(t *testing.T) {
 		os.RemoveAll(dir)
 	})
 	os.WriteFile(filepath.Join(dir, "motd.txt"), []byte("before"), 0o644)
+	// As a start would leave it: the server's user owns its files.
+	for _, p := range []string{dir, filepath.Join(dir, "motd.txt")} {
+		if err := os.Chown(p, 988, 988); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	// The game copies the file it was given to another, over and over, and
 	// says when it started.

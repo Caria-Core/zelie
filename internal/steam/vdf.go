@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 // Node is one key of a VDF file. A key holds either a string or more keys,
@@ -184,14 +185,14 @@ func (p *parser) pair(depth int) (*Node, error) {
 
 // appStart is the line before an app's block in what SteamCMD prints for
 // app_info_print: the app id in quotes, with the block on the next line.
-var appStart = regexp.MustCompile(`(?m)^[ \t]*"(\d+)"[ \t]*\r?\n[ \t]*\{`)
+var appStart = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`(?m)^[ \t]*"(\d+)"[ \t]*\r?\n[ \t]*\{`) })
 
 // ParseAppInfo finds the apps in the output of SteamCMD's app_info_print,
 // which is VDF blocks among ordinary log lines, and returns each by id.
 func ParseAppInfo(out []byte) (map[int64]*Node, error) {
 	apps := map[int64]*Node{}
 	for at := 0; ; {
-		m := appStart.FindSubmatchIndex(out[at:])
+		m := appStart().FindSubmatchIndex(out[at:])
 		if m == nil {
 			break
 		}

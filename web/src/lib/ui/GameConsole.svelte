@@ -10,7 +10,8 @@
 	import { messageOf } from '$lib/errors';
 	import Button from './Button.svelte';
 
-	let { id }: { id: string } = $props();
+	// settings is where a failed install can be run again.
+	let { id, settings }: { id: string; settings: string } = $props();
 
 	type Line = { n: number; spans: Span[]; kind: 'line' | 'install' | 'notice' };
 
@@ -242,7 +243,7 @@
 			<p class="text-sm font-medium text-danger">{t('console.installFailed')}</p>
 			<p class="text-sm text-muted">
 				{t('console.installFailedText')}
-				<a href="/g/{id}/settings" class="text-fg underline decoration-line underline-offset-2 hover:decoration-fg">{t('game.tab.settings')}</a>
+				<a href={settings} class="text-fg underline decoration-line underline-offset-2 hover:decoration-fg">{t('game.tab.settings')}</a>
 			</p>
 		</div>
 	{:else if installed && phase !== 'running'}

@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sync"
 	"time"
 )
 
@@ -25,12 +26,14 @@ var cloudflaredDebs = map[string]string{
 
 // Cloudflare shows a new tunnel's install command with the token at the end.
 // Tokens are base64 of a small JSON document.
-var tunnelToken = regexp.MustCompile(`cloudflared(?:\.exe)?\s+service\s+install\s+([A-Za-z0-9+/=_-]{40,})`)
+var tunnelToken = sync.OnceValue(func() *regexp.Regexp {
+	return regexp.MustCompile(`cloudflared(?:\.exe)?\s+service\s+install\s+([A-Za-z0-9+/=_-]{40,})`)
+})
 
 // TunnelToken takes the token out of the command Cloudflare shows, pasted
 // whole, with or without sudo and the lines before it.
 func TunnelToken(command string) (string, error) {
-	m := tunnelToken.FindStringSubmatch(command)
+	m := tunnelToken().FindStringSubmatch(command)
 	if m == nil {
 		return "", errors.New(`that is not a tunnel's install command; it ends in "cloudflared service install" and a long token`)
 	}

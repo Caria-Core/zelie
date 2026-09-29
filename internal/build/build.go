@@ -31,6 +31,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Caria-Core/zelie/internal/engine"
@@ -116,9 +117,9 @@ type Var struct {
 }
 
 var (
-	validVersion = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{0,63}$`)
+	validVersion = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{0,63}$`) })
 	// Variable names also name files and BuildKit secret ids.
-	validVar = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,127}$`)
+	validVar = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,127}$`) })
 )
 
 // Result is what a build produced.
@@ -143,11 +144,11 @@ func (b *Builder) Build(ctx context.Context, req Request, out io.Writer) (Result
 	if !engine.ValidID(req.App) {
 		return Result{}, fmt.Errorf("invalid app id %q", req.App)
 	}
-	if !validVersion.MatchString(req.Version) {
+	if !validVersion().MatchString(req.Version) {
 		return Result{}, fmt.Errorf("invalid version %q", req.Version)
 	}
 	for _, v := range req.Vars {
-		if !validVar.MatchString(v.Name) {
+		if !validVar().MatchString(v.Name) {
 			return Result{}, fmt.Errorf("invalid variable name %q", v.Name)
 		}
 	}

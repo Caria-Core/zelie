@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Caria-Core/zelie/internal/proxy"
@@ -51,7 +52,7 @@ type Options struct {
 	Cloudflared string
 }
 
-var email = regexp.MustCompile(`^[^@\s]+@[^@\s]+\.[^@\s]+$`)
+var email = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^[^@\s]+@[^@\s]+\.[^@\s]+$`) })
 
 // Check reports what is wrong with the answers, if anything.
 func (o *Options) Check() error {
@@ -68,7 +69,7 @@ func (o *Options) Check() error {
 	default:
 		return fmt.Errorf("unknown mode %q", o.Mode)
 	}
-	if o.Mode == ModeDomain && !email.MatchString(o.Email) {
+	if o.Mode == ModeDomain && !email().MatchString(o.Email) {
 		return fmt.Errorf("%q is not an email address", o.Email)
 	}
 	if o.Mode == ModeTunnel && (o.Port < 1024 || o.Port > 65535) {

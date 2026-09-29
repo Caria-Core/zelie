@@ -344,6 +344,9 @@ type backupsJSON struct {
 	TimeZone        string     `json:"time_zone"`
 	// Restore is how the last restore since the panel started went.
 	Restore *restoreJSON `json:"restore,omitempty"`
+	// Flush is set for a Minecraft server, which is told to save before a
+	// backup of it while it runs.
+	Flush bool `json:"flush,omitempty"`
 }
 
 func (s *Server) listBackups(w http.ResponseWriter, r *http.Request) {
@@ -376,6 +379,11 @@ func (s *Server) listBackups(w http.ResponseWriter, r *http.Request) {
 	}
 	if last, ok := s.restores.get(a.ID); ok {
 		out.Restore = &last
+	}
+	if a.IsGame() {
+		if g, e, _, err := s.gameParts(ctx, a.ID); err == nil {
+			out.Flush = isMinecraft(e, g)
+		}
 	}
 	for _, b := range list {
 		out.Backups = append(out.Backups, s.backupOut(b))

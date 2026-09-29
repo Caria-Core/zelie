@@ -50,7 +50,7 @@ func (f Forward) clashes(g Forward) bool {
 
 // CheckForwards reports whether forwards may be set on app.
 func CheckForwards(app string, forwards []Forward) error {
-	if !validID.MatchString(app) {
+	if !validID().MatchString(app) {
 		return fmt.Errorf("app id %q must be lowercase letters, digits and dashes", app)
 	}
 	if len(forwards) > maxForwards {

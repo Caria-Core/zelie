@@ -7,13 +7,14 @@
 	// page, linked below for anyone who looks for it here.
 	const choices = [
 		{ source: 'github', href: '/new?source=github', title: t('source.github'), lead: t('source.githubLead') },
-		{ source: 'image', href: '/new?source=image', title: t('source.image'), lead: t('source.imageLead') }
+		{ source: 'image', href: '/new?source=image', title: t('source.image'), lead: t('source.imageLead') },
+		{ source: 'files', href: '/new/files', title: t('source.files'), lead: t('source.filesLead') }
 	] as const;
 </script>
 
 <div class="grid gap-3 sm:grid-cols-2">
 	{#each choices as c (c.source)}
-		<a href={c.href} class="group flex items-start gap-4 rounded-2xl border border-line p-5 transition hover:bg-hover">
+		<a href={c.href} class="group flex items-start gap-4 rounded-2xl border border-line p-5 transition hover:bg-hover {c.source === 'files' ? 'sm:col-span-2' : ''}">
 			<AppIcon source={c.source} size="lg" />
 			<div class="min-w-0 flex-1">
 				<p class="flex items-center gap-1 font-medium">

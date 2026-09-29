@@ -18,7 +18,10 @@ import (
 // binary: it names files in the pelican-eggs repositories (MIT)
 // at a fixed commit, and the commits move with Zelie releases.
 type Entry struct {
-	ID     string
+	ID string
+	// Kind tells the eggs of games from the generic ones that run a
+	// program of the user's own. The two are offered in different places.
+	Kind   Kind
 	Name   string
 	Game   string
 	Repo   string // owner/name on GitHub
@@ -32,6 +35,17 @@ type Entry struct {
 	DiskMB   int64
 	Ports    int
 }
+
+// Kind is what an egg is for.
+type Kind string
+
+const (
+	// KindGame is the zero value: a game server.
+	KindGame Kind = ""
+	// KindRuntime is a generic egg that runs files the user brings, such
+	// as a Node.js or Python program.
+	KindRuntime Kind = "runtime"
+)
 
 var Catalog = []Entry{
 	{
@@ -58,7 +72,46 @@ var Catalog = []Entry{
 		Commit: "e17e2c3db36aaf1ddecbc227803dd6cdbb0e6b1f",
 		Path:   "palworld/egg-palworld.yaml",
 	},
+
+	// Generic eggs from pelican-eggs/generic. They start whatever the
+	// files in the volume are, so each takes the runtime's own name.
+	{
+		ID: "nodejs", Kind: KindRuntime, Name: "Node.js", Game: "Node.js",
+		Repo:   "pelican-eggs/generic",
+		Commit: genericCommit,
+		Path:   "nodejs/egg-nodejs-generic.yaml",
+	},
+	{
+		ID: "python", Kind: KindRuntime, Name: "Python", Game: "Python",
+		Repo:   "pelican-eggs/generic",
+		Commit: genericCommit,
+		Path:   "python/egg-python-generic.json",
+	},
+	{
+		ID: "bun", Kind: KindRuntime, Name: "Bun", Game: "Bun",
+		Repo:   "pelican-eggs/generic",
+		Commit: genericCommit,
+		Path:   "bun/egg-bun.json",
+	},
+	{
+		ID: "deno", Kind: KindRuntime, Name: "Deno", Game: "Deno",
+		Repo:   "pelican-eggs/generic",
+		Commit: genericCommit,
+		Path:   "deno/egg-deno-generic.json",
+	},
+	// The generic Go egg is left out: it fetches and builds a remote package
+	// with GOPATH-era tooling instead of running the files the app has.
+	{
+		ID: "java", Kind: KindRuntime, Name: "Java", Game: "Java",
+		Repo:   "pelican-eggs/generic",
+		Commit: genericCommit,
+		Path:   "java/egg-generic-java.json",
+		// The JVM wants room beside its heap.
+		MemoryMB: 1024,
+	},
 }
+
+const genericCommit = "18aeeb4bb54e04ccaf3410623afcccaec5efab82"
 
 // Lookup returns the catalog entry with the given id.
 func Lookup(id string) (Entry, bool) {
@@ -68,6 +121,17 @@ func Lookup(id string) (Entry, bool) {
 		}
 	}
 	return Entry{}, false
+}
+
+// OfKind lists the catalog entries of one kind, in catalog order.
+func OfKind(k Kind) []Entry {
+	var out []Entry
+	for _, e := range Catalog {
+		if e.Kind == k {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 // RawBase is where catalog files are downloaded from. Tests point it at a

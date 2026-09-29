@@ -203,6 +203,13 @@ at `/mnt/server` and the same isolation and limits as any other container. Its o
 kept as a log. The script runs again only when you ask for a reinstall, and Zelie backs up
 the server's files first; it does not delete them.
 
+A files app is the same machinery under a different heading. It runs your own Node.js,
+Python, Bun, Deno or Java files from a generic egg, in a volume you fill with the file
+manager, and it is an app: it appears with the apps, takes no port from the pool, and the proxy
+sends its domain to a fixed port inside the container. Its databases are linked and its own
+variables set as for any app, and it starts, stops and recovers through the game server code.
+It counts as running once its container is up and, when it has a domain, the port answers.
+
 ## State and secrets
 
 The panel keeps its state in SQLite. An app's variables can be marked secret. The panel

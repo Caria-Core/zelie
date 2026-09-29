@@ -2,6 +2,7 @@ package panel
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"strings"
 
@@ -61,6 +62,7 @@ func (s *Server) takeBackup(ctx context.Context, a store.App, id int64, plan sto
 		return s.backUpVolumes(ctx, a, id, false)
 	}
 	if !plan.Stop {
+		defer s.quiesceGame(ctx, a)()
 		return s.backUpVolumes(ctx, a, id, true)
 	}
 	var info core.Backup
@@ -90,6 +92,32 @@ func (s *Server) backUpVolumes(ctx context.Context, a store.App, id int64, live 
 	return info, s.Store.SetBackupContents(ctx, id, dirs, info.Size, info.Changed)
 }
 
+// stopForBackup stops what runs of the app and reports whether anything
+// did. A game server is stopped the way its egg says, so it saves first.
+func (s *Server) stopForBackup(ctx context.Context, a store.App) (bool, error) {
+	if a.IsGame() {
+		_, e, _, err := s.gameParts(ctx, a.ID)
+		if err != nil {
+			return false, err
+		}
+		return s.stopGame(ctx, a, e, io.Discard)
+	}
+	list, err := s.Core.List(ctx)
+	if err != nil {
+		return false, err
+	}
+	stopped := false
+	for _, c := range list {
+		if c.App == a.ID && c.State == "running" {
+			stopped = true
+			if err := s.Core.Stop(ctx, c.ID, volumeStopGrace); err != nil {
+				return stopped, err
+			}
+		}
+	}
+	return stopped, nil
+}
+
 // whileStopped runs fn with the app's containers stopped, and the
 // supervisor and new deployments kept off it. An app that was running is
 // started again afterwards, whatever fn did, with cause.
@@ -100,17 +128,9 @@ func (s *Server) whileStopped(ctx context.Context, a store.App, cause string, fn
 	err := func() error {
 		unlock := s.deploys.lock(a.ID)
 		defer unlock()
-		list, err := s.Core.List(ctx)
-		if err != nil {
+		var err error
+		if stopped, err = s.stopForBackup(ctx, a); err != nil {
 			return err
-		}
-		for _, c := range list {
-			if c.App == a.ID && c.State == "running" {
-				stopped = true
-				if err := s.Core.Stop(ctx, c.ID, volumeStopGrace); err != nil {
-					return err
-				}
-			}
 		}
 		return fn()
 	}()

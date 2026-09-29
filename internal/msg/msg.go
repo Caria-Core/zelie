@@ -29,8 +29,8 @@ var (
 	mu        sync.Mutex
 	templates = map[string]Template{}
 
-	validCode   = regexp.MustCompile(`^[a-z]+(\.[a-z0-9_]+)+$`)
-	placeholder = regexp.MustCompile(`\{([a-z_]+)\}`)
+	validCode   = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^[a-z]+(\.[a-z0-9_]+)+$`) })
+	placeholder = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`\{([a-z_]+)\}`) })
 )
 
 // Define declares a message. It is called from package variables, so a
@@ -38,7 +38,7 @@ var (
 func Define(status int, code, english string) Template {
 	mu.Lock()
 	defer mu.Unlock()
-	if !validCode.MatchString(code) {
+	if !validCode().MatchString(code) {
 		panic("msg: invalid code " + code)
 	}
 	if _, dup := templates[code]; dup {
@@ -59,7 +59,7 @@ func All() []Template {
 // Names returns the placeholders in a message's English text.
 func (t Template) Names() []string {
 	var out []string
-	for _, m := range placeholder.FindAllStringSubmatch(t.English, -1) {
+	for _, m := range placeholder().FindAllStringSubmatch(t.English, -1) {
 		if !slices.Contains(out, m[1]) {
 			out = append(out, m[1])
 		}
@@ -85,7 +85,7 @@ func (t Template) With(pairs ...any) Msg {
 			m.Params[fmt.Sprint(pairs[i])] = pairs[i+1]
 		}
 	}
-	m.Text = placeholder.ReplaceAllStringFunc(t.English, func(p string) string {
+	m.Text = placeholder().ReplaceAllStringFunc(t.English, func(p string) string {
 		if v, ok := m.Params[p[1:len(p)-1]]; ok {
 			return fmt.Sprint(v)
 		}

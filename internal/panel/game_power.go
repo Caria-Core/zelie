@@ -215,6 +215,23 @@ func (s *Server) startGame(ctx context.Context, app store.App, d store.Deploymen
 	}
 
 	vars := gameVars(app, g, node)
+	// A files app also gets what any app does: its own variables, PORT, and
+	// its databases' variables. The egg's values win where a name is in both.
+	var sealed []string
+	var linked []core.LinkedVar
+	if app.IsFiles() {
+		var plain []string
+		if plain, sealed, linked, err = s.appEnv(ctx, app); err != nil {
+			fail(err)
+			return
+		}
+		for _, kv := range plain {
+			k, v, _ := strings.Cut(kv, "=")
+			if _, set := vars[k]; !set {
+				vars[k] = v
+			}
+		}
+	}
 	startup := egg.Expand(g.Startup, vars, app.Port)
 	vars["STARTUP"] = startup
 	vars["HOME"] = gameVolumePath
@@ -249,7 +266,7 @@ func (s *Server) startGame(ctx context.Context, app store.App, d store.Deploymen
 		ID: container, App: app.ID, Image: d.Image, Env: envList(vars), Network: app.ID, Volumes: volumeMounts(vols),
 		MemoryBytes: gameMemory(app.MemoryMB), CPUs: app.CPUs, Pids: defaultPids,
 		User: &engine.IDs{UID: gameUID, GID: gameGID}, WorkDir: gameVolumePath, Stdin: true,
-	}, nil)
+	}, sealed, linked...)
 	if err != nil {
 		undo()
 		fail(err)
@@ -267,8 +284,16 @@ func (s *Server) startGame(ctx context.Context, app store.App, d store.Deploymen
 			}
 		}
 	}
+	if app.IsFiles() {
+		// Before the container counts as live, as for any app.
+		if err := s.syncRoutes(ctx, map[string]string{app.ID: container}); err != nil {
+			undo()
+			fail(errRoute.Err("domain", app.Domain, "detail", err.Error()))
+			return
+		}
+	}
 	s.gameRuns.set(app.ID, container, stateStarting)
-	s.watchGame(app.ID, container, e)
+	s.watchGame(app, container, e)
 	if err := s.Store.GoLive(ctx, d, s.now()); err != nil {
 		undo()
 		fail(err)
@@ -344,7 +369,7 @@ func (s *Server) stopContainer(ctx context.Context, id string, e *egg.Egg, out i
 	return nil
 }
 
-var ansi = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
+var ansi = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`) })
 
 // watchRetry is how long the follower waits before it reads the console
 // again after the core dropped it. Tests shorten it.
@@ -365,7 +390,7 @@ func (s *Server) resumeGames(ctx context.Context) {
 		return
 	}
 	for _, a := range apps {
-		if !a.IsGame() {
+		if !a.RunsEgg() {
 			continue
 		}
 		for _, c := range list {
@@ -378,7 +403,7 @@ func (s *Server) resumeGames(ctx context.Context) {
 				continue
 			}
 			s.gameRuns.set(a.ID, c.ID, stateStarting)
-			s.watchGame(a.ID, c.ID, e)
+			s.watchGame(a, c.ID, e)
 		}
 	}
 }

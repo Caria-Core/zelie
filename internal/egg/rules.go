@@ -7,12 +7,13 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"unicode/utf8"
 )
 
 var (
-	numberRe   = regexp.MustCompile(`^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$`)
-	alphaDash  = regexp.MustCompile(`^[\p{L}\p{M}\p{N}_-]+$`)
+	numberRe   = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$`) })
+	alphaDash  = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^[\p{L}\p{M}\p{N}_-]+$`) })
 	regexClose = map[byte]byte{'(': ')', '{': '}', '[': ']', '<': '>'}
 )
 
@@ -58,7 +59,7 @@ func (v Variable) checkRule(name, arg, value string, numeric bool) error {
 			return fmt.Errorf("%s must be an integer", v.label())
 		}
 	case "numeric":
-		if !numberRe.MatchString(value) {
+		if !numberRe().MatchString(value) {
 			return fmt.Errorf("%s must be a number", v.label())
 		}
 	case "boolean":
@@ -68,7 +69,7 @@ func (v Variable) checkRule(name, arg, value string, numeric bool) error {
 			return fmt.Errorf("%s must be true or false", v.label())
 		}
 	case "alpha_dash":
-		if !alphaDash.MatchString(value) {
+		if !alphaDash().MatchString(value) {
 			return fmt.Errorf("%s may only contain letters, numbers, dashes and underscores", v.label())
 		}
 	case "url":

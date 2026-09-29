@@ -182,7 +182,7 @@ func digestOf(image string) digest.Digest {
 // start, the old one runs again.
 func (s *Server) updateImage(w http.ResponseWriter, r *http.Request) {
 	a, ok := s.appFrom(w, r)
-	if !ok || !s.notGame(w, a) {
+	if !ok || !s.notGame(w, a) || !s.notFiles(w, a) {
 		return
 	}
 	if a.Source != store.SourceImage {

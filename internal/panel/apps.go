@@ -66,6 +66,8 @@ type appJSON struct {
 	EngineVersion string `json:"engine_version,omitempty"`
 	// Kind is app or game. A database is an app with an engine.
 	Kind string `json:"kind"`
+	// Runtime is the catalog id of the egg a files app runs, such as nodejs.
+	Runtime string `json:"runtime,omitempty"`
 	// State is the live container's: running, stopped, or none when
 	// nothing has gone live yet.
 	State string `json:"state"`
@@ -88,6 +90,13 @@ func (s *Server) appOut(ctx context.Context, a store.App, containers []engine.St
 	out := appJSON{ID: a.ID, Source: a.Source, Image: a.Image, Repo: a.Repo, Branch: a.Branch,
 		Port: a.Port, Domain: a.Domain, MemoryMB: a.MemoryMB, CPUs: a.CPUs, AutoDeploy: a.AutoDeploy, HealthPath: a.HealthPath, TestCommand: a.TestCommand, BuildCommand: a.BuildCommand, StartCommand: a.StartCommand, Detected: a.Detected, RestartPulls: a.RestartPulls, Engine: a.Engine, EngineVersion: a.EngineVersion, Kind: a.Kind, State: "none",
 		Stopped: a.Stopped, Crashing: s.crashes.gaveUp(a.ID), Update: s.imageUpdates.get(a.ID), UpgradeTo: upgradeTo(a)}
+	if a.IsFiles() {
+		if g, err := s.Store.GameServer(ctx, a.ID); err == nil {
+			if stored, err := s.Store.Egg(ctx, g.EggID); err == nil {
+				out.Runtime = stored.Source
+			}
+		}
+	}
 	vols, err := s.Store.Volumes(ctx, a.ID)
 	if err != nil {
 		return out, err
@@ -185,6 +194,8 @@ var (
 	errVarFromLink     = msg.Define(http.StatusConflict, "env.from_link", "{name} comes from a linked database. Change the link's prefix to set your own.")
 	errVarTooLong      = msg.Define(http.StatusBadRequest, "env.too_long", "The value of {name} is too long.")
 	errVarNothingKept  = msg.Define(http.StatusBadRequest, "env.nothing_kept", "{name} has no saved value to keep.")
+	errFilesApp        = msg.Define(http.StatusConflict, "app.files_app", "This app runs your files, so there is nothing to build, deploy or roll back. Restart it to run your changes.")
+	errFilesFields     = msg.Define(http.StatusBadRequest, "app.files_fixed", "A files app has no repository, image or build. Its startup is on the Startup tab.")
 	errNothingLive     = msg.Define(http.StatusConflict, "deploy.nothing_live", "Nothing is live yet. Deploy first.")
 	errNoDeployment    = msg.Define(http.StatusNotFound, "deploy.not_found", "There is no such deployment.")
 	errNotLiveBefore   = msg.Define(http.StatusConflict, "deploy.never_live", "Only a version that was live can be rolled back to.")
@@ -482,10 +493,27 @@ func (s *Server) updateApp(w http.ResponseWriter, r *http.Request) {
 		writeError(w, errDatabaseFields.Err())
 		return
 	}
+	if a.IsFiles() && (req.Image != nil || req.Repo != nil || req.Branch != nil || req.AutoDeploy != nil || req.TestCommand != nil ||
+		req.BuildCommand != nil || req.StartCommand != nil || req.RestartPulls != nil) {
+		writeError(w, errFilesFields.Err())
+		return
+	}
 	oldDomain := a.Domain
 	if bad := req.apply(&a); bad != nil {
 		writeError(w, bad)
 		return
+	}
+	if a.IsFiles() {
+		// Eggs run with the same floor for memory as game servers.
+		h, err := s.Core.Host(r.Context())
+		if err != nil {
+			s.coreFailed(w, "read host", err)
+			return
+		}
+		if bad := s.gameLimits(&a, new(int64(1)), h); bad != nil {
+			writeError(w, bad)
+			return
+		}
 	}
 	if !s.domainFree(w, r, a) {
 		return
@@ -612,7 +640,7 @@ func (s *Server) setEnv(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) newDeployment(w http.ResponseWriter, r *http.Request) {
 	a, ok := s.appFrom(w, r)
-	if !ok || !s.notGame(w, a) || !s.unstop(w, r, a) {
+	if !ok || !s.notGame(w, a) || !s.notFiles(w, a) || !s.unstop(w, r, a) {
 		return
 	}
 	id, err := s.deploy(r.Context(), a, store.Deployment{})
@@ -628,7 +656,14 @@ func (s *Server) newDeployment(w http.ResponseWriter, r *http.Request) {
 // leaves the running container alone.
 func (s *Server) restartApp(w http.ResponseWriter, r *http.Request) {
 	a, ok := s.appFrom(w, r)
-	if !ok || !s.notGame(w, a) || !s.unstop(w, r, a) {
+	if !ok || !s.notGame(w, a) {
+		return
+	}
+	if a.IsFiles() {
+		s.filesPower(w, r, a, "restart")
+		return
+	}
+	if !s.unstop(w, r, a) {
 		return
 	}
 	if a.RestartPulls && a.Source == store.SourceGitHub {
@@ -655,7 +690,7 @@ func (s *Server) restartApp(w http.ResponseWriter, r *http.Request) {
 // rollback puts an earlier deployment's image live again.
 func (s *Server) rollback(w http.ResponseWriter, r *http.Request) {
 	a, ok := s.appFrom(w, r)
-	if !ok || !s.notGame(w, a) || !s.unstop(w, r, a) {
+	if !ok || !s.notGame(w, a) || !s.notFiles(w, a) || !s.unstop(w, r, a) {
 		return
 	}
 	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
@@ -709,6 +744,10 @@ func (s *Server) stopHandler(w http.ResponseWriter, r *http.Request) {
 	if !ok || !s.notGame(w, a) {
 		return
 	}
+	if a.IsFiles() {
+		s.filesPower(w, r, a, "stop")
+		return
+	}
 	if err := s.stopApp(r.Context(), a); err != nil {
 		s.coreFailed(w, "stop app", err)
 		return
@@ -721,7 +760,14 @@ func (s *Server) stopHandler(w http.ResponseWriter, r *http.Request) {
 // deployment if nothing has gone live yet.
 func (s *Server) startHandler(w http.ResponseWriter, r *http.Request) {
 	a, ok := s.appFrom(w, r)
-	if !ok || !s.notGame(w, a) || !s.unstop(w, r, a) {
+	if !ok || !s.notGame(w, a) {
+		return
+	}
+	if a.IsFiles() {
+		s.filesPower(w, r, a, "start")
+		return
+	}
+	if !s.unstop(w, r, a) {
 		return
 	}
 	s.crashes.reset(a.ID)

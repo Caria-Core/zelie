@@ -4,6 +4,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 // RuntimeVars are the environment variables the runtime has to set for
@@ -14,15 +15,15 @@ var RuntimeVars = []string{
 	"P_SERVER_LOCATION", "P_SERVER_UUID",
 }
 
-var placeholder = regexp.MustCompile(`\{\{\s*([\w.\-]+)\s*\}\}`)
+var placeholder = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`\{\{\s*([\w.\-]+)\s*\}\}`) })
 
 // Expand fills in {{...}} placeholders. Eggs name the same value in
 // several ways, from {{VAR}} to the long server.build.env.VAR and the
 // server.allocations.* paths newer Pelican eggs use; all are understood.
 // A placeholder that cannot be resolved is left as written.
 func Expand(s string, vars map[string]string, port int) string {
-	return placeholder.ReplaceAllStringFunc(s, func(m string) string {
-		key := placeholder.FindStringSubmatch(m)[1]
+	return placeholder().ReplaceAllStringFunc(s, func(m string) string {
+		key := placeholder().FindStringSubmatch(m)[1]
 		if v, ok := lookup(key, vars, port); ok {
 			return v
 		}

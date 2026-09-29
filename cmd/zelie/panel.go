@@ -12,6 +12,7 @@ import (
 
 	"github.com/Caria-Core/zelie/internal/core"
 	"github.com/Caria-Core/zelie/internal/install"
+	"github.com/Caria-Core/zelie/internal/memtrim"
 	"github.com/Caria-Core/zelie/internal/panel"
 	"github.com/Caria-Core/zelie/internal/proxy"
 	"github.com/Caria-Core/zelie/internal/store"
@@ -30,6 +31,8 @@ func runPanel(stderr io.Writer) int {
 	log := slog.New(slog.NewTextHandler(stderr, nil))
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	go memtrim.Run(ctx)
 
 	proxyUID, ok := lookupUID(proxyUser)
 	if !ok {

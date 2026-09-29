@@ -1,10 +1,11 @@
 <script lang="ts">
 	import { ask } from '$lib/ask.svelte';
-	import { Trash } from '@lucide/svelte';
+	import { RotateCcw, Trash } from '@lucide/svelte';
 	import { goto } from '$app/navigation';
 	import { api } from '$lib/api';
 	import { engineLabel, reload } from '$lib/apps.svelte';
 	import { current, load } from '$lib/current.svelte';
+	import { game, gameState, loadGame } from '$lib/games.svelte';
 	import { sensitive } from '$lib/confirm.svelte';
 	import { Cancelled, messageOf } from '$lib/errors';
 	import { t } from '$lib/i18n';
@@ -30,6 +31,8 @@
 		start: ''
 	});
 	const github = $derived(app.source === 'github');
+	// A files app has no repository, image or build command: the egg sets its startup.
+	const files = $derived(app.source === 'files');
 	// Only a database's resources can change; the rest is Zelie's.
 	const database = $derived(!!app.engine);
 	let error = $state('');
@@ -64,7 +67,9 @@
 		saved = false;
 		try {
 			const body: Record<string, unknown> = { memory_mb: form.memory, cpus: form.cpus };
-			if (!database) {
+			if (files) {
+				Object.assign(body, { port: Number(form.port), domain: form.domain, health_path: form.health });
+			} else if (!database) {
 				Object.assign(body, { port: Number(form.port), domain: form.domain, health_path: form.health, start_command: form.start });
 				if (github)
 					Object.assign(body, {
@@ -108,6 +113,23 @@
 		}
 	}
 
+	const phase = $derived(files && game.info?.id === app.id ? gameState(game.info) : '');
+	const stopped = $derived(phase === 'stopped' || phase === 'crashed');
+	async function reinstall() {
+		if (!(await ask({ title: t('settings.reinstallConfirm', { server: app.id }), text: t('settings.reinstallConfirmText'), action: t('settings.reinstall') }))) return;
+		busy = true;
+		error = '';
+		try {
+			await api('POST', `/games/${encodeURIComponent(app.id)}/reinstall`);
+			await Promise.all([loadGame(app.id), load(app.id), reload()]);
+			await goto(`/a/${app.id}/console`);
+		} catch (err) {
+			error = messageOf(err);
+		} finally {
+			busy = false;
+		}
+	}
+
 	let upgrading = $state(false);
 	let upgradeError = $state('');
 	async function upgrade() {
@@ -145,6 +167,7 @@
 <div class="flex max-w-xl flex-col gap-10">
 	<form class="flex flex-col gap-10" onsubmit={save}>
 		{#if !database}
+			{#if !files}
 			<section class="flex flex-col gap-4">
 				{@render heading(t('settings.source'), github ? t('settings.sourceLeadGithub') : t('settings.sourceLeadImage'))}
 				{#if github}
@@ -180,9 +203,10 @@
 				<Field label={t('settings.tests')} hint={t('settings.testsHint')} placeholder="npm test" autocomplete="off" bind:value={form.tests} />
 			{/if}
 		</section>
+			{/if}
 
 		<section class="flex flex-col gap-4">
-			{@render heading(t('settings.network'), t('settings.networkLead'))}
+			{@render heading(t('settings.network'), files ? t('files.settings.networkLead') : t('settings.networkLead'))}
 			<div class="grid grid-cols-[7rem_1fr] gap-4">
 				<Field label={t('new.port')} type="number" min="1" max="65535" required bind:value={form.port} />
 				<Field label={t('new.domain')} placeholder="app.example.com" autocomplete="off" bind:value={form.domain} />
@@ -202,6 +226,14 @@
 			<ErrorText message={error} />
 		</div>
 	</form>
+
+	{#if files}
+		<section class="flex flex-col gap-3">
+			{@render heading(t('settings.reinstallTitle'), t('files.settings.reinstallLead'))}
+			<Button kind="secondary" class="self-start" {busy} disabled={!stopped} onclick={reinstall}><RotateCcw size={16} />{t('settings.reinstall')}</Button>
+			{#if !stopped}<p class="text-sm text-muted">{t('settings.reinstallStop')}</p>{/if}
+		</section>
+	{/if}
 
 	{#if database}
 		{@const engine = engineLabel[app.engine!]}

@@ -3,11 +3,12 @@
 	import { untrack } from 'svelte';
 	import { page } from '$app/state';
 	import { api } from '$lib/api';
-	import { engineLabel, shownState } from '$lib/apps.svelte';
+	import { engineLabel, isFiles, runtimeLabel, shownState } from '$lib/apps.svelte';
 	import { ask } from '$lib/ask.svelte';
 	import { say, t } from '$lib/i18n';
 	import { busy, current, deploy, load, restart, start, stop, update } from '$lib/current.svelte';
 	import { messageOf } from '$lib/errors';
+	import { game, gameState, loadGame, power } from '$lib/games.svelte';
 	import { megabytes, type Usage } from '$lib/host.svelte';
 	import AppIcon from '$lib/ui/AppIcon.svelte';
 	import Button from '$lib/ui/Button.svelte';
@@ -19,20 +20,34 @@
 	let error = $state('');
 	let starting = $state(false);
 
+	// A files app is started from an egg, like a game server, and its state
+	// and startup settings come from the game side of the API.
+	const files = $derived(!!current.app && isFiles(current.app));
+	const phase = $derived(files && game.info?.id === id ? gameState(game.info) : '');
+	const moving = $derived(phase === 'starting' || phase === 'stopping' || phase === 'installing');
+
+	async function refresh(app: string) {
+		await load(app);
+		if (current.app?.id === app && isFiles(current.app)) await loadGame(app);
+	}
+
 	$effect(() => {
 		const app = id;
 		current.app = null;
-		load(app);
+		game.info = null;
+		game.missing = false;
+		game.live = '';
+		refresh(app);
 		// Faster while a deployment moves, slower otherwise. Untracked:
 		// reading the app here would rerun this effect on every load.
 		let timer: ReturnType<typeof setTimeout>;
 		const tick = () => {
 			timer = setTimeout(
 				async () => {
-					if (document.visibilityState === 'visible') await load(app);
+					if (document.visibilityState === 'visible') await refresh(app);
 					tick();
 				},
-				untrack(busy) ? 2000 : 10000
+				untrack(() => busy() || moving) ? 2000 : 10000
 			);
 		};
 		tick();
@@ -81,6 +96,29 @@
 		if (ok) run(stop);
 	}
 
+	async function powered(action: 'start' | 'stop' | 'restart') {
+		starting = true;
+		error = '';
+		try {
+			await power(id, action);
+			await load(id);
+		} catch (err) {
+			error = messageOf(err);
+		} finally {
+			starting = false;
+		}
+	}
+
+	async function askFilesStop() {
+		const ok = await ask({ title: t('app.stopConfirm', { app: id }), text: t('files.stopConfirmText'), action: t('app.stop'), danger: true });
+		if (ok) powered('stop');
+	}
+
+	async function askFilesRestart() {
+		const ok = await ask({ title: t('app.restartConfirm', { app: id }), text: t('files.restartConfirmText'), action: t('app.restart') });
+		if (ok) powered('restart');
+	}
+
 	async function askRestart() {
 		const ok = await ask({ title: t('app.restartConfirm', { app: id }), text: t('app.restartConfirmText'), action: t('app.restart') });
 		if (ok) run(restart);
@@ -119,7 +157,19 @@
 
 	// A database has no deployments to speak of and variables Zelie sets.
 	const tabs = $derived(
-		current.app?.engine
+		files
+			? [
+					{ href: `/a/${id}`, label: t('files.tab.overview') },
+					{ href: `/a/${id}/console`, label: t('game.tab.console') },
+					{ href: `/a/${id}/files`, label: t('game.tab.files') },
+					{ href: `/a/${id}/startup`, label: t('game.tab.startup') },
+					{ href: `/a/${id}/env`, label: t('app.tab.env') },
+					{ href: `/a/${id}/metrics`, label: t('app.tab.metrics') },
+					{ href: `/a/${id}/storage`, label: t('app.tab.storage') },
+					{ href: `/a/${id}/backups`, label: t('backups.tab') },
+					{ href: `/a/${id}/settings`, label: t('app.tab.settings') }
+				]
+			: current.app?.engine
 			? [
 					{ href: `/a/${id}`, label: t('db.tab.overview') },
 					{ href: `/a/${id}/data`, label: t('viewer.tab') },
@@ -161,7 +211,7 @@
 				<div class="min-w-0">
 					<h1 class="truncate text-[22px] tracking-tight">{a.id}</h1>
 					<p class="flex flex-wrap items-center gap-x-2 text-sm text-muted">
-						<StateDot state={shownState(a)} label />
+						<StateDot state={files && phase ? phase : shownState(a)} label />
 						<span>·</span>
 						{#if a.engine}
 							<span>{engineLabel[a.engine]} {a.engine_version}</span>
@@ -170,6 +220,8 @@
 									>{t('db.upgradeAvailable', { version: a.upgrade_to })}</a
 								>
 							{/if}
+						{:else if files}
+							<span>{runtimeLabel[a.runtime ?? ''] ?? a.runtime}</span>
 						{:else}
 							<span class="font-mono">{a.source === 'github' ? `${a.repo}@${a.branch}` : a.image}</span>
 						{/if}
@@ -217,7 +269,26 @@
 				</div>
 			</div>
 			<div class="flex items-center gap-2">
-				{#if a.stopped}
+				{#if files}
+					{#if phase === 'running' || phase === 'starting' || phase === 'stopping'}
+						<Button kind="quiet" onclick={askFilesStop} busy={starting} disabled={phase === 'stopping'} title={t('app.stopHint')}>
+							<Square size={14} strokeWidth={1.75} />{t('app.stop')}
+						</Button>
+						<Button kind="secondary" onclick={askFilesRestart} busy={starting} disabled={phase === 'stopping' || !!a.volume_full} title={a.volume_full ? say(a.volume_full) : t('files.restartHint')}>
+							<RotateCw size={16} strokeWidth={1.75} />{t('app.restart')}
+						</Button>
+					{:else}
+						<Button
+							kind="secondary"
+							onclick={() => powered('start')}
+							busy={starting}
+							disabled={!game.info || game.info.install.state !== 'installed' || moving || !!a.volume_full}
+							title={a.volume_full ? say(a.volume_full) : game.info && game.info.install.state !== 'installed' ? t('game.startNotReady') : undefined}
+						>
+							<Play size={16} strokeWidth={1.75} />{t('app.start')}
+						</Button>
+					{/if}
+				{:else if a.stopped}
 					<Button kind="secondary" onclick={() => run(start)} busy={starting || busy()} disabled={!!a.volume_full} title={a.volume_full ? say(a.volume_full) : undefined}>
 						<Play size={16} strokeWidth={1.75} />{t('app.start')}
 					</Button>
@@ -229,7 +300,9 @@
 						<RotateCw size={16} strokeWidth={1.75} />{t('app.restart')}
 					</Button>
 				{/if}
-				{#if !a.engine && a.source === 'github' && a.auto_deploy}
+				{#if files}
+					<!-- Nothing to deploy: it runs the files in its volume. -->
+				{:else if !a.engine && a.source === 'github' && a.auto_deploy}
 					<div class="relative" bind:this={menu}>
 						<Button kind="secondary" class="!px-3" aria-label={t('app.more')} title={t('app.more')} aria-expanded={more} onclick={() => (more = !more)}>
 							<Ellipsis size={18} strokeWidth={1.75} />
@@ -265,9 +338,9 @@
 		{:else if a.crashing}
 			<p class="rounded-xl border border-danger/30 px-4 py-3 text-sm text-danger">{t('app.crashing', { why: say(a.crashing) })}</p>
 		{:else if a.stopped}
-			<p class="text-sm text-muted">{t('app.stoppedNote')}</p>
+			<p class="text-sm text-muted">{files ? t('files.stoppedNote') : t('app.stoppedNote')}</p>
 		{/if}
-		{#if a.update && !busy()}
+		{#if a.update && !busy() && !files}
 			<div class="flex flex-wrap items-center justify-between gap-x-6 gap-y-3 rounded-xl border border-line px-4 py-3">
 				<div class="flex min-w-0 flex-1 basis-72 items-start gap-3">
 					<CircleArrowUp size={18} class="mt-0.5 shrink-0 text-ok" />
@@ -292,6 +365,9 @@
 				>
 			{/each}
 		</nav>
-		{@render children()}
+		<!-- The egg pages of a files app read what the game side of the API says. -->
+		{#if !files || (game.info && game.info.id === id)}
+			{@render children()}
+		{/if}
 	</div>
 {/if}

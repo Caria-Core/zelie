@@ -304,25 +304,25 @@ type Info struct {
 }
 
 var (
-	validApp  = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
-	validName = regexp.MustCompile(`^[0-9]{8}T[0-9]{6}Z-[a-z0-9]+\.[a-z]+\.zst\.age$`)
+	validApp  = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`) })
+	validName = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^[0-9]{8}T[0-9]{6}Z-[a-z0-9]+\.[a-z]+\.zst\.age$`) })
 )
 
 // ValidApp reports whether app can name a folder of backups.
-func ValidApp(app string) bool { return validApp.MatchString(app) }
+func ValidApp(app string) bool { return validApp().MatchString(app) }
 
 // ValidName reports whether name is a backup file's name. Names come from
 // the panel and end up in paths, so nothing else is let through.
-func ValidName(name string) bool { return validName.MatchString(name) }
+func ValidName(name string) bool { return validName().MatchString(name) }
 
 // ErrInvalid is returned for an app or backup name that is not allowed.
 var ErrInvalid = errors.New("invalid name")
 
 func (d *Dir) path(app, name string) (string, error) {
-	if !validApp.MatchString(app) {
+	if !validApp().MatchString(app) {
 		return "", fmt.Errorf("app %q: %w", app, ErrInvalid)
 	}
-	if name != "" && !validName.MatchString(name) {
+	if name != "" && !validName().MatchString(name) {
 		return "", fmt.Errorf("backup %q: %w", name, ErrInvalid)
 	}
 	return filepath.Join(d.Root, app, name), nil
@@ -508,7 +508,7 @@ func (d *Dir) List(app string) ([]Info, error) {
 	}
 	out := []Info{}
 	for _, e := range entries {
-		if !e.Type().IsRegular() || !validName.MatchString(e.Name()) {
+		if !e.Type().IsRegular() || !validName().MatchString(e.Name()) {
 			continue
 		}
 		fi, err := e.Info()

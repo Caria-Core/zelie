@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/Caria-Core/zelie/internal/memtrim"
 	"github.com/Caria-Core/zelie/internal/peer"
 	"github.com/Caria-Core/zelie/internal/proxy"
 )
@@ -37,6 +38,8 @@ func runProxy(args []string, stderr io.Writer) int {
 	log := slog.New(slog.NewTextHandler(stderr, nil))
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	go memtrim.Run(ctx)
 
 	p := &proxy.Proxy{StateDir: proxyState, PanelSocket: panelSocket, Log: log}
 	addrs := proxy.Addrs{HTTP: *httpAddr, HTTPS: *httpsAddr, Socket: proxySocket}

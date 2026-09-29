@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"regexp"
+	"sync"
 
 	"github.com/Caria-Core/zelie/internal/msg"
 	"github.com/klauspost/compress/zstd"
@@ -178,8 +179,10 @@ var (
 	// The user that made a view, trigger, routine or event on the old
 	// server is not here, and only an administrator may name another.
 	// Without it, they belong to app.
-	definer     = regexp.MustCompile("(?i)DEFINER\\s*=\\s*(`[^`]*`|'[^']*'|\\w+)@(`[^`]*`|'[^']*'|[\\w.%-]+)")
-	dollarQuote = regexp.MustCompile(`\$[A-Za-z_]*\$`)
+	definer = sync.OnceValue(func() *regexp.Regexp {
+		return regexp.MustCompile("(?i)DEFINER\\s*=\\s*(`[^`]*`|'[^']*'|\\w+)@(`[^`]*`|'[^']*'|[\\w.%-]+)")
+	})
+	dollarQuote = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`\$[A-Za-z_]*\$`) })
 )
 
 type sqlFilter struct {
@@ -274,9 +277,9 @@ func (f *sqlFilter) line(w io.Writer, line []byte) error {
 			return nil
 		}
 		if bytes.HasPrefix(text, []byte("CREATE ")) || bytes.HasPrefix(text, []byte("/*!")) {
-			if n := len(definer.FindAllIndex(line, -1)); n > 0 {
+			if n := len(definer().FindAllIndex(line, -1)); n > 0 {
 				f.adapted["DEFINER"] += n
-				line = definer.ReplaceAll(line, nil)
+				line = definer().ReplaceAll(line, nil)
 			}
 		}
 	case f.dollar == "" && (f.start || text[0] == '\\'):
@@ -322,7 +325,7 @@ func (f *sqlFilter) drop(name string, ends bool) {
 // quotes follows dollar-quoted strings, so a line inside a function's body
 // is never taken for a statement.
 func (f *sqlFilter) quotes(text []byte) {
-	for _, tag := range dollarQuote.FindAll(text, -1) {
+	for _, tag := range dollarQuote().FindAll(text, -1) {
 		switch {
 		case f.dollar == "":
 			f.dollar = string(tag)

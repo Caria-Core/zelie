@@ -61,6 +61,7 @@ var (
 	errVolumeDatabase  = msg.Define(http.StatusBadRequest, "volume.database_one", "A database keeps its files in the one volume it has.")
 	errVolumeDBPath    = msg.Define(http.StatusBadRequest, "volume.database_path", "A database's volume stays where its engine keeps its files.")
 	errVolumeDBDelete  = msg.Define(http.StatusBadRequest, "volume.database_delete", "A database's volume goes when the database is deleted.")
+	errVolumeFilesMain = msg.Define(http.StatusConflict, "volume.files_main", "This volume holds the app's files, which the file manager and the startup use, so it stays where it is.")
 	errVolumeStopFirst = msg.Define(http.StatusConflict, "volume.stop_first", "Stop the app before deleting one of its volumes.")
 	errNoVolume        = msg.Define(http.StatusNotFound, "volume.not_found", "There is no such volume.")
 )
@@ -226,6 +227,10 @@ func (s *Server) updateVolume(w http.ResponseWriter, r *http.Request) {
 			writeError(w, errVolumeDBPath.Err())
 			return
 		}
+		if a.IsFiles() && v.Path == gameVolumePath {
+			writeError(w, errVolumeFilesMain.Err())
+			return
+		}
 		v.Path = strings.TrimSpace(*req.Path)
 	}
 	if req.LimitMB != nil {
@@ -262,6 +267,10 @@ func (s *Server) deleteVolume(w http.ResponseWriter, r *http.Request) {
 	}
 	if a.IsDatabase() {
 		writeError(w, errVolumeDBDelete.Err())
+		return
+	}
+	if a.IsFiles() && v.Path == gameVolumePath {
+		writeError(w, errVolumeFilesMain.Err())
 		return
 	}
 	// Finish once started, like deleting an app.

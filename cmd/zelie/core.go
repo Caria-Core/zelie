@@ -16,6 +16,7 @@ import (
 	"github.com/Caria-Core/zelie/internal/core"
 	"github.com/Caria-Core/zelie/internal/engine"
 	"github.com/Caria-Core/zelie/internal/install"
+	"github.com/Caria-Core/zelie/internal/memtrim"
 	"github.com/Caria-Core/zelie/internal/secret"
 )
 
@@ -31,6 +32,8 @@ func runCore(stderr io.Writer) int {
 	log := slog.New(slog.NewTextHandler(stderr, nil))
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	go memtrim.Run(ctx)
 
 	policy := panelPolicy(log)
 	var sftpUID uint32

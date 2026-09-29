@@ -303,7 +303,7 @@ func (s *Server) runDeployment(ctx context.Context, appID string, id int64) {
 		return
 	}
 
-	if app.IsGame() {
+	if app.RunsEgg() {
 		s.startGame(ctx, app, d, vols, out, set, fail)
 		return
 	}
