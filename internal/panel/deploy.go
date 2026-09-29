@@ -132,7 +132,7 @@ func (s *Server) deploy(ctx context.Context, app store.App, d store.Deployment) 
 			d.Version = app.Branch
 		}
 	}
-	id, err := s.Store.CreateDeployment(ctx, d, s.now())
+	id, err := s.recordDeployment(ctx, d)
 	if err != nil {
 		return 0, err
 	}
@@ -154,6 +154,35 @@ func (s *Server) background(app string, run func(ctx context.Context)) {
 		defer s.deploys.running(app, nil)
 		run(ctx)
 	}()
+}
+
+// recordDeployment records a deployment. Older versions could hand out the id
+// of a deleted app's deployment again, so a log left under it is removed
+// first: otherwise the new log would carry on from someone else's.
+func (s *Server) recordDeployment(ctx context.Context, d store.Deployment) (int64, error) {
+	id, err := s.Store.CreateDeployment(ctx, d, s.now())
+	if err != nil {
+		return 0, err
+	}
+	if err := os.Remove(s.deployLogPath(id)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return 0, err
+	}
+	return id, nil
+}
+
+// removeDeployLogs deletes the logs of an app's deployments, which may hold
+// its build output.
+func (s *Server) removeDeployLogs(ctx context.Context, app string) error {
+	list, err := s.Store.Deployments(ctx, app, -1)
+	if err != nil {
+		return err
+	}
+	for _, d := range list {
+		if err := os.Remove(s.deployLogPath(d.ID)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Server) deployLogPath(id int64) string {

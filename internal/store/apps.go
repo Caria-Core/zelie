@@ -331,12 +331,20 @@ func (s *Store) CreateDeployment(ctx context.Context, d Deployment, now time.Tim
 	if d.Cause == "" {
 		d.Cause = CauseManual
 	}
-	res, err := s.db.ExecContext(ctx, "INSERT INTO deployments (app_id, version, image, cause, message, state, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-		d.AppID, d.Version, d.Image, d.Cause, d.Message, DeployQueued, now.Unix())
+	// An id is never used twice, even after the app it belonged to is gone.
+	var id int64
+	err := s.tx(ctx, func(tx *sql.Tx) error {
+		if err := tx.QueryRowContext(ctx, "UPDATE deployment_seq SET last = max(last, (SELECT coalesce(max(id), 0) FROM deployments)) + 1 RETURNING last").Scan(&id); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx, "INSERT INTO deployments (id, app_id, version, image, cause, message, state, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+			id, d.AppID, d.Version, d.Image, d.Cause, d.Message, DeployQueued, now.Unix())
+		return err
+	})
 	if err != nil {
 		return 0, err
 	}
-	return res.LastInsertId()
+	return id, nil
 }
 
 func (s *Store) Deployment(ctx context.Context, appID string, id int64) (Deployment, error) {

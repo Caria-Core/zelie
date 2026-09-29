@@ -244,8 +244,10 @@ func check(c *client, stateFile, want string) error {
 	}
 
 	step("the app and the database run images pinned by digest")
+	// The panel pins what older versions left unpinned once the core is up,
+	// asking the registry, so it may take a moment after the update.
 	for _, app := range []string{"web", "db"} {
-		if err := c.livePinned(app); err != nil {
+		if err := waitFor(app+" to run a pinned image", time.Minute, func() error { return c.livePinned(app) }); err != nil {
 			return err
 		}
 	}

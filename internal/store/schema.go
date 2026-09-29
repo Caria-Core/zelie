@@ -436,5 +436,11 @@ CREATE TABLE sftp_config (
 	node_id INTEGER PRIMARY KEY REFERENCES nodes(id),
 	port    INTEGER NOT NULL CHECK (port BETWEEN 1024 AND 65535)
 ) STRICT;
+`, `
+-- The last deployment id handed out. SQLite gives a new row the highest id
+-- plus one, so deleting an app's newest deployments made their ids come
+-- round again, and with them the old log files kept under those ids.
+CREATE TABLE deployment_seq (last INTEGER NOT NULL) STRICT;
+INSERT INTO deployment_seq (last) SELECT coalesce(max(id), 0) FROM deployments;
 `,
 }

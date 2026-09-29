@@ -831,7 +831,7 @@ func (s *Server) reinstallGame(w http.ResponseWriter, r *http.Request) {
 // is the installer's output, and returns the deployment's id. prev is the
 // state the server had before this install.
 func (s *Server) startInstall(ctx context.Context, a store.App, cause, prev string) (int64, error) {
-	id, err := s.Store.CreateDeployment(ctx, store.Deployment{AppID: a.ID, Version: a.Image, Cause: cause}, s.now())
+	id, err := s.recordDeployment(ctx, store.Deployment{AppID: a.ID, Version: a.Image, Cause: cause})
 	if err != nil {
 		return 0, err
 	}

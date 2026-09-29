@@ -825,6 +825,43 @@ func TestDeleteApp(t *testing.T) {
 	}
 }
 
+// A deleted app's logs go with it, and a log left from before ids were
+// kept unique never shows in another app's deployment.
+func TestDeletedAppsLogsGoWithIt(t *testing.T) {
+	e := newAppEnv(t)
+	ctx := context.Background()
+	e.b.do("POST", "/api/apps", map[string]any{"id": "old", "source": "image", "image": "nginx"})
+	e.settle(t, "old")
+	list, _ := e.s.Store.Deployments(ctx, "old", -1)
+	logs := []string{}
+	for _, d := range list {
+		logs = append(logs, e.s.deployLogPath(d.ID))
+	}
+	if len(logs) == 0 {
+		t.Fatal("no deployment")
+	}
+	if code, _ := e.b.do("DELETE", "/api/apps/old", nil); code != http.StatusNoContent {
+		t.Fatalf("delete: %d", code)
+	}
+	for _, p := range logs {
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Errorf("%s is still there: %v", p, err)
+		}
+	}
+
+	// A file under the next id, as an older version could leave.
+	next := list[0].ID + 1
+	if err := os.WriteFile(e.s.deployLogPath(next), []byte("someone else's build\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	e.b.do("POST", "/api/apps", map[string]any{"id": "new", "source": "image", "image": "nginx"})
+	e.settle(t, "new")
+	d, _ := e.s.Store.Deployments(ctx, "new", 1)
+	if b, _ := os.ReadFile(e.s.deployLogPath(d[0].ID)); strings.Contains(string(b), "someone else") {
+		t.Errorf("the new deployment's log carries on from an old one:\n%s", b)
+	}
+}
+
 func TestDomainChangeMovesTheRoute(t *testing.T) {
 	e := newAppEnv(t)
 	e.b.do("POST", "/api/apps", map[string]any{"id": "web", "source": "image", "image": "nginx", "domain": "old.example.com"})
