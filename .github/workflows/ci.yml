@@ -113,6 +113,13 @@ jobs:
         run: sudo ./upgrade check -want "$NEW"
       # A real Paper server on the updated panel. Once is enough, so the run
       # from the oldest release stays short.
+      - name: Footprint
+        # Zelie's own memory once the update settled, apps and databases not
+        # counted; and the size of the binary.
+        run: |
+          sleep 20
+          ps -C zelie -o rss=,args= | awk '{kb+=$1; print} END {printf "zelie total: %.1f MB\n", kb/1024}'
+          ls -l /usr/local/bin/zelie
       - name: Game server
         if: matrix.from == 'latest'
         run: sudo ./upgrade game
