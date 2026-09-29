@@ -371,6 +371,12 @@ export default {
 	'console.installingText': 'Zelie is downloading and setting up the game. The log below shows how far it is. This can take a few minutes.',
 	'console.installed': 'Installed.',
 	'console.installedText': 'Start the server when you are ready.',
+	'console.eulaTitle': 'Accept the Minecraft EULA and start?',
+	'console.eulaText': 'The server stopped because the Minecraft EULA has not been accepted. If you accept it, Zelie accepts it for this server and starts it.',
+	'console.eulaLink': 'Read the Minecraft EULA',
+	'console.eulaAccept': 'Accept and start',
+	'console.eulaBanner': 'This server cannot start until the Minecraft EULA is accepted.',
+	'console.eulaReview': 'Review',
 	'console.installFailed': 'The install failed.',
 	'console.installFailedText': 'The log below says why. Once it is fixed, install again from',
 
@@ -439,6 +445,9 @@ export default {
 	'game.new.settingsLead': 'What the game reads when it starts. The defaults are fine to begin with.',
 	'game.new.required': '{name} is required.',
 	'game.new.create': 'Create server',
+	'game.new.eula': 'I accept the Minecraft EULA',
+	'game.new.eulaHint': 'Minecraft does not start until its license is accepted. Zelie accepts it for this server before every start.',
+	'game.new.eulaLink': 'Read the Minecraft EULA',
 
 	'nav.account': 'Account',
 	'nav.github': 'GitHub',

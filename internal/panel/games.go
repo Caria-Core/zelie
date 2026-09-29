@@ -54,6 +54,8 @@ var (
 	errNoGame        = msg.Define(http.StatusNotFound, "game.not_found", "There is no such game server.")
 	errInstalling    = msg.Define(http.StatusConflict, "game.installing", "The install is still running.")
 	errStopToInstall = msg.Define(http.StatusConflict, "game.stop_to_reinstall", "Stop the server before installing it again.")
+	errEULARequired  = msg.Define(http.StatusBadRequest, "game.eula_required", "This game needs you to accept its EULA first.")
+	errNoEULA        = msg.Define(http.StatusConflict, "game.no_eula", "This game has no EULA to accept.")
 	errNotAnApp      = msg.Define(http.StatusConflict, "game.not_an_app", "This is a game server, which has its own page.")
 	errInstallExit   = msg.Define(0, "game.install_failed", "The install script exited with code {code}.")
 	errInstallTime   = msg.Define(0, "game.install_timeout", "The install did not finish within {minutes} minutes.")
@@ -123,6 +125,10 @@ type gameRequest struct {
 	// Ports is how many ports the server takes from the pool; the first
 	// is the one players connect to.
 	Ports int `json:"ports"`
+	// AcceptEULA is the administrator's answer to the EULA that eggs with
+	// the "eula" feature (Minecraft) ask for. Zelie writes it into the
+	// server's files before each start.
+	AcceptEULA bool `json:"accept_eula"`
 }
 
 // loadEgg fetches the egg the request names. Its error is a *msg.Error.
@@ -238,6 +244,11 @@ func (s *Server) createGame(w http.ResponseWriter, r *http.Request) {
 		s.failWith(w, "load egg", err)
 		return
 	}
+	needsEULA := e.HasFeature(egg.FeatureEULA)
+	if needsEULA && !req.AcceptEULA {
+		writeError(w, errEULARequired.Err())
+		return
+	}
 	image, bad := pickImage(e, req.Image)
 	if bad != nil {
 		writeError(w, bad)
@@ -319,6 +330,9 @@ func (s *Server) createGame(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	g := store.GameServer{AppID: a.ID, EggID: stored.ID, Image: image, Startup: e.Startup, Variables: vars}
+	if needsEULA {
+		g.EULAAcceptedAt = s.now()
+	}
 	if err := s.Store.CreateGameServer(ctx, g); err != nil {
 		undo()
 		s.fail(w, "create game server", err)
@@ -409,7 +423,11 @@ type gameJSON struct {
 	DiskMB      int64              `json:"disk_mb"`
 	Ports       []gamePortJSON     `json:"ports"`
 	Variables   []gameVariableJSON `json:"variables"`
-	Install     gameInstallJSON    `json:"install"`
+	Features    []string           `json:"features"`
+	// EULANeeded is set when the egg asks for a EULA that has not been
+	// accepted, so the server will not start.
+	EULANeeded bool            `json:"eula_needed,omitempty"`
+	Install    gameInstallJSON `json:"install"`
 	// State is stopped, starting, running, stopping or crashed. Starting
 	// lasts until the game says it is ready.
 	State string `json:"state"`
@@ -437,10 +455,12 @@ func (s *Server) gameOut(ctx context.Context, a store.App) (gameJSON, error) {
 		Images:    []gameImageJSON{},
 		Ports:     []gamePortJSON{},
 		Variables: []gameVariableJSON{},
+		Features:  featuresOut(e),
 		Install:   gameInstallJSON{State: g.InstallState, Deployment: g.InstallID},
 		State:     s.gameState(ctx, a),
 		Crashing:  s.crashes.gaveUp(a.ID),
 	}
+	out.EULANeeded = e.HasFeature(egg.FeatureEULA) && g.EULAAcceptedAt.IsZero()
 	if !g.InstalledAt.IsZero() {
 		out.Install.InstalledAt = &g.InstalledAt
 	}
@@ -477,6 +497,10 @@ func (s *Server) gameOut(ctx context.Context, a store.App) (gameJSON, error) {
 	return out, nil
 }
 
+func featuresOut(e *egg.Egg) []string {
+	return append([]string{}, e.Features...)
+}
+
 // variablesOut lists the egg's variables with the values a server has, or
 // the defaults when values is nil.
 func variablesOut(e *egg.Egg, values map[string]string) []gameVariableJSON {
@@ -509,6 +533,7 @@ type eggPreviewJSON struct {
 	Images      []gameImageJSON    `json:"images"`
 	Startup     string             `json:"startup"`
 	Variables   []gameVariableJSON `json:"variables"`
+	Features    []string           `json:"features"`
 }
 
 // eggPreview reads an egg without making a server, so the interface can ask
@@ -523,7 +548,7 @@ func (s *Server) eggPreview(w http.ResponseWriter, r *http.Request) {
 		s.failWith(w, "load egg", err)
 		return
 	}
-	out := eggPreviewJSON{Name: e.Name, Description: e.Description, Startup: e.Startup, Images: []gameImageJSON{}, Variables: variablesOut(e, nil)}
+	out := eggPreviewJSON{Name: e.Name, Description: e.Description, Startup: e.Startup, Images: []gameImageJSON{}, Variables: variablesOut(e, nil), Features: featuresOut(e)}
 	for _, img := range e.Images {
 		out.Images = append(out.Images, gameImageJSON{Label: img.Label, Ref: img.Ref})
 	}
@@ -555,6 +580,38 @@ func (s *Server) getGame(w http.ResponseWriter, r *http.Request) {
 	a, _, ok := s.gameFrom(w, r)
 	if !ok {
 		return
+	}
+	out, err := s.gameOut(r.Context(), a)
+	if err != nil {
+		s.fail(w, "describe game server", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// acceptEULA records the administrator's acceptance of the game's EULA for
+// a server made before it was asked for, or one that refused to start
+// without it.
+func (s *Server) acceptEULA(w http.ResponseWriter, r *http.Request) {
+	a, g, ok := s.gameFrom(w, r)
+	if !ok {
+		return
+	}
+	_, e, _, err := s.gameParts(r.Context(), a.ID)
+	if err != nil {
+		s.fail(w, "load egg", err)
+		return
+	}
+	if !e.HasFeature(egg.FeatureEULA) {
+		writeError(w, errNoEULA.Err())
+		return
+	}
+	if g.EULAAcceptedAt.IsZero() {
+		if err := s.Store.AcceptEULA(r.Context(), a.ID, s.now()); err != nil {
+			s.fail(w, "accept eula", err)
+			return
+		}
+		s.Log.Info("game eula accepted", "server", a.ID, "user", loginFrom(r.Context()).account.ID)
 	}
 	out, err := s.gameOut(r.Context(), a)
 	if err != nil {

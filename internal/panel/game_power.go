@@ -164,9 +164,14 @@ func (s *Server) gameForwards(ctx context.Context, appID string) ([]engine.Forwa
 }
 
 // gameConfigFiles is the egg's list of files to edit, with the values
-// filled in for this server.
-func gameConfigFiles(e *egg.Egg, vars map[string]string, port int, out io.Writer) []core.ConfigFile {
+// filled in for this server, and the EULA file when it was accepted.
+func gameConfigFiles(e *egg.Egg, g store.GameServer, vars map[string]string, port int, out io.Writer) []core.ConfigFile {
 	var files []core.ConfigFile
+	if e.HasFeature(egg.FeatureEULA) && !g.EULAAcceptedAt.IsZero() {
+		// Put first so the egg's own list, which is cut at a limit, never
+		// pushes it out.
+		files = append(files, core.ConfigFile{Path: "eula.txt", Parser: "properties", Changes: []core.ConfigChange{{Key: "eula", Value: "true"}}})
+	}
 	for _, f := range e.Files {
 		if len(files) == 64 {
 			fmt.Fprintln(out, "The egg lists more than 64 config files; the rest are left alone.")
@@ -218,7 +223,7 @@ func (s *Server) startGame(ctx context.Context, app store.App, d store.Deploymen
 	// The volume may only be touched while nothing runs on it, which the
 	// stop above made sure of.
 	res, err := s.Core.PrepareVolume(ctx, vols[0].Name, core.PrepareRequest{
-		UID: gameUID, GID: gameGID, Files: gameConfigFiles(e, vars, app.Port, out),
+		UID: gameUID, GID: gameGID, Files: gameConfigFiles(e, g, vars, app.Port, out),
 	})
 	if err != nil {
 		fail(errPrepare.Err("detail", err.Error()))
@@ -263,7 +268,7 @@ func (s *Server) startGame(ctx context.Context, app store.App, d store.Deploymen
 		}
 	}
 	s.gameRuns.set(app.ID, container, stateStarting)
-	s.watchGame(app.ID, container, e.DoneMatcher())
+	s.watchGame(app.ID, container, e)
 	if err := s.Store.GoLive(ctx, d, s.now()); err != nil {
 		undo()
 		fail(err)
@@ -373,7 +378,7 @@ func (s *Server) resumeGames(ctx context.Context) {
 				continue
 			}
 			s.gameRuns.set(a.ID, c.ID, stateStarting)
-			s.watchGame(a.ID, c.ID, e.DoneMatcher())
+			s.watchGame(a.ID, c.ID, e)
 		}
 	}
 }

@@ -4,7 +4,7 @@
 	import { api, ApiError } from '$lib/api';
 	import { apps, reload } from '$lib/apps.svelte';
 	import { messageOf } from '$lib/errors';
-	import type { Allocation, EggPreview, PortRange } from '$lib/games.svelte';
+	import { eulaLink, type Allocation, type EggPreview, type PortRange } from '$lib/games.svelte';
 	import { host, loadHost, megabytes } from '$lib/host.svelte';
 	import { say, t } from '$lib/i18n';
 	import { defaultSize, sizeSteps } from '$lib/volumes';
@@ -35,6 +35,7 @@
 	let disk = $state(10240);
 	let portsText = $state('1');
 	const ports = $derived(Math.max(1, Math.round(Number(portsText)) || 1));
+	let eula = $state(false);
 	let values = $state<Record<string, string>>({});
 	// Server complaints about one variable, by its environment name.
 	let problems = $state<Record<string, string>>({});
@@ -49,6 +50,7 @@
 	const free = $derived((pool ?? []).filter((a) => !a.app).length);
 	const diskMB = $derived(host.info ? host.info.disk_bytes / 2 ** 20 : 102400);
 	const editable = $derived(preview?.variables.filter((v) => v.editable) ?? []);
+	const needsEula = $derived(preview?.features.includes('eula') ?? false);
 	const cardName = $derived(catalog.find((c) => c.id === chosen)?.name ?? '');
 	const urlValid = $derived(/^https:\/\/\S+$/.test(eggUrl.trim()));
 
@@ -83,6 +85,7 @@
 			image = preview.images[0]?.ref ?? '';
 			values = Object.fromEntries(preview.variables.map((v) => [v.env, v.value]));
 			problems = {};
+			eula = false;
 			if (!named) name = suggestName(preview.name);
 			if (host.info) {
 				memory = Math.min(memory, Math.floor(host.info.memory_bytes / 2 ** 20));
@@ -144,13 +147,13 @@
 
 	function toSettings() {
 		error = '';
-		if (editable.length) step = 4;
+		if (editable.length || needsEula) step = 4;
 		else create();
 	}
 
 	// The step whose fields a server error is about.
 	function stepFor(code: string): number {
-		if (/^game\.(bad_variable|variable_locked|unknown_variable)$/.test(code)) return 4;
+		if (/^game\.(bad_variable|variable_locked|unknown_variable|eula_required)$/.test(code)) return 4;
 		if (/^(game\.(bad_memory|bad_cpus|bad_image)|app\.(bad_name|exists))$/.test(code)) return 2;
 		if (/^(allocation\.|game\.bad_ports)/.test(code)) return 3;
 		return step;
@@ -177,6 +180,7 @@
 				ports,
 				variables: Object.fromEntries(editable.map((v) => [v.env, values[v.env]]))
 			};
+			if (needsEula) body.accept_eula = eula;
 			if (chosen === 'url') body.egg_url = eggUrl.trim();
 			else body.egg = chosen;
 			await api('POST', '/games', body);
@@ -330,7 +334,7 @@
 			{/if}
 			<ErrorText message={error} />
 			<div class="flex items-center gap-3">
-				<Button disabled={free < ports || ports > 16 || free === 0} onclick={toSettings} busy={busy}>{editable.length ? t('common.continue') : t('game.new.create')}</Button>
+				<Button disabled={free < ports || ports > 16 || free === 0} onclick={toSettings} busy={busy}>{editable.length || needsEula ? t('common.continue') : t('game.new.create')}</Button>
 				<Button kind="quiet" type="button" onclick={() => ((error = ''), (step = 2))}>{t('new.back')}</Button>
 			</div>
 		</section>
@@ -344,7 +348,7 @@
 		>
 			<div>
 				<h2 class="font-medium">{t('game.new.settingsTitle', { egg: cardName || preview.name })}</h2>
-				<p class="text-sm text-muted">{t('game.new.settingsLead')}</p>
+				{#if editable.length}<p class="text-sm text-muted">{t('game.new.settingsLead')}</p>{/if}
 			</div>
 			{#each editable as v (v.env)}
 				<div class="flex flex-col gap-1.5">
@@ -352,9 +356,18 @@
 					<ErrorText message={problems[v.env] ?? ''} />
 				</div>
 			{/each}
+			{#if needsEula}
+				<div class="flex flex-col gap-1.5">
+					<label class="flex items-start gap-2.5 text-[15px]">
+						<input type="checkbox" class="mt-1" bind:checked={eula} />
+						<span>{t('game.new.eula')}<span class="block text-sm text-muted">{t('game.new.eulaHint')}</span></span>
+					</label>
+					<a href={eulaLink} target="_blank" rel="noopener noreferrer" class="ml-6 w-fit text-sm underline decoration-line underline-offset-2 hover:decoration-fg">{t('game.new.eulaLink')}</a>
+				</div>
+			{/if}
 			<ErrorText message={error} />
 			<div class="flex items-center gap-3">
-				<Button type="submit" {busy}>{t('game.new.create')}</Button>
+				<Button type="submit" {busy} disabled={needsEula && !eula}>{t('game.new.create')}</Button>
 				<Button kind="quiet" type="button" onclick={() => ((error = ''), (step = 3))}>{t('new.back')}</Button>
 			</div>
 		</form>

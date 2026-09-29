@@ -1,6 +1,6 @@
 // A question the user answers before something that is hard to take back.
 // The dialog in the app layout shows it.
-export type Question = { title: string; text?: string; action: string; danger?: boolean };
+export type Question = { title: string; text?: string; link?: { href: string; label: string }; action: string; danger?: boolean };
 
 export const asking = $state<{ question: Question | null; answer: ((ok: boolean) => void) | null }>({
 	question: null,

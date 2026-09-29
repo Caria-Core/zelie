@@ -38,6 +38,8 @@ type GameServer struct {
 	// output; zero before the first one is queued.
 	InstallID   int64
 	InstalledAt time.Time // zero until an install has finished
+	// EULAAcceptedAt is when the game's EULA was accepted; zero until then.
+	EULAAcceptedAt time.Time
 }
 
 // AddEgg stores an egg file. The same file from the same source is stored
@@ -87,13 +89,13 @@ func (s *Store) Egg(ctx context.Context, id int64) (Egg, error) {
 	return e, err
 }
 
-const gameColumns = "app_id, egg_id, image, startup, variables, install_state, coalesce(install_id, 0), coalesce(installed_at, 0)"
+const gameColumns = "app_id, egg_id, image, startup, variables, install_state, coalesce(install_id, 0), coalesce(installed_at, 0), coalesce(eula_accepted_at, 0)"
 
 func scanGame(row scanner) (GameServer, error) {
 	var g GameServer
 	var vars string
-	var installed int64
-	err := row.Scan(&g.AppID, &g.EggID, &g.Image, &g.Startup, &vars, &g.InstallState, &g.InstallID, &installed)
+	var installed, eula int64
+	err := row.Scan(&g.AppID, &g.EggID, &g.Image, &g.Startup, &vars, &g.InstallState, &g.InstallID, &installed, &eula)
 	if errors.Is(err, sql.ErrNoRows) {
 		return g, ErrNotFound
 	}
@@ -106,6 +108,9 @@ func scanGame(row scanner) (GameServer, error) {
 	if installed != 0 {
 		g.InstalledAt = time.Unix(installed, 0)
 	}
+	if eula != 0 {
+		g.EULAAcceptedAt = time.Unix(eula, 0)
+	}
 	return g, nil
 }
 
@@ -116,9 +121,19 @@ func (s *Store) CreateGameServer(ctx context.Context, g GameServer) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.db.ExecContext(ctx, "INSERT INTO game_servers (app_id, egg_id, image, startup, variables, install_state) VALUES (?, ?, ?, ?, ?, ?)",
-		g.AppID, g.EggID, g.Image, g.Startup, string(vars), InstallRunning)
+	var eula any
+	if !g.EULAAcceptedAt.IsZero() {
+		eula = g.EULAAcceptedAt.Unix()
+	}
+	_, err = s.db.ExecContext(ctx, "INSERT INTO game_servers (app_id, egg_id, image, startup, variables, install_state, eula_accepted_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+		g.AppID, g.EggID, g.Image, g.Startup, string(vars), InstallRunning, eula)
 	return uniqueErr(err)
+}
+
+// AcceptEULA records that the game's EULA was accepted for the server.
+func (s *Store) AcceptEULA(ctx context.Context, appID string, at time.Time) error {
+	res, err := s.db.ExecContext(ctx, "UPDATE game_servers SET eula_accepted_at = ? WHERE app_id = ?", at.Unix(), appID)
+	return oneRow(res, err)
 }
 
 // GameServer returns the game server data of an app, or ErrNotFound.

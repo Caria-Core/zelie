@@ -263,6 +263,25 @@ func (h *consoleHub) replace(container string, cancel context.CancelFunc) {
 	h.container, h.cancel, h.lines, h.loaded = container, cancel, nil, true
 }
 
+// refusesEULA recognises what Minecraft servers print when eula.txt does
+// not say eula=true.
+func refusesEULA(line string) bool {
+	return strings.Contains(strings.ToLower(line), "you need to agree to the eula in order to run the server")
+}
+
+// eulaNeeded tells the sockets that the server stopped for want of the
+// EULA's acceptance.
+func (h *consoleHub) eulaNeeded(container string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.container != container {
+		return
+	}
+	for sub := range h.subs {
+		sub.push([]byte(`{"type":"eula"}`), false)
+	}
+}
+
 func (h *consoleHub) setState(state string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -407,7 +426,9 @@ func (c *consoleHistory) forget(app string) {
 // watchGame follows a server's console from its start: to see when the
 // game says it is ready, and to keep the lines for whoever opens the
 // console. It stops when the container has exited and its output is read.
-func (s *Server) watchGame(app, container string, done *egg.Done) {
+func (s *Server) watchGame(app, container string, e *egg.Egg) {
+	done := e.DoneMatcher()
+	eula := e.HasFeature(egg.FeatureEULA)
 	h := s.consoles.hub(app)
 	ctx, cancel := context.WithCancel(s.baseContext())
 	h.replace(container, cancel)
@@ -443,9 +464,13 @@ func (s *Server) watchGame(app, container string, done *egg.Done) {
 				}
 				delivered++
 				h.push(container, "line", line)
-				if !matched && done.Match(ansi.ReplaceAllString(line, "")) {
+				plain := ansi.ReplaceAllString(line, "")
+				if !matched && done.Match(plain) {
 					matched = true
 					s.gameRuns.advance(app, container)
+				}
+				if eula && refusesEULA(plain) {
+					h.eulaNeeded(container)
 				}
 			}}
 			s.Core.Logs(ctx, container, true, 0, w)

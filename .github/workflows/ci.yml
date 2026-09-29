@@ -118,7 +118,13 @@ jobs:
         run: sudo ./upgrade game
       - name: Logs
         if: failure()
-        run: sudo journalctl -u zelie-core -u zelie-proxy -u zelie-panel -u zelie-update --no-pager | tail -n 300
+        run: |
+          sudo journalctl -u zelie-core -u zelie-proxy -u zelie-panel -u zelie-update --no-pager | tail -n 300
+          # What game server containers printed, and what their volumes hold.
+          sudo find /var/lib -path '*containers/paper-*' -type f -name '*log*' 2>/dev/null |
+            while read -r f; do echo "== $f"; sudo tail -n 60 "$f"; done
+          sudo find /var/lib -maxdepth 6 -type d -name 'vol-*' 2>/dev/null |
+            while read -r d; do echo "== $d"; sudo ls -la "$d"; done
 
   build:
     needs: [test, web]

@@ -29,6 +29,9 @@
 			<div class="flex flex-col gap-2">
 				<h2 class="text-[17px] font-medium">{q.title}</h2>
 				{#if q.text}<p class="text-[15px] text-muted">{q.text}</p>{/if}
+				{#if q.link}
+					<a href={q.link.href} target="_blank" rel="noopener noreferrer" class="w-fit text-[15px] underline decoration-line underline-offset-2 hover:decoration-fg">{q.link.label}</a>
+				{/if}
 			</div>
 			<div class="flex flex-wrap justify-end gap-2">
 				<Button kind="secondary" onclick={() => done(false)}>{t('common.cancel')}</Button>

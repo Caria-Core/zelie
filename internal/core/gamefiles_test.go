@@ -82,6 +82,35 @@ func TestPrepareVolumeEditsConfigFiles(t *testing.T) {
 	}
 }
 
+// The panel writes Minecraft's eula.txt this way: made when missing, and
+// changed when it says eula=false, as the server leaves it.
+func TestEULAFileIsMadeOrChanged(t *testing.T) {
+	root := &peer.Peer{UID: 0}
+	s, f := newServer()
+	dir := t.TempDir()
+	f.volumeDirs = map[string]string{"srv-vol": dir}
+	req := PrepareRequest{UID: uint32(os.Getuid()), GID: uint32(os.Getgid()), Files: []ConfigFile{
+		{Path: "eula.txt", Parser: "properties", Changes: []ConfigChange{{Key: "eula", Value: "true"}}},
+	}}
+	prepare := func() {
+		t.Helper()
+		if rec := request(t, s, root, "POST", "/v1/volumes/srv-vol/prepare", prepareBody(t, req)); rec.Code != http.StatusOK {
+			t.Fatalf("status %d: %s", rec.Code, rec.Body)
+		}
+	}
+	check := func(want string) {
+		t.Helper()
+		if got, _ := os.ReadFile(filepath.Join(dir, "eula.txt")); string(got) != want {
+			t.Errorf("eula.txt: %q, want %q", got, want)
+		}
+	}
+	prepare()
+	check("eula=true\n")
+	os.WriteFile(filepath.Join(dir, "eula.txt"), []byte("#By changing the setting below to TRUE you are indicating your agreement to the EULA.\neula=false\n"), 0o644)
+	prepare()
+	check("#By changing the setting below to TRUE you are indicating your agreement to the EULA.\neula=true\n")
+}
+
 func TestConfigFilesStayInsideTheVolume(t *testing.T) {
 	base := t.TempDir()
 	dir := filepath.Join(base, "vol")

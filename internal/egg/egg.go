@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -27,6 +28,15 @@ type Egg struct {
 	Files     []ConfigFile
 	Install   Install
 	Variables []Variable
+}
+
+// FeatureEULA marks games, Minecraft's, that will not start until the
+// player has accepted a license by writing eula=true to eula.txt.
+const FeatureEULA = "eula"
+
+// HasFeature reports whether the egg lists the feature, such as "eula".
+func (e *Egg) HasFeature(name string) bool {
+	return slices.Contains(e.Features, name)
 }
 
 type Image struct {

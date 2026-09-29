@@ -37,6 +37,8 @@ import (
 //	                                           the last 500, then live. "[…N lines skipped]" marks
 //	                                           what a slow client missed.
 //	{"type":"install","data":"..."}            a line of the install script while one runs
+//	{"type":"eula"}                            the game refused to start until its EULA is accepted;
+//	                                           POST /api/games/{app}/eula records it
 //	{"type":"error","code":"...","message":"...","params":{}}
 //
 // Client to server:

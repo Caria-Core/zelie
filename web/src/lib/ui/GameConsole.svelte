@@ -3,9 +3,11 @@
 	import { untrack } from 'svelte';
 	import { api, ApiError } from '$lib/api';
 	import { parseAnsi, type Span } from '$lib/ansi';
-	import { game, gameState, loadGame } from '$lib/games.svelte';
+	import { acceptEula, eulaLink, game, gameState, loadGame, power } from '$lib/games.svelte';
 	import { say, t } from '$lib/i18n';
 	import { reload } from '$lib/apps.svelte';
+	import { ask } from '$lib/ask.svelte';
+	import { messageOf } from '$lib/errors';
 	import Button from './Button.svelte';
 
 	let { id }: { id: string } = $props();
@@ -38,7 +40,34 @@
 	const phase = $derived(info ? gameState(info) : '');
 	const canType = $derived(connected && (phase === 'running' || phase === 'starting'));
 	const installing = $derived(phase === 'installing');
+	const eulaNeeded = $derived(!!info?.eula_needed && info.install.state === 'installed' && phase !== 'running' && phase !== 'starting');
 	const failed = $derived(!installing && info?.install.state === 'failed');
+
+	let eulaOpen = false;
+	let eulaError = $state('');
+
+	// Offered when the server refused to start for want of the EULA, or was
+	// found to need it. Accepting records it and starts the server.
+	async function askEula() {
+		if (eulaOpen) return;
+		eulaOpen = true;
+		eulaError = '';
+		try {
+			const ok = await ask({
+				title: t('console.eulaTitle'),
+				text: t('console.eulaText'),
+				link: { href: eulaLink, label: t('console.eulaLink') },
+				action: t('console.eulaAccept')
+			});
+			if (!ok) return;
+			await acceptEula(id);
+			await power(id, 'start');
+		} catch (err) {
+			eulaError = messageOf(err);
+		} finally {
+			eulaOpen = false;
+		}
+	}
 
 	function flush() {
 		frame = 0;
@@ -99,6 +128,12 @@
 				}
 				break;
 			}
+			case 'eula':
+				// The game may have been started by the supervisor meanwhile.
+				loadGame(id).then(() => {
+					if (game.info?.eula_needed) askEula();
+				});
+				break;
 			case 'error':
 				add(say({ code: String(m.code), params: m.params as Record<string, unknown>, text: String(m.message ?? '') }), 'notice');
 				break;
@@ -187,6 +222,13 @@
 </script>
 
 <div class="flex flex-col gap-4">
+	{#if eulaNeeded}
+		<div class="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-line px-4 py-3" role="status">
+			<p class="text-sm font-medium">{t('console.eulaBanner')}</p>
+			<Button kind="secondary" onclick={askEula}>{t('console.eulaReview')}</Button>
+		</div>
+		{#if eulaError}<p role="alert" class="text-sm text-danger">{eulaError}</p>{/if}
+	{/if}
 	{#if installing}
 		<div class="flex items-start gap-3 rounded-xl border border-line px-4 py-3" role="status">
 			<LoaderCircle size={18} class="mt-0.5 shrink-0 animate-spin text-muted" />

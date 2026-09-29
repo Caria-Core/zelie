@@ -360,5 +360,9 @@ CREATE TABLE game_servers (
 -- the administrator sets one. Empty means the address Zelie finds on the
 -- machine's network cards.
 ALTER TABLE nodes ADD COLUMN public_address TEXT NOT NULL DEFAULT '';
+`, `
+-- When an administrator accepted the game's EULA for this server, for eggs
+-- that ask for it. NULL until then.
+ALTER TABLE game_servers ADD COLUMN eula_accepted_at INTEGER;
 `,
 }

@@ -11,18 +11,13 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/coder/websocket"
 )
 
-const (
-	gameID = "paper"
-	// Where Zelie keeps the volumes of its containers.
-	volumesDir = "/var/lib/zelie/volumes"
-)
+const gameID = "paper"
 
 // gameStatus is the part of a game server's description this check reads.
 type gameStatus struct {
@@ -69,19 +64,11 @@ func game(c *client, stateFile string) error {
 	}
 
 	step("create a Paper server")
-	req := map[string]any{"name": gameID, "egg": "minecraft-paper", "memory_mb": 2048, "cpus": 2, "ports": 1}
+	req := map[string]any{"name": gameID, "egg": "minecraft-paper", "memory_mb": 2048, "cpus": 2, "ports": 1, "accept_eula": true}
 	if err := c.do("POST", "/api/games", req, nil); err != nil {
 		return err
 	}
 	if err := c.waitInstalled(); err != nil {
-		return err
-	}
-
-	step("accept the Minecraft EULA")
-	// Zelie has no way to answer the egg's EULA prompt or to edit a
-	// server's files yet, so this writes the file into the volume, as
-	// someone with a shell on the machine would.
-	if err := acceptEULA(); err != nil {
 		return err
 	}
 
@@ -226,19 +213,6 @@ func (c *client) printLog(id int64) {
 		return
 	}
 	fmt.Fprintf(os.Stderr, "-- log of deployment %d\n%s\n-- end of log\n", id, b)
-}
-
-// acceptEULA writes eula.txt next to the server's jar. The volume is not in
-// use: the install has ended and the server has not started.
-func acceptEULA() error {
-	jars, err := filepath.Glob(filepath.Join(volumesDir, "*", "server.jar"))
-	if err != nil {
-		return err
-	}
-	if len(jars) != 1 {
-		return fmt.Errorf("expected one server.jar in %s, found %v", volumesDir, jars)
-	}
-	return os.WriteFile(filepath.Join(filepath.Dir(jars[0]), "eula.txt"), []byte("eula=true\n"), 0o644)
 }
 
 type consoleMessage struct {

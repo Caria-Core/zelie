@@ -26,6 +26,10 @@ export type Game = {
 	disk_mb: number;
 	ports: GamePort[];
 	variables: GameVariable[];
+	// What the egg says the game needs, such as 'eula'.
+	features: string[];
+	// The egg asks for a EULA nobody has accepted, so the server will not start.
+	eula_needed?: boolean;
 	install: { state: 'installing' | 'installed' | 'failed'; deployment?: number; installed_at?: string };
 	// stopped, starting, running, stopping or crashed.
 	state: string;
@@ -38,6 +42,7 @@ export type EggPreview = {
 	images: { label: string; ref: string }[];
 	startup: string;
 	variables: GameVariable[];
+	features: string[];
 };
 
 export type Allocation = { id: number; ip: string; port: number; app?: string };
@@ -60,6 +65,13 @@ export async function loadGame(id: string): Promise<void> {
 export function gameState(g: Game): string {
 	if (g.install.state === 'installing') return 'installing';
 	return game.live && game.live !== 'unknown' ? game.live : g.state;
+}
+
+export const eulaLink = 'https://aka.ms/MinecraftEULA';
+
+// Records the acceptance of the game's EULA, which is what lets it start.
+export async function acceptEula(id: string): Promise<void> {
+	await api('POST', `/games/${encodeURIComponent(id)}/eula`);
 }
 
 export async function power(id: string, action: 'start' | 'stop' | 'restart' | 'kill'): Promise<void> {
