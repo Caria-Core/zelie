@@ -440,7 +440,7 @@ func TestRuntimeCatalogEntries(t *testing.T) {
 			t.Errorf("entry %+v", e)
 		}
 	}
-	if got := len(egg.OfKind(egg.KindRuntime)); got != 6 {
+	if got := len(egg.OfKind(egg.KindRuntime)); got != 5 {
 		t.Errorf("%d runtimes", got)
 	}
 }
