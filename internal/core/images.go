@@ -88,3 +88,23 @@ func (s *Server) sweep(ctx context.Context, keep map[string]bool, now time.Time)
 	}
 	return res, errors.Join(errs...)
 }
+
+type pinRequest struct {
+	Image string `json:"image"`
+}
+
+// pinImage names the image a tag points at here by its digest. The panel
+// uses it for deployments made before it recorded digests.
+func (s *Server) pinImage(w http.ResponseWriter, r *http.Request) {
+	var req pinRequest
+	if err := decode(w, r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	image, err := s.Engine.Pin(r.Context(), req.Image)
+	if err != nil {
+		s.fail(w, "pin image", "", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, runResponse{Image: image})
+}

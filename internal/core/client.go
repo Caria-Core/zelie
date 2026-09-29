@@ -91,12 +91,14 @@ func (c *Client) do(ctx context.Context, method, path string, body any, out any)
 }
 
 func (c *Client) Run(ctx context.Context, s engine.Spec) error {
-	return c.RunApp(ctx, s, nil)
+	_, err := c.RunApp(ctx, s, nil)
+	return err
 }
 
 // RunApp runs a container of s.App with secret variables sealed for it,
-// and variables made from the secrets of apps it is linked to.
-func (c *Client) RunApp(ctx context.Context, s engine.Spec, sealedEnv []string, linked ...LinkedVar) error {
+// and variables made from the secrets of apps it is linked to. It returns
+// the image that runs, pinned by digest (see engine.Pin).
+func (c *Client) RunApp(ctx context.Context, s engine.Spec, sealedEnv []string, linked ...LinkedVar) (string, error) {
 	req := runRequest{
 		ID: s.ID, App: s.App, Image: s.Image, Args: s.Args, Env: s.Env, SealedEnv: sealedEnv, Network: s.Network,
 		MemoryBytes: s.MemoryBytes, CPUs: s.CPUs, Pids: s.Pids,
@@ -107,7 +109,9 @@ func (c *Client) RunApp(ctx context.Context, s engine.Spec, sealedEnv []string, 
 	for _, v := range s.Volumes {
 		req.Volumes = append(req.Volumes, volumeMountJSON{Name: v.Name, Target: v.Target})
 	}
-	return c.do(ctx, http.MethodPost, "/v1/containers", req, nil)
+	var res runResponse
+	err := c.do(ctx, http.MethodPost, "/v1/containers", req, &res)
+	return res.Image, err
 }
 
 // SecretKey returns the key to seal secret variables with.
@@ -164,6 +168,13 @@ func (c *Client) SweepImages(ctx context.Context, keep []string) ([]string, erro
 	var res sweepResponse
 	err := c.do(ctx, http.MethodPost, "/v1/images/sweep", sweepRequest{Keep: keep}, &res)
 	return res.Removed, err
+}
+
+// Pin returns image pinned to the digest its tag points at here.
+func (c *Client) Pin(ctx context.Context, image string) (string, error) {
+	var res runResponse
+	err := c.do(ctx, http.MethodPost, "/v1/images/pin", pinRequest{Image: image}, &res)
+	return res.Image, err
 }
 
 // RemoveBuildCache deletes what builds of an app keep between them.

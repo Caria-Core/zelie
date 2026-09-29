@@ -140,3 +140,43 @@ func TestOldImagesAreRemoved(t *testing.T) {
 		t.Errorf("the crashed version's image was kept: %v", e.core.removed)
 	}
 }
+
+func TestImagesArePinned(t *testing.T) {
+	e := newAppEnv(t)
+	const old, newer = "sha256:" + "1111111111111111111111111111111111111111111111111111111111111111", "sha256:" + "2222222222222222222222222222222222222222222222222222222222222222"
+	e.core.digests = map[string]string{"nginx:1.27": old}
+	e.b.do("POST", "/api/apps", map[string]any{"id": "web", "source": "image", "image": "nginx:1.27"})
+	first := e.settle(t, "web")
+	if first.State != store.DeployLive || first.Image != "nginx:1.27@"+old || first.Version != "nginx:1.27" {
+		t.Fatalf("first %+v", first)
+	}
+
+	// A new build of the tag is out. Restarting keeps what ran; deploying
+	// takes the new one.
+	e.core.mu.Lock()
+	e.core.digests["nginx:1.27"] = newer
+	e.core.mu.Unlock()
+	e.b.do("POST", "/api/apps/web/restart", nil)
+	if d := e.settle(t, "web"); d.State != store.DeployLive || d.Image != first.Image {
+		t.Fatalf("restart %+v", d)
+	}
+	e.b.do("POST", "/api/apps/web/deployments", nil)
+	if d := e.settle(t, "web"); d.State != store.DeployLive || d.Image != "nginx:1.27@"+newer {
+		t.Fatalf("deploy %+v", d)
+	}
+}
+
+func TestLiveDeploymentsGetPinned(t *testing.T) {
+	e := newAppEnv(t)
+	e.b.do("POST", "/api/apps", map[string]any{"id": "web", "source": "image", "image": "nginx:1.27"})
+	if d := e.settle(t, "web"); d.Image != "nginx:1.27" {
+		t.Fatalf("made before pinning: %+v", d)
+	}
+	e.core.mu.Lock()
+	e.core.digests = map[string]string{"nginx:1.27": "sha256:" + strings.Repeat("3", 64)}
+	e.core.mu.Unlock()
+	e.s.pinLive(context.Background())
+	if d, _ := e.s.Store.LiveDeployment(context.Background(), "web"); d.Image != "nginx:1.27@sha256:"+strings.Repeat("3", 64) {
+		t.Fatalf("after pinLive %+v", d)
+	}
+}

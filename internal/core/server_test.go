@@ -164,6 +164,8 @@ func (f *fakeEngine) Images(context.Context) ([]engine.Image, error) {
 	return slices.Clone(f.images), nil
 }
 
+func (f *fakeEngine) Pin(_ context.Context, ref string) (string, error) { return ref, nil }
+
 func (f *fakeEngine) SetUnused(_ context.Context, name string, since time.Time) error {
 	for i := range f.images {
 		if f.images[i].Name == name {

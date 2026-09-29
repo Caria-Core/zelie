@@ -40,6 +40,30 @@ func (s *Server) sweepImages(ctx context.Context) {
 	}
 }
 
+// pinLive records the digest of what the live deployments run, for those
+// made before Zelie kept it. Without it a restart would pull the tag again
+// and could quietly start a newer build.
+func (s *Server) pinLive(ctx context.Context) {
+	live, err := s.Store.LiveDeployments(ctx)
+	if err != nil {
+		s.Log.Error("images: live deployments", "err", err)
+		return
+	}
+	for _, d := range live {
+		if d.Image == "" || strings.HasPrefix(d.Image, engine.LocalImages) || engine.Pinned(d.Image) {
+			continue
+		}
+		pinned, err := s.Core.Pin(ctx, d.Image)
+		if err != nil {
+			s.Log.Error("images: pin", "app", d.AppID, "image", d.Image, "err", err)
+			continue
+		}
+		if err := s.Store.SetDeploymentImage(ctx, d.ID, pinned); err != nil {
+			s.Log.Error("images: pin", "app", d.AppID, "err", err)
+		}
+	}
+}
+
 // removeAppImages deletes what building a deleted app left behind. The
 // images it pulled go with the daily sweep, in case it is made again.
 func (s *Server) removeAppImages(ctx context.Context, app string) {

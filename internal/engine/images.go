@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/containerd/containerd/v2/core/images"
 	"github.com/containerd/errdefs"
 	"github.com/distribution/reference"
 )
@@ -34,6 +35,48 @@ func ImageName(ref string) (string, error) {
 		return "", fmt.Errorf("image %q: %w", ref, err)
 	}
 	return reference.TagNameOnly(named).String(), nil
+}
+
+// Pinned reports whether ref names one exact image, by digest, rather than
+// whatever its tag points at.
+func Pinned(ref string) bool {
+	named, err := reference.ParseNormalizedNamed(ref)
+	if err != nil {
+		return false
+	}
+	_, ok := named.(reference.Canonical)
+	return ok
+}
+
+// Pin returns ref with the digest of the image it names here, such as
+// postgres:18@sha256:…, and keeps the image under that name too. A tag moves
+// when a new build is published; the pinned name lets an app be started
+// again, or rolled back, on exactly what it ran before. Local images and
+// refs that are already pinned come back as they are.
+func (e *Engine) Pin(ctx context.Context, ref string) (string, error) {
+	if strings.HasPrefix(ref, LocalImages) || Pinned(ref) {
+		return ref, nil
+	}
+	named, err := reference.ParseNormalizedNamed(ref)
+	if err != nil {
+		return "", fmt.Errorf("image %q: %w", ref, err)
+	}
+	named = reference.TagNameOnly(named)
+	ctx = e.ctx(ctx)
+	is := e.client.ImageService()
+	img, err := is.Get(ctx, named.String())
+	if err != nil {
+		return "", fmt.Errorf("image %s: %w", named, err)
+	}
+	pinned, err := reference.WithDigest(named, img.Target.Digest)
+	if err != nil {
+		return "", err
+	}
+	_, err = is.Create(ctx, images.Image{Name: pinned.String(), Target: img.Target})
+	if err != nil && !errdefs.IsAlreadyExists(err) {
+		return "", err
+	}
+	return reference.FamiliarString(pinned), nil
 }
 
 // Images lists the images the engine holds.

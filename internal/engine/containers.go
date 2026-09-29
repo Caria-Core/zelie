@@ -400,29 +400,39 @@ func (e *Engine) Run(ctx context.Context, s Spec) (err error) {
 	return nil
 }
 
-// image returns an image ready to run. Local images must have been imported;
-// anything else is pulled.
+// image returns an image ready to run. Local images must have been imported.
+// A pinned image that is already here is used as it is, so starting it again
+// never depends on the registry; anything else is pulled.
 func (e *Engine) image(ctx context.Context, ref string) (containerd.Image, error) {
-	if !strings.HasPrefix(ref, LocalImages) {
-		ref, err := ImageName(ref)
+	if strings.HasPrefix(ref, LocalImages) {
+		image, err := e.client.GetImage(ctx, ref)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("image %s: %w", ref, err)
 		}
-		image, err := e.client.Pull(ctx, ref, containerd.WithPullUnpack)
-		if err != nil {
-			return nil, fmt.Errorf("pull %s: %w", ref, err)
-		}
-		return image, nil
+		return e.unpacked(ctx, image)
 	}
-	image, err := e.client.GetImage(ctx, ref)
+	name, err := ImageName(ref)
 	if err != nil {
-		return nil, fmt.Errorf("image %s: %w", ref, err)
+		return nil, err
 	}
+	if Pinned(name) {
+		if image, err := e.client.GetImage(ctx, name); err == nil {
+			return e.unpacked(ctx, image)
+		}
+	}
+	image, err := e.client.Pull(ctx, name, containerd.WithPullUnpack)
+	if err != nil {
+		return nil, fmt.Errorf("pull %s: %w", name, err)
+	}
+	return image, nil
+}
+
+func (e *Engine) unpacked(ctx context.Context, image containerd.Image) (containerd.Image, error) {
 	if ok, err := image.IsUnpacked(ctx, defaults.DefaultSnapshotter); err != nil {
 		return nil, err
 	} else if !ok {
 		if err := image.Unpack(ctx, defaults.DefaultSnapshotter); err != nil {
-			return nil, fmt.Errorf("unpack %s: %w", ref, err)
+			return nil, fmt.Errorf("unpack %s: %w", image.Name(), err)
 		}
 	}
 	return image, nil

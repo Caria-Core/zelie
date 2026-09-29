@@ -285,7 +285,7 @@ func (s *Server) runDeployment(ctx context.Context, appID string, id int64) {
 			s.restoreLive(ctx, app, vols, out)
 		}
 	}
-	if err := s.start(ctx, app, d.Image, container, vols, out); err != nil {
+	if d.Image, err = s.start(ctx, app, d.Image, container, vols, out); err != nil {
 		undo()
 		fail(err)
 		return
@@ -384,7 +384,7 @@ func (s *Server) runTests(ctx context.Context, app store.App, image string, depl
 	// Test runners that would otherwise wait for changes run once.
 	env = append(env, "CI=true")
 	id := fmt.Sprintf("%s-%d-test", app.ID, deployment)
-	err = s.Core.RunApp(ctx, engine.Spec{
+	_, err = s.Core.RunApp(ctx, engine.Spec{
 		ID: id, App: app.ID, Image: image, Args: []string{"sh", "-c", app.TestCommand}, Env: env, Network: app.ID,
 		MemoryBytes: app.MemoryMB << 20, CPUs: app.CPUs, Pids: defaultPids,
 	}, sealed, linked...)
@@ -450,11 +450,12 @@ func (s *Server) vars(ctx context.Context, app store.App) (env, sealed []string,
 
 // start runs the new container and waits until it is healthy: answering
 // HTTP if the app has a domain, since that is what the proxy will send it,
-// or staying up for a while otherwise, like a bot with no web side.
-func (s *Server) start(ctx context.Context, app store.App, image, container string, vols []store.Volume, out io.Writer) error {
+// or staying up for a while otherwise, like a bot with no web side. It
+// returns the image that runs, pinned by digest.
+func (s *Server) start(ctx context.Context, app store.App, image, container string, vols []store.Volume, out io.Writer) (string, error) {
 	env, sealed, linked, err := s.appEnv(ctx, app)
 	if err != nil {
-		return err
+		return "", err
 	}
 	fmt.Fprintf(out, "Starting %s.\n", image)
 	var args []string
@@ -466,14 +467,22 @@ func (s *Server) start(ctx context.Context, app store.App, image, container stri
 	if isDB {
 		args = db.Args
 	}
-	err = s.Core.RunApp(ctx, engine.Spec{
+	pinned, err := s.Core.RunApp(ctx, engine.Spec{
 		ID: container, App: app.ID, Image: image, Args: args, Env: env, Network: app.ID, Volumes: volumeMounts(vols),
 		MemoryBytes: app.MemoryMB << 20, CPUs: app.CPUs, Pids: defaultPids,
 	}, sealed, linked...)
 	if err != nil {
-		return err
+		return "", err
 	}
+	if pinned == "" {
+		pinned = image
+	}
+	return pinned, s.waitHealthy(ctx, app, container, isDB, out)
+}
 
+// waitHealthy waits until a container that was just started is healthy, as
+// start describes.
+func (s *Server) waitHealthy(ctx context.Context, app store.App, container string, isDB bool, out io.Writer) error {
 	if isDB {
 		fmt.Fprintf(out, "Waiting for it to accept connections on port %d.\n", app.Port)
 	}
@@ -607,7 +616,7 @@ func (s *Server) restoreLive(ctx context.Context, app store.App, vols []store.Vo
 	fmt.Fprintln(out, "\nStarting the previous version again.")
 	container := fmt.Sprintf("%s-%d", app.ID, live.ID)
 	s.Core.Remove(ctx, container)
-	if err := s.start(ctx, app, live.Image, container, vols, out); err != nil {
+	if _, err := s.start(ctx, app, live.Image, container, vols, out); err != nil {
 		fmt.Fprintf(out, "The previous version did not start either: %v\n", err)
 		s.Log.Error("restore live version", "app", app.ID, "err", err)
 		return

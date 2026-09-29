@@ -242,6 +242,13 @@ func check(c *client, stateFile, want string) error {
 		return fmt.Errorf("the panel runs %s, not %s", server.Version, want)
 	}
 
+	step("the app and the database run images pinned by digest")
+	for _, app := range []string{"web", "db"} {
+		if err := c.livePinned(app); err != nil {
+			return err
+		}
+	}
+
 	step("the app serves what it did")
 	if err := c.samePage(); err != nil {
 		return err
@@ -410,6 +417,29 @@ func (c *client) waitLive(app string, id int64) error {
 		}
 		return errors.New("not listed")
 	})
+}
+
+// livePinned checks that a restart of app would start exactly what runs
+// now, not whatever its tag points at by then.
+func (c *client) livePinned(app string) error {
+	var a struct {
+		Deployments []struct {
+			State string `json:"state"`
+			Image string `json:"image"`
+		} `json:"deployments"`
+	}
+	if err := c.do("GET", "/api/apps/"+app, nil, &a); err != nil {
+		return err
+	}
+	for _, d := range a.Deployments {
+		if d.State == "live" {
+			if !strings.Contains(d.Image, "@sha256:") {
+				return fmt.Errorf("%s runs %s, not pinned", app, d.Image)
+			}
+			return nil
+		}
+	}
+	return fmt.Errorf("%s has no live deployment", app)
 }
 
 // page is what the app serves through the proxy.

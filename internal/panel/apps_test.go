@@ -51,8 +51,9 @@ type appCore struct {
 	testExit   int
 	tests      []engine.Spec
 	failBuild  bool
-	crash      bool   // new containers stop right away
-	crashImage string // containers of this image stop right away
+	crash      bool              // new containers stop right away
+	crashImage string            // containers of this image stop right away
+	digests    map[string]string // what each registry tag points at now
 	next       byte
 
 	links map[string][]engine.Link
@@ -87,9 +88,27 @@ func (c *appCore) List(context.Context) ([]engine.Status, error) {
 	return out, nil
 }
 
-func (c *appCore) Run(ctx context.Context, s engine.Spec) error { return c.RunApp(ctx, s, nil) }
+func (c *appCore) Run(ctx context.Context, s engine.Spec) error { return c.runApp(s, nil) }
 
-func (c *appCore) RunApp(_ context.Context, s engine.Spec, sealed []string, linked ...core.LinkedVar) error {
+func (c *appCore) RunApp(ctx context.Context, s engine.Spec, sealed []string, linked ...core.LinkedVar) (string, error) {
+	if err := c.runApp(s, sealed, linked...); err != nil {
+		return "", err
+	}
+	return c.Pin(ctx, s.Image)
+}
+
+// Pin pins tags the test gave a digest; others come back as they are, as
+// when the core cannot pin.
+func (c *appCore) Pin(_ context.Context, image string) (string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if d, ok := c.digests[image]; ok {
+		return image + "@" + d, nil
+	}
+	return image, nil
+}
+
+func (c *appCore) runApp(s engine.Spec, sealed []string, linked ...core.LinkedVar) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	env := slices.Clone(s.Env)

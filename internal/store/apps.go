@@ -312,6 +312,30 @@ func (s *Store) Deployments(ctx context.Context, appID string, limit int) ([]Dep
 	return out, rows.Err()
 }
 
+// LiveDeployments returns the live deployment of every app.
+func (s *Store) LiveDeployments(ctx context.Context) ([]Deployment, error) {
+	rows, err := s.db.QueryContext(ctx, "SELECT "+deploymentColumns+" FROM deployments WHERE state = ? ORDER BY app_id", DeployLive)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Deployment
+	for rows.Next() {
+		d, err := scanDeployment(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
+// SetDeploymentImage records the image a deployment runs.
+func (s *Store) SetDeploymentImage(ctx context.Context, id int64, image string) error {
+	_, err := s.db.ExecContext(ctx, "UPDATE deployments SET image = ? WHERE id = ?", image, id)
+	return err
+}
+
 // HasNewer reports whether the app has a deployment created after d.
 func (s *Store) HasNewer(ctx context.Context, d Deployment) (bool, error) {
 	var n int

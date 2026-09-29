@@ -37,6 +37,7 @@ type Engine interface {
 	RemoveImage(ctx context.Context, name string) error
 	Images(ctx context.Context) ([]engine.Image, error)
 	SetUnused(ctx context.Context, name string, since time.Time) error
+	Pin(ctx context.Context, ref string) (string, error)
 	Wait(ctx context.Context, id string) (uint32, error)
 	Usage(id string) (engine.Usage, error)
 	CreateVolume(name string) error
@@ -95,6 +96,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /v1/builds/{app}/cache", s.removeBuildCache)
 	mux.HandleFunc("DELETE /v1/images", s.removeImage)
 	mux.HandleFunc("POST /v1/images/sweep", s.sweepImages)
+	mux.HandleFunc("POST /v1/images/pin", s.pinImage)
 	mux.HandleFunc("GET /v1/version", s.version)
 	mux.HandleFunc("GET /v1/update", s.updateStatus)
 	mux.HandleFunc("POST /v1/update", s.startUpdate)
@@ -239,8 +241,18 @@ func (s *Server) run(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, "run", req.ID, err)
 		return
 	}
-	s.Log.Info("container started", "id", req.ID, "image", req.Image)
-	w.WriteHeader(http.StatusCreated)
+	// What ran, by digest, so the panel can start the same image again.
+	image, err := s.Engine.Pin(r.Context(), spec.Image)
+	if err != nil {
+		s.Log.Error("pin image", "image", spec.Image, "err", err)
+		image = spec.Image
+	}
+	s.Log.Info("container started", "id", req.ID, "image", image)
+	writeJSON(w, http.StatusCreated, runResponse{Image: image})
+}
+
+type runResponse struct {
+	Image string `json:"image"`
 }
 
 // secretKey hands out the public key that secret variables are sealed with.

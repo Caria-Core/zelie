@@ -250,6 +250,7 @@ func (s *Server) Serve(ctx context.Context, socket string) error {
 		if !s.waitForCore(ctx) {
 			return
 		}
+		s.pinLive(ctx)
 		go s.supervise(ctx)
 		go s.watchVolumes(ctx)
 		s.syncAllLinks(ctx)
