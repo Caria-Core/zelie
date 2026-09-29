@@ -671,6 +671,12 @@ func (s *Server) managesGame(next http.HandlerFunc) http.HandlerFunc {
 	return s.adminOnly(next)
 }
 
+// managesGameConfirmed is managesGame for what also needs a recent second
+// step.
+func (s *Server) managesGameConfirmed(next http.HandlerFunc) http.HandlerFunc {
+	return s.confirmed(requireAdmin(next))
+}
+
 type gameSettingsRequest struct {
 	// Variables holds the values to change; the others stay as they are.
 	Variables map[string]string `json:"variables"`
