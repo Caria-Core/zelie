@@ -344,7 +344,7 @@ func (s *Server) stopContainer(ctx context.Context, id string, e *egg.Egg, out i
 	return nil
 }
 
-var ansi = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
+var ansi = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`) })
 
 // watchRetry is how long the follower waits before it reads the console
 // again after the core dropped it. Tests shorten it.

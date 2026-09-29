@@ -69,7 +69,7 @@ func (t *steamTracker) build(app int64) (string, time.Time) {
 // srcdsAppID is the variable Pterodactyl's Steam eggs keep the app in.
 const srcdsAppID = "SRCDS_APPID"
 
-var appUpdate = regexp.MustCompile(`\+app_update\s+"?(\d+)`)
+var appUpdate = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`\+app_update\s+"?(\d+)`) })
 
 // steamAppID finds the Steam app an egg installs: its SRCDS_APPID variable,
 // or a literal id in the install script's app_update. It returns 0 for a game
@@ -78,7 +78,7 @@ func steamAppID(e *egg.Egg, vars map[string]string) int64 {
 	if id, err := strconv.ParseInt(strings.TrimSpace(vars[srcdsAppID]), 10, 64); err == nil && id > 0 {
 		return id
 	}
-	if m := appUpdate.FindStringSubmatch(e.Install.Script); m != nil {
+	if m := appUpdate().FindStringSubmatch(e.Install.Script); m != nil {
 		if id, err := strconv.ParseInt(m[1], 10, 64); err == nil && id > 0 {
 			return id
 		}

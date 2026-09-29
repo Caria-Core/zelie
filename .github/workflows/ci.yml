@@ -116,13 +116,23 @@ jobs:
       - name: Footprint
         # Zelie's own memory once the update settled, apps and databases not
         # counted; and the size of the binary.
+        env:
+          # Idle, with a few apps and databases running. A measurement of the
+          # three processes on a small VM was 35 MB with the memory work in
+          # place (55 MB before); this is that plus the apps' share and about
+          # a quarter of headroom. Tighten it once a run here shows the real
+          # number.
+          MAX_PSS_MB: 65
         run: |
           sleep 20
           ps -C zelie -o rss=,args= | awk '{kb+=$1; print} END {printf "zelie total rss: %.1f MB\n", kb/1024}'
           # RSS counts the binary's shared pages once per process; PSS splits them.
           for p in $(pgrep -x zelie); do
             sudo awk -v p="$p" '/^(Pss|Private_Dirty|Private_Clean):/ {v[$1]=$2} END {printf "%s pss=%d private=%d kB\n", p, v["Pss:"], v["Private_Dirty:"]+v["Private_Clean:"]}' /proc/$p/smaps_rollup
-          done | awk '{print} {split($2,a,"="); t+=a[2]} END {printf "zelie total pss: %.1f MB\n", t/1024}'
+          done | awk -v max="$MAX_PSS_MB" '{print} {split($2,a,"="); t+=a[2]} END {
+            printf "zelie total pss: %.1f MB (limit %d MB)\n", t/1024, max
+            if (t/1024 > max) { print "zelie uses more memory than its limit"; exit 1 }
+          }'
           ls -l /usr/local/bin/zelie
       - name: Game server
         if: matrix.from == 'latest'

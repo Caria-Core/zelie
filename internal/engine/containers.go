@@ -59,10 +59,10 @@ const BuilderHostID = builderBase
 // pulled from a registry.
 const LocalImages = "zelie.local/"
 
-var validID = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
+var validID = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`) })
 
 // ValidID reports whether id is safe to use as a container name and in paths.
-func ValidID(id string) bool { return validID.MatchString(id) }
+func ValidID(id string) bool { return validID().MatchString(id) }
 
 // Spec describes a container to run.
 type Spec struct {
@@ -138,13 +138,13 @@ const MaxFileSize = 512 << 10
 // Validate checks the spec before anything is created.
 func (s Spec) Validate() error {
 	switch {
-	case !validID.MatchString(s.ID):
+	case !validID().MatchString(s.ID):
 		return fmt.Errorf("container id %q must be lowercase letters, digits and dashes", s.ID)
 	case s.Image == "":
 		return errors.New("image is required")
-	case s.App != "" && !validID.MatchString(s.App):
+	case s.App != "" && !validID().MatchString(s.App):
 		return fmt.Errorf("app id %q must be lowercase letters, digits and dashes", s.App)
-	case s.Network != "" && !validID.MatchString(s.Network):
+	case s.Network != "" && !validID().MatchString(s.Network):
 		return fmt.Errorf("network name %q must be lowercase letters, digits and dashes", s.Network)
 	case s.MemoryBytes <= 0:
 		return errors.New("a memory limit is required")
@@ -167,7 +167,7 @@ func (s Spec) Validate() error {
 	}
 	targets := map[string]bool{}
 	for _, v := range s.Volumes {
-		if !validID.MatchString(v.Name) {
+		if !validID().MatchString(v.Name) {
 			return fmt.Errorf("volume name %q must be lowercase letters, digits and dashes", v.Name)
 		}
 		if err := CheckVolumeTarget(v.Target); err != nil {

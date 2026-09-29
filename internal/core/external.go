@@ -33,7 +33,7 @@ import (
 const ExternalUser = "zelie_external"
 
 var (
-	validExternalPassword = regexp.MustCompile(`^[A-Za-z0-9]{32,64}$`)
+	validExternalPassword = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^[A-Za-z0-9]{32,64}$`) })
 
 	errPortTaken = msg.Define(http.StatusConflict, "external.port_taken", "Port {port} is already in use on this server.")
 	errNoRoot    = msg.Define(http.StatusConflict, "external.no_root", "This database was made before outside access existed. Back it up, make a new one and restore the backup into it.")
@@ -386,7 +386,7 @@ func (s *Server) openPassword(app, sealed string) (string, error) {
 		return "", err
 	}
 	_, password, _ := strings.Cut(kv, "=")
-	if !validExternalPassword.MatchString(password) {
+	if !validExternalPassword().MatchString(password) {
 		return "", errors.New("the password must be 32 to 64 letters and digits")
 	}
 	return password, nil

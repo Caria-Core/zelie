@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 // MaxConfigFile is the largest config file ApplyFile is meant for. The
@@ -242,7 +243,7 @@ func slicesInsert(lines []string, at int, line string) []string {
 // A value that an egg writes as text is stored in the type the file
 // already has for that key. A new key gets a type from how the value looks:
 // booleans and whole numbers are written as such, everything else as text.
-var wholeNumber = regexp.MustCompile(`^-?(0|[1-9][0-9]{0,17})$`)
+var wholeNumber = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^-?(0|[1-9][0-9]{0,17})$`) })
 
 const (
 	kindString = "!!str"
@@ -255,7 +256,7 @@ func inferKind(value string) string {
 	switch {
 	case value == "true" || value == "false":
 		return kindBool
-	case wholeNumber.MatchString(value):
+	case wholeNumber().MatchString(value):
 		return kindInt
 	}
 	return kindString
@@ -269,7 +270,7 @@ func kindLike(old, value string) string {
 			return kindBool
 		}
 	case kindInt:
-		if wholeNumber.MatchString(value) {
+		if wholeNumber().MatchString(value) {
 			return kindInt
 		}
 		if _, err := strconv.ParseFloat(value, 64); err == nil {

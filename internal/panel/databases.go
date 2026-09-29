@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Caria-Core/zelie/internal/core"
@@ -268,7 +269,7 @@ type linkRequest struct {
 	Prefix *string `json:"prefix"`
 }
 
-var validPrefix = regexp.MustCompile(`^([A-Z][A-Z0-9_]{0,30})?$`)
+var validPrefix = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^([A-Z][A-Z0-9_]{0,30})?$`) })
 
 func (s *Server) listLinks(w http.ResponseWriter, r *http.Request) {
 	a, ok := s.appFrom(w, r)
@@ -425,7 +426,7 @@ func (s *Server) checkLink(ctx context.Context, a store.App, l store.Link) error
 	if a.IsDatabase() {
 		return errLinkDB.Err()
 	}
-	if !validPrefix.MatchString(l.Prefix) {
+	if !validPrefix().MatchString(l.Prefix) {
 		return errBadPrefix.Err()
 	}
 	db, err := s.Store.App(ctx, l.DBID)
