@@ -253,12 +253,12 @@ var Catalog = []Entry{
 		Repo:   "pelican-eggs/games-steamcmd",
 		Commit: steamCommit,
 		Path:   "valheim/valheim_vanilla/egg-valheim.json",
-		// The game's own minimum is 4 GB. Steam queries the port after the game's, and
-		// the egg has no variable for it.
+		// The game's own minimum is 4 GB. Steam queries the port after the game's
+		// and crossplay uses the one after that; the egg has a variable for neither.
 		MemoryMB: 4 << 10,
 		DiskMB:   5 << 10,
-		Ports:    2,
-		Block:    2,
+		Ports:    3,
+		Block:    3,
 	},
 
 	// Generic eggs from pelican-eggs/generic. They start whatever the

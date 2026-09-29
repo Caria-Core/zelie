@@ -6,6 +6,7 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/Caria-Core/zelie/internal/egg"
 	"github.com/Caria-Core/zelie/internal/store"
 )
 
@@ -87,8 +88,13 @@ func TestPlaceBlock(t *testing.T) {
 func newBlockEnv(t *testing.T) *appEnv {
 	t.Helper()
 	e := newRustEnv(t)
-	// Valheim needs the game port and the next one; the Rust egg gives it
-	// variables to test with.
+	// These tests take Valheim as a game with a run of two ports, whatever
+	// the catalog says it needs today; the Rust egg gives it variables to
+	// test with.
+	i := slices.IndexFunc(egg.Catalog, func(c egg.Entry) bool { return c.ID == "valheim" })
+	saved := egg.Catalog[i]
+	egg.Catalog[i].Ports, egg.Catalog[i].Block = 2, 2
+	t.Cleanup(func() { egg.Catalog[i] = saved })
 	e.s.Eggs.(*fakeEggs).files["valheim"] = rustEgg(t)
 	e.s.Eggs.(*fakeEggs).files["7-days-to-die"] = rustEgg(t)
 	return e
