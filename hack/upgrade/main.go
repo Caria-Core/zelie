@@ -1,7 +1,8 @@
 // Command upgrade checks that updating Zelie keeps what a server already
 // holds. CI installs the last release, runs "upgrade seed" to give it an
 // administrator, an app, a database and a backup, puts the new binary in
-// place the way the panel's update does, and runs "upgrade check".
+// place the way the panel's update does, and runs "upgrade check". After
+// that, "upgrade game" runs a real game server on the updated panel.
 //
 // It talks to the panel over HTTP as a person would, through the proxy's
 // tunnel port, so it needs a tunnel-mode install.
@@ -54,7 +55,7 @@ type state struct {
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: upgrade seed|check [flags]")
+		fmt.Fprintln(os.Stderr, "usage: upgrade seed|check|game [flags]")
 		os.Exit(2)
 	}
 	fs := flag.NewFlagSet(os.Args[1], flag.ExitOnError)
@@ -70,6 +71,8 @@ func main() {
 		err = seed(c, *stateFile)
 	case "check":
 		err = check(c, *stateFile, *want)
+	case "game":
+		err = game(c, *stateFile)
 	default:
 		err = fmt.Errorf("unknown command %q", os.Args[1])
 	}
@@ -226,10 +229,7 @@ func check(c *client, stateFile, want string) error {
 	}
 
 	step("log in again")
-	if err := c.do("POST", "/api/login", map[string]string{"email": email, "password": st.Password}, nil); err != nil {
-		return err
-	}
-	if err := c.do("POST", "/api/login/totp", map[string]string{"code": c.code()}, nil); err != nil {
+	if err := c.login(); err != nil {
 		return err
 	}
 	var server struct {
@@ -396,6 +396,14 @@ func (c *client) upgradeDatabase() error {
 	return nil
 }
 
+// login signs in as the administrator seed made.
+func (c *client) login() error {
+	if err := c.do("POST", "/api/login", map[string]string{"email": email, "password": c.st.Password}, nil); err != nil {
+		return err
+	}
+	return c.do("POST", "/api/login/totp", map[string]string{"code": c.code()}, nil)
+}
+
 func (c *client) waitRunning(app string) error {
 	return waitFor(app+" to run", 3*time.Minute, func() error {
 		var a struct {
@@ -461,6 +469,18 @@ type client struct {
 
 // do sends a request to the panel and decodes the answer into out.
 func (c *client) do(method, path string, in, out any) error {
+	b, err := c.send(method, path, in)
+	if err != nil {
+		return err
+	}
+	if out != nil && len(b) > 0 {
+		return json.Unmarshal(b, out)
+	}
+	return nil
+}
+
+// send sends a request to the panel and returns the answer's body.
+func (c *client) send(method, path string, in any) ([]byte, error) {
 	var body io.Reader
 	if in != nil {
 		b, _ := json.Marshal(in)
@@ -476,7 +496,7 @@ func (c *client) do(method, path string, in, out any) error {
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer resp.Body.Close()
 	for _, ck := range resp.Cookies() {
@@ -484,12 +504,9 @@ func (c *client) do(method, path string, in, out any) error {
 	}
 	b, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 300 {
-		return fmt.Errorf("%s %s: %s: %s", method, path, resp.Status, b)
+		return nil, fmt.Errorf("%s %s: %s: %s", method, path, resp.Status, b)
 	}
-	if out != nil && len(b) > 0 {
-		return json.Unmarshal(b, out)
-	}
-	return nil
+	return b, nil
 }
 
 // code plays the authenticator app. The panel takes each step's code once

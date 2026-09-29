@@ -111,6 +111,11 @@ jobs:
             /usr/local/bin/zelie.old update-finish --from "$OLD" --to "$NEW"
       - name: Check
         run: sudo ./upgrade check -want "$NEW"
+      # A real Paper server on the updated panel. Once is enough, so the run
+      # from the oldest release stays short.
+      - name: Game server
+        if: matrix.from == 'latest'
+        run: sudo ./upgrade game
       - name: Logs
         if: failure()
         run: sudo journalctl -u zelie-core -u zelie-proxy -u zelie-panel -u zelie-update --no-pager | tail -n 300
