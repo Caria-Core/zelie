@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/Caria-Core/zelie/internal/proxy"
+	"github.com/Caria-Core/zelie/internal/store"
 )
 
 func TestCheck(t *testing.T) {
@@ -79,6 +80,25 @@ func TestUnits(t *testing.T) {
 	}
 	if c := domain["zelie-core.service"]; !strings.Contains(c, "KillMode=process") || strings.Contains(c, "User=") {
 		t.Errorf("core unit:\n%s", c)
+	}
+	// The SFTP server is a user of its own that binds a high port and does
+	// nothing else, whichever way the panel is reached.
+	for _, u := range []map[string]string{tunnel, domain} {
+		sftp := u["zelie-sftp.service"]
+		for _, want := range []string{"User=zelie-sftp\n", "ExecStart=" + Binary + " sftp\n", "CapabilityBoundingSet=\n", "NoNewPrivileges=yes", "ProtectSystem=strict", "StateDirectory=zelie-sftp"} {
+			if !strings.Contains(sftp, want) {
+				t.Errorf("SFTP unit lacks %q:\n%s", want, sftp)
+			}
+		}
+		if strings.Contains(sftp, "AmbientCapabilities") {
+			t.Errorf("SFTP unit may bind low ports:\n%s", sftp)
+		}
+	}
+}
+
+func TestSFTPPortMatchesTheStore(t *testing.T) {
+	if DefaultSFTPPort != store.DefaultSFTPPort {
+		t.Errorf("the installer opens %d, the panel starts on %d", DefaultSFTPPort, store.DefaultSFTPPort)
 	}
 }
 
@@ -174,7 +194,7 @@ func TestInstallBehindTunnel(t *testing.T) {
 	if b, _ := os.ReadFile(filepath.Join(f.root, Binary)); string(b) != "binary" {
 		t.Error("binary not installed")
 	}
-	if !f.users[PanelUser] || !f.users[ProxyUser] {
+	if !f.users[PanelUser] || !f.users[ProxyUser] || !f.users[SFTPUser] {
 		t.Errorf("users %v", f.users)
 	}
 	for _, name := range unitNames() {
@@ -234,13 +254,13 @@ func TestInstallBehindTunnel(t *testing.T) {
 		}
 	}
 
-	// A new binary in place, as install.sh leaves it: all three restart.
+	// A new binary in place, as install.sh leaves it: all four restart.
 	f.commands = nil
 	f.setStale(t, true)
 	if err := f.installer(t, opts, &out).Run(context.Background()); err != nil {
 		t.Fatalf("run after an update: %v", err)
 	}
-	if !slices.Contains(f.commands, "systemctl restart zelie-core zelie-proxy zelie-panel") {
+	if !slices.Contains(f.commands, "systemctl restart zelie-core zelie-proxy zelie-panel zelie-sftp") {
 		t.Errorf("after an update: %v", f.commands)
 	}
 
@@ -308,5 +328,105 @@ func TestInstallBusyPort(t *testing.T) {
 	err = f.installer(t, Options{Mode: ModeTunnel, Host: "ist.cariacore.com", Port: port}, &out).Run(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "in use") {
 		t.Errorf("err %v", err)
+	}
+}
+
+func TestUFWIsOpenedWhenItIsOn(t *testing.T) {
+	for _, tc := range []struct {
+		name, status string
+		err          error
+		wantAllow    bool
+	}{
+		{"active", "Status: active\n\nTo  Action\n", nil, true},
+		{"inactive", "Status: inactive\n", nil, false},
+		{"not installed", "", errors.New("not found"), false},
+	} {
+		var ran []string
+		run := func(_ context.Context, name string, args ...string) (string, error) {
+			cmd := name + " " + strings.Join(args, " ")
+			ran = append(ran, cmd)
+			if cmd == "ufw status" {
+				return tc.status, tc.err
+			}
+			return "", nil
+		}
+		done, _, err := openSFTPPort(context.Background(), run)
+		if err != nil || done != tc.wantAllow || slices.Contains(ran, "ufw allow 2222/tcp comment Zelie SFTP") != tc.wantAllow {
+			t.Errorf("%s: %v %v, ran %v", tc.name, done, err, ran)
+		}
+	}
+	// A firewall that says no does not stop the install.
+	refuse := func(_ context.Context, name string, args ...string) (string, error) {
+		if len(args) > 0 && args[0] == "allow" {
+			return "ERROR", errors.New("exit status 1")
+		}
+		return "Status: active", nil
+	}
+	if done, note, err := openSFTPPort(context.Background(), refuse); done || err != nil || !strings.Contains(note, "would not allow") {
+		t.Errorf("refused: %v %q %v", done, note, err)
+	}
+}
+
+func TestSetUpSFTPOnAnOlderInstall(t *testing.T) {
+	f := newFakeServer(t)
+	f.users[PanelUser], f.users[ProxyUser] = true, true
+	exec := func(_ context.Context, name string, args ...string) (string, error) {
+		cmd := name + " " + strings.Join(args, " ")
+		f.commands = append(f.commands, cmd)
+		switch {
+		case name == "id" && !f.users[args[1]]:
+			return "no such user", errors.New("exit status 1")
+		case name == "useradd":
+			f.users[args[len(args)-1]] = true
+		case cmd == "ufw status":
+			return "Status: active\n", nil
+		}
+		return "", nil
+	}
+	ctx := context.Background()
+
+	made, err := SetUpSFTP(ctx, exec, f.root)
+	if err != nil || !made {
+		t.Fatalf("first: %v %v", made, err)
+	}
+	if !f.users[SFTPUser] {
+		t.Error("no user was made")
+	}
+	if b, _ := os.ReadFile(filepath.Join(f.root, UnitDir, "zelie-sftp.service")); string(b) != SFTPUnit() {
+		t.Errorf("unit:\n%s", b)
+	}
+	for _, want := range []string{"systemctl daemon-reload", "systemctl enable --now zelie-sftp", "ufw allow 2222/tcp comment Zelie SFTP"} {
+		if !slices.Contains(f.commands, want) {
+			t.Errorf("did not run %q: %v", want, f.commands)
+		}
+	}
+	// The other services keep running as they are.
+	for _, c := range f.commands {
+		if strings.HasPrefix(c, "systemctl restart") || strings.Contains(c, "zelie-core") {
+			t.Errorf("touched what was there: %s", c)
+		}
+	}
+
+	// On every later start it finds all in place and runs nothing more
+	// than the check for the user.
+	f.commands = nil
+	made, err = SetUpSFTP(ctx, exec, f.root)
+	if err != nil || made || len(f.commands) != 1 || f.commands[0] != "id -u zelie-sftp" {
+		t.Errorf("second: %v %v %v", made, err, f.commands)
+	}
+
+	// A unit that was lost is made again.
+	os.Remove(filepath.Join(f.root, UnitDir, "zelie-sftp.service"))
+	if made, err := SetUpSFTP(ctx, exec, f.root); err != nil || !made {
+		t.Errorf("after the unit was lost: %v %v", made, err)
+	}
+
+	// Failing to make the user is an error to report.
+	f = newFakeServer(t)
+	bad := func(_ context.Context, name string, args ...string) (string, error) {
+		return "boom", errors.New("exit status 1")
+	}
+	if _, err := SetUpSFTP(ctx, bad, f.root); err == nil {
+		t.Error("no error when the user cannot be made")
 	}
 }

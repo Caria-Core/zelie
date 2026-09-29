@@ -15,6 +15,7 @@ import (
 	"github.com/Caria-Core/zelie/internal/build"
 	"github.com/Caria-Core/zelie/internal/core"
 	"github.com/Caria-Core/zelie/internal/engine"
+	"github.com/Caria-Core/zelie/internal/install"
 	"github.com/Caria-Core/zelie/internal/secret"
 )
 
@@ -32,6 +33,13 @@ func runCore(stderr io.Writer) int {
 	defer stop()
 
 	policy := panelPolicy(log)
+	// The SFTP server may use the file routes and nothing else.
+	setUpSFTP(ctx, log)
+	if uid, ok := lookupUID(install.SFTPUser); ok {
+		policy.Routes = map[uint32][]string{uid: core.SFTPRoutes}
+	} else {
+		log.Warn("SFTP user not found, SFTP cannot reach the core", "user", install.SFTPUser)
+	}
 
 	e, err := engine.Connect(ctx, engine.DefaultPaths)
 	if err != nil {

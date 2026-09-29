@@ -101,6 +101,10 @@ func (f *Finisher) restartAndWait(ctx context.Context, version string) error {
 	if out, err := f.Exec(ctx, "systemctl", args...); err != nil {
 		return fmt.Errorf("systemctl restart: %v: %s", err, strings.TrimSpace(out))
 	}
+	// The SFTP server follows the others, but does not decide the update:
+	// it may not be set up yet on a server that never had it, and its port
+	// may be taken by another program.
+	f.Exec(ctx, "systemctl", "restart", install.SFTPService)
 	ctx, cancel := context.WithTimeout(ctx, f.Timeout)
 	defer cancel()
 	var err error

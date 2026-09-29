@@ -85,7 +85,7 @@ type Installer struct {
 	// Root is prepended to every path written; empty on a real server.
 	Root string
 	// Exec runs a command and returns its combined output.
-	Exec func(ctx context.Context, name string, args ...string) (string, error)
+	Exec ExecFunc
 	// Engine installs containerd and runc.
 	Engine func(ctx context.Context) error
 	// Proxy applies the proxy's configuration once it runs.
@@ -120,6 +120,7 @@ func (in *Installer) Run(ctx context.Context) error {
 		{"Create users", in.users},
 		{"Install containerd", in.engine},
 		{"Install services", in.services},
+		{"Open the SFTP port", in.sftpPort},
 		{"Configure the proxy", in.proxy},
 		{"Connect the tunnel", in.tunnel},
 	}
@@ -247,20 +248,35 @@ func (in *Installer) binary(ctx context.Context) (bool, string, error) {
 
 func (in *Installer) users(ctx context.Context) (bool, string, error) {
 	var made []string
-	for _, u := range []string{PanelUser, ProxyUser} {
-		if _, err := in.Exec(ctx, "id", "-u", u); err == nil {
-			continue
+	for _, u := range []string{PanelUser, ProxyUser, SFTPUser} {
+		ok, err := ensureUser(ctx, in.Exec, u)
+		if err != nil {
+			return false, "", err
 		}
-		if out, err := in.Exec(ctx, "useradd", "--system", "--no-create-home", "--home-dir", "/nonexistent", "--shell", "/usr/sbin/nologin", u); err != nil {
-			return false, "", fmt.Errorf("useradd %s: %v: %s", u, err, out)
+		if ok {
+			made = append(made, u)
 		}
-		made = append(made, u)
 	}
 	if len(made) == 0 {
 		return false, "they exist", nil
 	}
 	return true, strings.Join(made, ", "), nil
 }
+
+// ensureUser makes a system user that cannot log in, unless it exists. It
+// reports whether it made one.
+func ensureUser(ctx context.Context, run ExecFunc, name string) (bool, error) {
+	if _, err := run(ctx, "id", "-u", name); err == nil {
+		return false, nil
+	}
+	if out, err := run(ctx, "useradd", "--system", "--no-create-home", "--home-dir", "/nonexistent", "--shell", "/usr/sbin/nologin", name); err != nil {
+		return false, fmt.Errorf("useradd %s: %v: %s", name, err, out)
+	}
+	return true, nil
+}
+
+// ExecFunc runs a command and returns its combined output.
+type ExecFunc func(ctx context.Context, name string, args ...string) (string, error)
 
 func (in *Installer) engine(ctx context.Context) (bool, string, error) {
 	return true, "", in.Engine(ctx)
@@ -273,6 +289,7 @@ func (in *Installer) services(ctx context.Context) (bool, string, error) {
 	// right after would only race whoever talks to it next.
 	// So must one that runs an older binary than the one now in place.
 	var restart []string
+	all := allServices()
 	for i, name := range unitNames() {
 		file := in.path(filepath.Join(UnitDir, name))
 		changed := true
@@ -281,17 +298,17 @@ func (in *Installer) services(ctx context.Context) (bool, string, error) {
 		} else if err := os.WriteFile(file, []byte(units[name]), 0o644); err != nil {
 			return false, "", err
 		}
-		if out, err := in.Exec(ctx, "systemctl", "is-active", Services[i]); err != nil || strings.TrimSpace(out) != "active" {
+		if out, err := in.Exec(ctx, "systemctl", "is-active", all[i]); err != nil || strings.TrimSpace(out) != "active" {
 			continue
 		}
-		if changed || in.staleBinary(ctx, Services[i]) {
-			restart = append(restart, Services[i])
+		if changed || in.staleBinary(ctx, all[i]) {
+			restart = append(restart, all[i])
 		}
 	}
 	if out, err := in.Exec(ctx, "systemctl", "daemon-reload"); err != nil {
 		return false, "", fmt.Errorf("systemctl daemon-reload: %v: %s", err, out)
 	}
-	args := append([]string{"enable", "--now"}, Services...)
+	args := append([]string{"enable", "--now"}, all...)
 	if out, err := in.Exec(ctx, "systemctl", args...); err != nil {
 		return false, "", fmt.Errorf("systemctl enable: %v: %s", err, out)
 	}
@@ -301,7 +318,13 @@ func (in *Installer) services(ctx context.Context) (bool, string, error) {
 			return false, "", fmt.Errorf("systemctl restart: %v: %s", err, out)
 		}
 	}
-	return true, strings.Join(Services, ", "), nil
+	return true, strings.Join(all, ", "), nil
+}
+
+// sftpPort lets the SFTP port through ufw, when ufw is on. Other firewalls
+// are left to their owners, as Zelie does not know their rules.
+func (in *Installer) sftpPort(ctx context.Context) (bool, string, error) {
+	return openSFTPPort(ctx, in.Exec)
 }
 
 // staleBinary reports whether a running service's process runs a binary

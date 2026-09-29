@@ -1,6 +1,6 @@
 // Command zelie is the Zelie server panel. The same binary runs the
-// privileged core, the web proxy and the unprivileged panel as separate
-// processes.
+// privileged core, the web proxy, the unprivileged panel and the SFTP server
+// as separate processes.
 package main
 
 import (
@@ -22,6 +22,7 @@ Commands:
   core             Run the privileged core (needs root)
   proxy            Run the web proxy (must not run as root)
   panel            Run the web panel (must not run as root)
+  sftp             Run the SFTP server for game servers (must not run as root)
   setup-link       Print a one-time link to create the first administrator
   reset-login      Print a one-time link to set a new password when locked out
   engine install   Install or update Zelie's containerd and runc (needs root)
@@ -60,6 +61,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runProxy(args[1:], stderr)
 	case "panel":
 		return runPanel(stderr)
+	case "sftp":
+		return runSFTP(stderr)
 	case "setup-link":
 		return setupLink(stdout, stderr)
 	case "reset-login":

@@ -11,6 +11,7 @@ import (
 	"syscall"
 
 	"github.com/Caria-Core/zelie/internal/core"
+	"github.com/Caria-Core/zelie/internal/install"
 	"github.com/Caria-Core/zelie/internal/panel"
 	"github.com/Caria-Core/zelie/internal/proxy"
 	"github.com/Caria-Core/zelie/internal/store"
@@ -55,6 +56,7 @@ func runPanel(stderr io.Writer) int {
 		Store: db, Sealer: sealer, Core: core.NewClient(core.DefaultSocket),
 		Proxy: proxy.NewClient(proxySocket), Source: panel.NewPublicGitHub(),
 		Log: log, ProxyUID: proxyUID, DataDir: panelState,
+		SFTPUID: uidLookup(install.SFTPUser),
 	}
 	if err := s.Serve(ctx, panelSocket); err != nil {
 		log.Error("panel stopped", "err", err)

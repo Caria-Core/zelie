@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -136,13 +137,19 @@ func TestUpdateThatComesUp(t *testing.T) {
 	f := &Finisher{
 		Root: root, Timeout: time.Second, Now: time.Now,
 		Exec: func(_ context.Context, name string, args ...string) (string, error) {
-			ran = append(ran, name+" "+strings.Join(args, " "))
+			cmd := name + " " + strings.Join(args, " ")
+			ran = append(ran, cmd)
+			// A server without the SFTP unit, as one from before it existed.
+			if strings.HasSuffix(cmd, "zelie-sftp") {
+				return "Unit zelie-sftp.service not found.", errors.New("exit status 5")
+			}
 			return "", nil
 		},
 		Healthy: func(_ context.Context, v string) error { return nil },
 	}
 	res := f.Run(context.Background(), "v1.2.2", "v1.2.3")
-	if !res.OK || len(ran) != 1 || ran[0] != "systemctl restart zelie-core zelie-proxy zelie-panel" {
+	want := []string{"systemctl restart zelie-core zelie-proxy zelie-panel", "systemctl restart zelie-sftp"}
+	if !res.OK || !slices.Equal(ran, want) {
 		t.Errorf("%+v, ran %v", res, ran)
 	}
 	if last, _ := Last(root); !last.OK || last.To != "v1.2.3" {
@@ -168,7 +175,7 @@ func TestUpdateThatFailsGoesBack(t *testing.T) {
 	if res.OK || !strings.Contains(res.Error, "did not come up") || !strings.Contains(res.Error, "v1.2.2 is running again") {
 		t.Errorf("%+v", res)
 	}
-	if read(root, install.Binary) != "old binary" || restarts != 2 {
+	if read(root, install.Binary) != "old binary" || restarts != 4 {
 		t.Errorf("binary %q after %d restarts", read(root, install.Binary), restarts)
 	}
 	if last, _ := Last(root); last.OK || last.Error == "" {

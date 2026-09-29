@@ -39,11 +39,14 @@ administrator.
 - `/usr/local/bin/zelie`, and Zelie's own containerd and runc under `/usr/local/lib/zelie`, with
   their settings in `/etc/zelie`.
   They do not touch Docker, which can keep running next to them.
-- Two system users, `zelie` and `zelie-proxy`, which cannot log in.
-- Four systemd services: `zelie-containerd`, `zelie-core`, `zelie-proxy` and `zelie-panel`.
+- Three system users, `zelie`, `zelie-proxy` and `zelie-sftp`, which cannot log in.
+- Five systemd services: `zelie-containerd`, `zelie-core`, `zelie-proxy`, `zelie-panel` and
+  `zelie-sftp`. The SFTP server listens on port 2222 by default; the Server page changes it. If
+  ufw is on, the install opens port 2222 in it.
 - An nftables table named `zelie`, which only concerns Zelie's own container networks.
   Other rules, such as ufw's or Docker's, are left as they are.
-- Data under `/var/lib/zelie`, `/var/lib/zelie-panel` and `/var/lib/zelie-proxy`.
+- Data under `/var/lib/zelie`, `/var/lib/zelie-panel`, `/var/lib/zelie-proxy` and
+  `/var/lib/zelie-sftp`.
 
 Running the install again is safe. It finishes an install that stopped halfway and
 leaves alone what is already done.
@@ -54,6 +57,7 @@ The Server page in the panel shows when a new release is out, with its notes. Up
 downloads the release, checks its signature, and restarts Zelie's own services. Apps,
 databases and game servers keep running. If the new version does not answer within a
 minute and a half, the old one is put back and the page says why. The previous binary
-stays next to the new one as `/usr/local/bin/zelie.old`.
+stays next to the new one as `/usr/local/bin/zelie.old`. A server installed before SFTP
+existed gets the SFTP user and service the first time it starts on a version that has them.
 
 Running the install command again also updates Zelie.
