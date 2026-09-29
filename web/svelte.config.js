@@ -9,6 +9,6 @@ export default {
 			assets: '../internal/webui/build/ui',
 			fallback: 'index.html'
 		}),
-		output: { bundleStrategy: 'single' }
+		output: { bundleStrategy: 'split' }
 	}
 };

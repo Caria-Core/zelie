@@ -1,6 +1,7 @@
 <script lang="ts">
 	import {
 		ArrowLeft,
+		CircleAlert,
 		ChevronRight,
 		Download,
 		Ellipsis,
@@ -15,6 +16,7 @@
 		PackageOpen,
 		Pencil,
 		Save,
+		Star,
 		Trash,
 		Upload as UploadIcon,
 		X
@@ -29,7 +31,9 @@
 	import * as files from '$lib/files';
 	import { game, gameState } from '$lib/games.svelte';
 	import { t } from '$lib/i18n';
+	import { jsonProblem, type Problem } from '$lib/editor/json';
 	import Button from '$lib/ui/Button.svelte';
+	import CodeEditor from '$lib/ui/CodeEditor.svelte';
 	import ErrorText from '$lib/ui/ErrorText.svelte';
 	import NameDialog, { type NameRequest } from '$lib/ui/NameDialog.svelte';
 
@@ -61,6 +65,80 @@
 	let editor = $state<{ path: string; text: string; saved: string } | null>(null);
 	let saving = $state(false);
 	const dirty = $derived(!!editor && editor.text !== editor.saved);
+	let problem = $state<Problem | null>(null);
+	let codeEditor = $state<ReturnType<typeof CodeEditor>>();
+
+	// Starred paths of this account on this server, and what each one is now:
+	// null when it is gone, undefined while that is not known.
+	type Starred = { dir: boolean; symlink: boolean; size: number } | null;
+	let favs = $state<string[]>([]);
+	let favInfo = $state<Record<string, Starred | undefined>>({});
+	let checkRound = 0;
+
+	async function loadFavs() {
+		const wanted = id;
+		try {
+			const out = await files.favorites(wanted);
+			if (wanted === id) favs = out;
+		} catch {
+			// Favourites are a convenience; the list works without them.
+			if (wanted === id) favs = [];
+		}
+	}
+
+	// Looks each starred path up in its folder, one listing per folder.
+	async function checkFavs(list: string[], current: files.FileList | null, at: string) {
+		const round = ++checkRound;
+		const wanted = id;
+		const folders = [...new Set(list.map((p) => files.parent(p)))];
+		const found: Record<string, Starred | undefined> = {};
+		await Promise.all(
+			folders.map(async (dir) => {
+				let entries: files.FileEntry[] | null = null;
+				try {
+					entries = dir === at && current ? current.entries : (await files.list(wanted, dir)).entries;
+				} catch (err) {
+					if (!(err instanceof ApiError && err.status === 404)) return;
+				}
+				for (const p of list.filter((x) => files.parent(x) === dir)) {
+					const e = entries?.find((x) => files.join(dir, x.name) === p);
+					found[p] = e ? { dir: e.dir, symlink: e.symlink, size: e.size } : null;
+				}
+			})
+		);
+		if (round === checkRound && wanted === id) favInfo = found;
+	}
+
+	$effect(() => {
+		id;
+		untrack(() => {
+			favs = [];
+			favInfo = {};
+			loadFavs();
+		});
+	});
+
+	$effect(() => {
+		const list = favs;
+		const current = listing;
+		const at = path;
+		untrack(() => {
+			if (list.length) checkFavs(list, current, at);
+			else favInfo = {};
+		});
+	});
+
+	async function toggleFav(p: string) {
+		const on = favs.includes(p);
+		error = '';
+		try {
+			if (on) await files.removeFavorite(id, p);
+			else await files.addFavorite(id, p);
+			favs = on ? favs.filter((x) => x !== p) : [...favs, p];
+		} catch (err) {
+			error = messageOf(err);
+		}
+	}
 
 	async function load() {
 		const wanted = path;
@@ -150,6 +228,8 @@
 		const n = await asName({ title: t('files.rename'), label: t('files.newName'), value: e.name, action: t('files.rename'), hint: t('files.renameHint') });
 		if (n === null || n === e.name) return;
 		await run('', () => files.rename(id, files.join(path, e.name), n.startsWith('/') ? files.clean(n) : files.join(path, n)) as Promise<void>);
+		// The server moves the stars with the file.
+		loadFavs();
 	}
 
 	async function removePaths(paths: string[], label: string) {
@@ -178,7 +258,20 @@
 	}
 
 	async function open(e: files.FileEntry) {
-		const target = files.join(path, e.name);
+		return openTarget(files.join(path, e.name), e);
+	}
+
+	async function openFav(p: string) {
+		const info = favInfo[p];
+		if (info === null) return;
+		const dir = files.parent(p);
+		// A file is opened over the folder it lives in, so closing the editor
+		// lands there.
+		if (info && !info.dir && dir !== path) await goto(dir ? `${base}/files?path=${encodeURIComponent(dir)}` : `${base}/files`);
+		await openTarget(p, info ?? { dir: false, symlink: false, size: 0 });
+	}
+
+	async function openTarget(target: string, e: { dir: boolean; symlink: boolean; size: number }) {
 		if (e.dir) return go(target);
 		if (e.symlink) {
 			// A link may lead to a folder; the core follows it only inside the volume.
@@ -207,9 +300,19 @@
 
 	async function save() {
 		if (!editor || saving || !dirty) return;
+		const text = editor.text;
+		// A file that does not parse may still be what the user means to
+		// save, so it is asked about and not refused.
+		const bad = /\.(json|mcmeta)$/i.test(editor.path) ? jsonProblem(text) : null;
+		if (bad) {
+			saving = true;
+			const ok = await ask({ title: t('files.invalidJsonTitle'), text: t('files.invalidJsonText', { line: bad.line, message: bad.message }), action: t('files.saveAnyway'), danger: true });
+			saving = false;
+			if (!ok) return codeEditor?.reveal(bad.line, bad.column);
+			if (!editor) return;
+		}
 		saving = true;
 		error = '';
-		const text = editor.text;
 		try {
 			await files.write(id, editor.path, text);
 			if (editor) editor.saved = text;
@@ -229,6 +332,7 @@
 	async function closeEditor() {
 		if (!(await leaveEditor())) return;
 		editor = null;
+		problem = null;
 		notice = '';
 		load();
 	}
@@ -242,13 +346,15 @@
 		leaveEditor().then((ok) => {
 			if (ok) {
 				editor = null;
+				problem = null;
 				goto(to);
 			}
 		});
 	});
 
 	function keys(e: KeyboardEvent) {
-		if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's' && editor) {
+		// The editor handles its own Save key and marks the event.
+		if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's' && editor && !e.defaultPrevented) {
 			e.preventDefault();
 			save();
 		}
@@ -317,20 +423,22 @@
 				<p class="truncate font-mono text-sm">{editor.path}</p>
 				{#if dirty}<span class="shrink-0 text-sm text-muted">· {t('files.unsaved')}</span>{/if}
 			</div>
-			<Button onclick={save} busy={saving} disabled={!dirty}><Save size={16} strokeWidth={1.75} />{t('files.save')}</Button>
+			<div class="flex min-w-0 max-w-full flex-wrap items-center justify-end gap-x-3 gap-y-2">
+				{#if problem}
+					<button class="flex min-w-0 max-w-full items-center gap-1.5 text-left text-sm text-danger" title={t('files.problemGo')} onclick={() => codeEditor?.reveal(problem!.line, problem!.column)}>
+						<CircleAlert size={16} strokeWidth={1.75} class="shrink-0" />
+						<span class="truncate">{t('files.problem', { line: problem.line, message: problem.message })}</span>
+					</button>
+				{/if}
+				<Button onclick={save} busy={saving} disabled={!dirty}><Save size={16} strokeWidth={1.75} />{t('files.save')}</Button>
+			</div>
 		</div>
 		{#if running}<p class="rounded-xl border border-line px-4 py-3 text-sm text-muted">{t('files.runningNote')}</p>{/if}
 		<ErrorText message={error} />
 		{#if notice && !dirty}<p class="text-sm text-muted" role="status">{notice}</p>{/if}
-		<textarea
-			bind:value={editor.text}
-			aria-label={t('files.editorLabel', { name: parts.at(-1) ?? '' })}
-			spellcheck="false"
-			autocomplete="off"
-			autocapitalize="off"
-			wrap="off"
-			class="h-[min(65vh,42rem)] min-h-64 w-full resize-y rounded-2xl border border-line bg-bg p-4 font-mono text-[13px] leading-relaxed outline-none transition [tab-size:4] focus:border-muted"
-		></textarea>
+		{#key editor.path}
+			<CodeEditor bind:this={codeEditor} bind:value={editor.text} path={editor.path} label={t('files.editorLabel', { name: parts.at(-1) ?? '' })} onsave={save} onproblem={(p) => (problem = p)} />
+		{/key}
 	</div>
 {:else}
 	<!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -409,12 +517,36 @@
 			</div>
 		{/if}
 
+		{#if favs.length}
+			<section aria-label={t('files.favorites')} class="flex flex-col gap-2">
+				<h2 class="flex items-center gap-1.5 text-xs text-muted"><Star size={13} strokeWidth={1.75} aria-hidden="true" />{t('files.favorites')}</h2>
+				<ul class="flex flex-wrap gap-2">
+					{#each favs as p (p)}
+						{@const info = favInfo[p]}
+						{@const FavIcon = info?.dir ? Folder : info?.symlink ? Link : FileText}
+						<li class="flex max-w-full items-center rounded-full border border-line {info === null ? 'text-muted' : ''}">
+							<button
+								class="flex min-w-0 items-center gap-2 rounded-l-full py-1.5 pr-1 pl-3 text-sm transition hover:bg-hover disabled:cursor-default disabled:hover:bg-transparent"
+								title={info === null ? t('files.favGone', { path: p }) : p}
+								disabled={info === null}
+								onclick={() => openFav(p)}
+							>
+								<FavIcon size={15} strokeWidth={1.75} class="shrink-0 text-muted" />
+								<span class="truncate {info === null ? 'line-through' : ''}">{p.split('/').pop()}</span>
+							</button>
+							<button class="rounded-r-full py-1.5 pr-2.5 pl-1 text-muted transition hover:text-fg" aria-label={t('files.unstar', { name: p.split('/').pop() ?? p })} title={t('files.removeStar')} onclick={() => toggleFav(p)}><X size={14} /></button>
+						</li>
+					{/each}
+				</ul>
+			</section>
+		{/if}
+
 		{#if loading && !listing}
 			<p class="text-sm text-muted">{t('files.loading')}</p>
 		{:else if listing}
 			<div class="rounded-2xl border border-line {dragging ? 'border-dashed !border-muted' : ''}">
 				{#if entries.length}
-					<div class="hidden grid-cols-[2.25rem_1fr_6rem_11rem_2.25rem] items-center gap-3 border-b border-line px-3 py-2 text-xs text-muted sm:grid">
+					<div class="hidden grid-cols-[2.25rem_1fr_6rem_11rem_4.5rem] items-center gap-3 border-b border-line px-3 py-2 text-xs text-muted sm:grid">
 						<input type="checkbox" aria-label={t('files.selectAll')} checked={allChosen} onchange={() => (selected = allChosen ? [] : entries.map((e) => files.join(path, e.name)))} class="size-4 accent-current" />
 						<span>{t('files.name')}</span>
 						<span class="text-right">{t('files.size')}</span>
@@ -425,7 +557,7 @@
 						{#each entries as e (e.name)}
 							{@const p = files.join(path, e.name)}
 							{@const Icon = iconFor(e)}
-							<li class="grid grid-cols-[2.25rem_1fr_2.25rem] items-center gap-3 px-3 py-1.5 transition hover:bg-hover sm:grid-cols-[2.25rem_1fr_6rem_11rem_2.25rem] {selected.includes(p) ? 'bg-selected' : ''}">
+							<li class="grid grid-cols-[2.25rem_1fr_4.5rem] items-center gap-3 px-3 py-1.5 transition hover:bg-hover sm:grid-cols-[2.25rem_1fr_6rem_11rem_4.5rem] {selected.includes(p) ? 'bg-selected' : ''}">
 								<input type="checkbox" aria-label={t('files.select', { name: e.name })} checked={selected.includes(p)} onchange={() => toggle(p)} class="size-4 accent-current" />
 								<button class="flex min-w-0 items-center gap-3 py-1.5 text-left" onclick={() => open(e)}>
 									<Icon size={18} strokeWidth={1.75} class="shrink-0 {e.dir ? 'text-fg' : 'text-muted'}" />
@@ -434,7 +566,15 @@
 								</button>
 								<span class="hidden text-right text-sm text-muted tabular-nums sm:block">{e.dir ? '' : bytes(e.size)}</span>
 								<span class="hidden text-sm text-muted sm:block">{files.modified(e.modified)}</span>
-								<div class="relative">
+								<div class="relative flex justify-end">
+									<button
+										class="rounded-lg p-1.5 transition hover:bg-line {favs.includes(p) ? 'text-warn' : 'text-muted hover:text-fg'}"
+										aria-label={favs.includes(p) ? t('files.unstar', { name: e.name }) : t('files.star', { name: e.name })}
+										aria-pressed={favs.includes(p)}
+										onclick={() => toggleFav(p)}
+									>
+										<Star size={18} strokeWidth={1.75} fill={favs.includes(p) ? 'currentColor' : 'none'} />
+									</button>
 									<button
 										class="rounded-lg p-1.5 text-muted transition hover:bg-line hover:text-fg"
 										aria-label={t('files.menu', { name: e.name })}
@@ -453,6 +593,7 @@
 											{#if !e.dir}
 												<button role="menuitem" class="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left text-[15px] transition hover:bg-hover" onclick={() => ((menu = null), open(e))}><FileText size={16} strokeWidth={1.75} />{t('files.edit')}</button>
 											{/if}
+											<button role="menuitem" class="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left text-[15px] transition hover:bg-hover" onclick={() => ((menu = null), toggleFav(p))}><Star size={16} strokeWidth={1.75} />{favs.includes(p) ? t('files.removeStar') : t('files.addStar')}</button>
 											<button role="menuitem" class="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left text-[15px] transition hover:bg-hover" onclick={() => ((menu = null), renameEntry(e))}><Pencil size={16} strokeWidth={1.75} />{t('files.rename')}</button>
 											{#if !e.dir}
 												<a role="menuitem" href={files.downloadUrl(id, p)} download class="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left text-[15px] transition hover:bg-hover" onclick={() => (menu = null)}><Download size={16} strokeWidth={1.75} />{t('files.download')}</a>

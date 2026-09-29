@@ -93,3 +93,8 @@ export function upload(id: string, path: string, file: File, progress: (sent: nu
 	});
 	return { promise, abort: () => xhr.abort() };
 }
+
+// Favourites belong to the account and the server, not to the browser.
+export const favorites = (id: string) => api<{ paths: string[] }>('GET', `${base(id)}/favorites`).then((r) => r.paths);
+export const addFavorite = (id: string, path: string) => api('PUT', `${base(id)}/favorites`, { path });
+export const removeFavorite = (id: string, path: string) => api('DELETE', `${base(id)}/favorites${query(path)}`);
