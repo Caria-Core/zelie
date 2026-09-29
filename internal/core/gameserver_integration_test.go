@@ -198,6 +198,17 @@ func TestGameServerRuns(t *testing.T) {
 		t.Fatal(err)
 	}
 	installLog(t, id, "console: say hello")
+
+	// The core restarts, as it does in an update, and the game goes on
+	// taking commands.
+	e.Close()
+	if e, err = engine.Connect(ctx, engine.DefaultPaths); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.WriteStdin(ctx, id, []byte("after restart\n")); err != nil {
+		t.Fatal(err)
+	}
+	installLog(t, id, "console: after restart")
 	if err := e.WriteStdin(ctx, id, []byte("stop\n")); err != nil {
 		t.Fatal(err)
 	}

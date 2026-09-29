@@ -253,6 +253,15 @@ func (s *Server) startGame(ctx context.Context, app store.App, d store.Deploymen
 	}
 	if pinned != "" {
 		d.Image = pinned
+		// The first start settles which build the server runs. From here on
+		// starts use it from the local store, and a registry that is down or
+		// a tag that moved changes nothing until a reinstall.
+		if !engine.Pinned(app.Image) && engine.Pinned(pinned) {
+			app.Image = pinned
+			if err := s.Store.UpdateApp(ctx, app); err != nil {
+				s.Log.Error("record game server image", "server", app.ID, "err", err)
+			}
+		}
 	}
 	s.gameRuns.set(app.ID, container, stateStarting)
 	s.watchGame(app.ID, container, e.DoneMatcher())

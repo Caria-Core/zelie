@@ -209,8 +209,6 @@ type Engine struct {
 	peers    peers
 	dns      *dnsServer
 
-	stdins stdins
-
 	// createMu makes creating containers one at a time, so two requests
 	// can never pick the same ID range or race on the same name.
 	createMu sync.Mutex
@@ -235,6 +233,7 @@ func Connect(ctx context.Context, p Paths) (*Engine, error) {
 		c.Close()
 		return nil, err
 	}
+	e.restoreHolders(ctx)
 	return e, nil
 }
 
@@ -441,10 +440,10 @@ func (e *Engine) Run(ctx context.Context, s Spec) (err error) {
 	if s.Stdin {
 		// Held open from here on: the shim gives the process end of file
 		// once nobody has the fifo open for writing.
-		if _, err := e.openStdin(s.ID, true); err != nil {
+		if err := e.startHolder(s.ID, true); err != nil {
 			return err
 		}
-		cleanup = append(cleanup, func() { e.closeStdin(s.ID) })
+		cleanup = append(cleanup, func() { e.stopHolder(s.ID) })
 	}
 
 	// Pin the namespace to a file so it outlives this call and can be
@@ -660,7 +659,7 @@ func (e *Engine) Stop(ctx context.Context, id string, grace time.Duration) error
 	if _, err := task.Delete(ctx); err != nil {
 		return err
 	}
-	e.closeStdin(id)
+	e.stopHolder(id)
 	// A stopped container no longer gets the ports forwarded to it.
 	return e.refresh(ctx)
 }
@@ -685,7 +684,7 @@ func (e *Engine) Remove(ctx context.Context, id string) error {
 	if err := container.Delete(ctx, containerd.WithSnapshotCleanup); err != nil {
 		return err
 	}
-	e.closeStdin(id)
+	e.stopHolder(id)
 	// The container is gone; what follows only frees its network and files.
 	var errs []error
 	if path := labels[labelNetNS]; path != "" {

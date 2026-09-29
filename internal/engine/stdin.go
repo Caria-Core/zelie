@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
-	"sync"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -19,14 +21,18 @@ import (
 
 // A game server reads its console from standard input. containerd's shim
 // takes it from a named pipe and passes it on, and closes the process's
-// input as soon as no one has the pipe open for writing. The engine
-// therefore holds one end open for the container's life and writes
-// commands to it. Output does not depend on this: the shim writes it to the
-// log file by itself, so it goes on while the core restarts.
+// input as soon as no one has the pipe open for writing. So something has
+// to keep a write end open for the container's whole life, and it has to
+// outlive the core: Zelie's updates restart the core while games run on.
 //
-// A core that restarts while such a container runs loses the open end, and
-// the container's input is closed for good. WriteStdin then fails, and the
-// caller has to use a signal.
+// That something is a small holder process, `sleep`, started by the core
+// with the pipe as its output. The core's unit uses KillMode=process, so
+// stopping the core leaves the holder alone, as it leaves the containers.
+// The holder is found again through a pid file in the container's directory
+// and ended when the container is stopped or removed. Commands are written
+// by opening the pipe for each write, so no descriptor of an older core is
+// needed. Output does not depend on any of this: the shim writes it to the
+// log file itself.
 
 // ErrInputClosed means the container is not reading its standard input.
 var ErrInputClosed = errors.New("the container is not reading its input")
@@ -34,14 +40,14 @@ var ErrInputClosed = errors.New("the container is not reading its input")
 const (
 	stdinWait    = 2 * time.Second
 	stdinTimeout = 5 * time.Second
+	// holderSleep is about 68 years, the longest every sleep accepts.
+	holderSleep = "2147483647"
 )
 
-type stdins struct {
-	mu    sync.Mutex
-	files map[string]*os.File
-}
-
 func (e *Engine) stdinPath(id string) string { return filepath.Join(e.containerDir(id), "stdin") }
+func (e *Engine) holderPidPath(id string) string {
+	return filepath.Join(e.containerDir(id), "stdin.pid")
+}
 
 // withStdin adds the container's input pipe to how its output is kept.
 func withStdin(c cio.Creator, fifo string) cio.Creator {
@@ -65,24 +71,16 @@ func (s stdinIO) Config() cio.Config {
 	return c
 }
 
-// openStdin opens the write end of a container's input pipe and keeps it.
-// Opening fails while no one reads the other end. Right after the task was
-// created the shim may not have gotten to it yet, so wait lets it try for a
-// moment.
-func (e *Engine) openStdin(id string, wait bool) (*os.File, error) {
+// openPipe opens the write end of a container's input pipe. That fails
+// while no one reads the other end. Right after the task was created the
+// shim may not have gotten to it yet, so wait lets it try for a moment.
+func (e *Engine) openPipe(id string, wait bool) (*os.File, error) {
 	deadline := time.Now().Add(stdinWait)
 	for {
 		f, err := os.OpenFile(e.stdinPath(id), os.O_WRONLY|syscall.O_NONBLOCK, 0)
-		if err == nil {
-			e.stdins.mu.Lock()
-			defer e.stdins.mu.Unlock()
-			if e.stdins.files == nil {
-				e.stdins.files = map[string]*os.File{}
-			}
-			e.stdins.files[id] = f
-			return f, nil
-		}
 		switch {
+		case err == nil:
+			return f, nil
 		case errors.Is(err, os.ErrNotExist):
 			return nil, fmt.Errorf("container %s has no input: %w", id, errdefs.ErrFailedPrecondition)
 		case errors.Is(err, syscall.ENXIO) && !wait:
@@ -95,12 +93,70 @@ func (e *Engine) openStdin(id string, wait bool) (*os.File, error) {
 	}
 }
 
-func (e *Engine) closeStdin(id string) {
-	e.stdins.mu.Lock()
-	defer e.stdins.mu.Unlock()
-	if f, ok := e.stdins.files[id]; ok {
-		f.Close()
-		delete(e.stdins.files, id)
+// holderRunning reports whether the container's holder process is alive.
+func (e *Engine) holderRunning(id string) bool {
+	pid, ok := e.holderPid(id)
+	if !ok {
+		return false
+	}
+	comm, err := os.ReadFile(fmt.Sprintf("/proc/%d/comm", pid))
+	return err == nil && strings.TrimSpace(string(comm)) == "sleep"
+}
+
+func (e *Engine) holderPid(id string) (int, bool) {
+	b, err := os.ReadFile(e.holderPidPath(id))
+	if err != nil {
+		return 0, false
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	return pid, err == nil && pid > 1
+}
+
+// startHolder keeps the container's input pipe open from now on.
+func (e *Engine) startHolder(id string, wait bool) error {
+	f, err := e.openPipe(id, wait)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	cmd := exec.Command("sleep", holderSleep)
+	// Its own session, so nothing sent to the core's group reaches it.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	cmd.Stdout = f
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("hold the input of %s: %w", id, err)
+	}
+	// Reaps it if this core outlives it; if not, init does.
+	go cmd.Wait()
+	if err := os.WriteFile(e.holderPidPath(id), []byte(strconv.Itoa(cmd.Process.Pid)), 0o600); err != nil {
+		cmd.Process.Kill()
+		return err
+	}
+	return nil
+}
+
+// stopHolder ends the container's holder, which closes its input.
+func (e *Engine) stopHolder(id string) {
+	if e.holderRunning(id) {
+		pid, _ := e.holderPid(id)
+		syscall.Kill(pid, syscall.SIGKILL)
+	}
+	os.Remove(e.holderPidPath(id))
+}
+
+// restoreHolders starts a holder for every container that has an input
+// and none. It is for containers made before holders were kept, and for a
+// holder that was killed; a container whose input is already closed cannot
+// be helped and is skipped.
+func (e *Engine) restoreHolders(ctx context.Context) {
+	list, err := e.client.Containers(e.ctx(ctx))
+	if err != nil {
+		return
+	}
+	for _, c := range list {
+		if _, err := os.Stat(e.stdinPath(c.ID())); err == nil && !e.holderRunning(c.ID()) {
+			e.startHolder(c.ID(), false)
+		}
 	}
 }
 
@@ -110,20 +166,14 @@ func (e *Engine) WriteStdin(ctx context.Context, id string, data []byte) error {
 	if !validID.MatchString(id) {
 		return fmt.Errorf("container id %q must be lowercase letters, digits and dashes", id)
 	}
-	e.stdins.mu.Lock()
-	f := e.stdins.files[id]
-	e.stdins.mu.Unlock()
-	if f == nil {
-		// The engine started after the container did.
-		var err error
-		if f, err = e.openStdin(id, false); err != nil {
-			return err
-		}
+	f, err := e.openPipe(id, false)
+	if err != nil {
+		return err
 	}
+	defer f.Close()
 	f.SetWriteDeadline(time.Now().Add(stdinTimeout))
 	if _, err := f.Write(data); err != nil {
 		if errors.Is(err, syscall.EPIPE) {
-			e.closeStdin(id)
 			return fmt.Errorf("container %s: %w", id, ErrInputClosed)
 		}
 		return fmt.Errorf("write to the input of %s: %w", id, err)

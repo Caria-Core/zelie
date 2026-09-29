@@ -46,9 +46,15 @@ func TestWriteStdin(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer r.Close()
-	if _, err := e.openStdin(id, true); err != nil {
+	if err := e.startHolder(id, true); err != nil {
 		t.Fatal(err)
 	}
+	pid, ok := e.holderPid(id)
+	if !ok {
+		t.Fatal("no holder")
+	}
+	// stopHolder needs /proc to be sure of what it kills, which macOS lacks.
+	defer syscall.Kill(pid, syscall.SIGKILL)
 	if err := e.WriteStdin(ctx, id, []byte("say hi\n")); err != nil {
 		t.Fatal(err)
 	}
@@ -62,17 +68,23 @@ func TestWriteStdin(t *testing.T) {
 		t.Errorf("read %q", got)
 	}
 
-	// While the engine holds the pipe the reader sees no end of file, and
-	// once it lets go it does.
+	// Each write opened and closed the pipe, yet the reader sees no end of
+	// file while the holder has it, and does once the holder goes.
 	r.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
 	// Linux waits for the deadline; macOS cannot poll a pipe and says so.
 	if n, err := r.Read(buf); n != 0 || !(errors.Is(err, os.ErrDeadlineExceeded) || errors.Is(err, syscall.EAGAIN)) {
 		t.Errorf("read %d bytes, %v, before the pipe closed", n, err)
 	}
-	e.closeStdin(id)
+	syscall.Kill(pid, syscall.SIGKILL)
 	r.SetReadDeadline(time.Now().Add(2 * time.Second))
-	if _, err := r.Read(buf); !errors.Is(err, io.EOF) {
-		t.Errorf("after closing: %v", err)
+	var err2 error
+	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		if _, err2 = r.Read(buf); errors.Is(err2, io.EOF) {
+			break
+		}
+	}
+	if !errors.Is(err2, io.EOF) {
+		t.Errorf("after the holder ended: %v", err2)
 	}
 
 	// A container that was not made with input has no pipe.

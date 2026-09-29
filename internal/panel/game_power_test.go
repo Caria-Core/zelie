@@ -636,3 +636,65 @@ func TestPowerNeedsALogin(t *testing.T) {
 		t.Errorf("signed out: %d", code)
 	}
 }
+
+var (
+	javaTag    = "ghcr.io/example/java:21"
+	javaDigest = "sha256:" + strings.Repeat("a", 64)
+	javaPinned = javaTag + "@" + javaDigest
+)
+
+func TestGameImageIsPinnedOnFirstStart(t *testing.T) {
+	e := newPowerEnv(t)
+	e.core.digests = map[string]string{javaTag: javaDigest, "ghcr.io/example/installer:latest": "sha256:" + strings.Repeat("b", 64)}
+	e.newGame(t, "survival", consoleEggURL, nil)
+
+	// The install records which build ran it.
+	if d, _ := e.s.Store.Deployments(context.Background(), "survival", 1); d[0].Image != "ghcr.io/example/installer:latest@sha256:"+strings.Repeat("b", 64) {
+		t.Errorf("install image %q", d[0].Image)
+	}
+
+	// The first start pulls the tag and remembers what it got.
+	e.power(t, "survival", "start")
+	e.settle(t, "survival")
+	first := e.liveContainer(t, "survival")
+	if got := e.core.games[first].Image; got != javaTag {
+		t.Errorf("first start ran %q", got)
+	}
+	a, _ := e.s.Store.App(context.Background(), "survival")
+	if a.Image != javaPinned {
+		t.Fatalf("recorded image %q", a.Image)
+	}
+	if d, _ := e.s.Store.LiveDeployment(context.Background(), "survival"); d.Image != javaPinned {
+		t.Errorf("deployment image %q", d.Image)
+	}
+
+	// Later starts, restarts and recoveries use it, whatever the tag is now.
+	e.core.digests[javaTag] = "sha256:" + strings.Repeat("c", 64)
+	e.power(t, "survival", "restart")
+	e.settle(t, "survival")
+	if got := e.core.games[e.liveContainer(t, "survival")].Image; got != javaPinned {
+		t.Errorf("restart ran %q", got)
+	}
+	e.crash(t, "survival")
+	e.s.superviseOnce(context.Background())
+	e.settle(t, "survival")
+	if got := e.core.games[e.liveContainer(t, "survival")].Image; got != javaPinned {
+		t.Errorf("recovery ran %q", got)
+	}
+
+	// A reinstall lets the next start take the tag again.
+	e.power(t, "survival", "stop")
+	e.settle(t, "survival")
+	if code, out := e.b.do("POST", "/api/games/survival/reinstall", nil); code != http.StatusCreated {
+		t.Fatalf("reinstall: %d %v", code, out)
+	}
+	e.settle(t, "survival")
+	e.power(t, "survival", "start")
+	e.settle(t, "survival")
+	if got := e.core.games[e.liveContainer(t, "survival")].Image; got != javaTag {
+		t.Errorf("after a reinstall the start ran %q", got)
+	}
+	if a, _ := e.s.Store.App(context.Background(), "survival"); a.Image != javaTag+"@sha256:"+strings.Repeat("c", 64) {
+		t.Errorf("recorded image %q", a.Image)
+	}
+}

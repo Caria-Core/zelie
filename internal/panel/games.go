@@ -535,6 +535,16 @@ func (s *Server) reinstallGame(w http.ResponseWriter, r *http.Request) {
 		writeError(w, errInstalling.Err())
 		return
 	}
+	// The next start pulls the image's tag again and pins what it finds,
+	// so a reinstall is also how a server moves to a newer build.
+	if a.Image != g.Image {
+		a.Image = g.Image
+		if err := s.Store.UpdateApp(ctx, a); err != nil {
+			s.Store.SetInstall(context.WithoutCancel(ctx), a.ID, g.InstallState, g.InstallID, time.Time{})
+			s.fail(w, "reset image", err)
+			return
+		}
+	}
 	id, err := s.startInstall(ctx, a, store.CauseReinstall, g.InstallState)
 	if err != nil {
 		s.Store.SetInstall(context.WithoutCancel(ctx), a.ID, g.InstallState, g.InstallID, time.Time{})
@@ -660,7 +670,7 @@ func (s *Server) runInstall(ctx context.Context, appID string, id int64, prev st
 	// A container of this name left by an install that was cut off.
 	s.Core.Remove(bg, container)
 	fmt.Fprintf(out, "Installing %s with %s.\n", e.Name, e.Install.Image)
-	err = s.Core.RunInstall(ctx, core.InstallRequest{
+	pinned, err := s.Core.RunInstall(ctx, core.InstallRequest{
 		ID: container, App: appID, Image: e.Install.Image, Entrypoint: entrypoint,
 		Script: strings.ReplaceAll(e.Install.Script, "\r\n", "\n"),
 		Env:    gameEnv(a, g, node), Volume: vols[0].Name, Network: appID,
@@ -671,6 +681,11 @@ func (s *Server) runInstall(ctx context.Context, appID string, id int64, prev st
 		return
 	}
 	defer s.Core.Remove(bg, container)
+	// Recorded like an app's image: which build ran the install.
+	if pinned != "" {
+		d.Image = pinned
+		set(store.DeployInstalling)
+	}
 
 	logCtx, stopLogs := context.WithCancel(ctx)
 	logsDone := make(chan struct{})

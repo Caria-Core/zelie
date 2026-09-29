@@ -334,12 +334,15 @@ func (c *appCore) Logs(ctx context.Context, id string, follow bool, _ int64, w i
 	return err
 }
 
-func (c *appCore) RunInstall(_ context.Context, req core.InstallRequest) error {
+func (c *appCore) RunInstall(ctx context.Context, req core.InstallRequest) (string, error) {
 	c.mu.Lock()
 	c.installs = append(c.installs, req)
 	c.mu.Unlock()
-	return c.runApp(engine.Spec{ID: req.ID, App: req.App, Image: req.Image, Env: req.Env,
-		Volumes: []engine.VolumeMount{{Name: req.Volume, Target: core.InstallVolumePath}}}, nil)
+	if err := c.runApp(engine.Spec{ID: req.ID, App: req.App, Image: req.Image, Env: req.Env,
+		Volumes: []engine.VolumeMount{{Name: req.Volume, Target: core.InstallVolumePath}}}, nil); err != nil {
+		return "", err
+	}
+	return c.Pin(ctx, req.Image)
 }
 
 func (c *appCore) Build(_ context.Context, app, version string, env, sealed []string, src io.Reader, out io.Writer) (build.Result, error) {

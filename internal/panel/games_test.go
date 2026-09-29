@@ -112,7 +112,7 @@ func TestCreateGameAndInstall(t *testing.T) {
 		t.Errorf("created: %v", out)
 	}
 	d := e.install(t, "survival")
-	if d.Cause != store.CauseInstall || d.State != store.DeployInstalled || d.Image != "" {
+	if d.Cause != store.CauseInstall || d.State != store.DeployInstalled || d.Image != "ghcr.io/example/installer:latest" {
 		t.Fatalf("install deployment %+v", d)
 	}
 

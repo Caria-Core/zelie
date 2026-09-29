@@ -24,7 +24,7 @@ type Core interface {
 	List(ctx context.Context) ([]engine.Status, error)
 	Run(ctx context.Context, s engine.Spec) error
 	RunApp(ctx context.Context, s engine.Spec, sealedEnv []string, linked ...core.LinkedVar) (string, error)
-	RunInstall(ctx context.Context, req core.InstallRequest) error
+	RunInstall(ctx context.Context, req core.InstallRequest) (string, error)
 	PrepareVolume(ctx context.Context, name string, req core.PrepareRequest) (core.PrepareResponse, error)
 	WriteStdin(ctx context.Context, id string, data []byte) error
 	Signal(ctx context.Context, id, signal string) error

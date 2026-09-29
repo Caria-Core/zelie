@@ -77,12 +77,21 @@ func (s *Server) install(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, "install", req.ID, err)
 		return
 	}
-	s.Log.Info("install started", "id", req.ID, "app", req.App, "image", req.Image)
-	w.WriteHeader(http.StatusCreated)
+	// What ran, by digest, so the panel can say which build installed it.
+	image, err := s.Engine.Pin(r.Context(), spec.Image)
+	if err != nil {
+		s.Log.Error("pin image", "image", spec.Image, "err", err)
+		image = spec.Image
+	}
+	s.Log.Info("install started", "id", req.ID, "app", req.App, "image", image)
+	writeJSON(w, http.StatusCreated, runResponse{Image: image})
 }
 
-// RunInstall starts a game server's install container. Wait, Logs and
-// Remove work on it like on any container.
-func (c *Client) RunInstall(ctx context.Context, req InstallRequest) error {
-	return c.do(ctx, http.MethodPost, "/v1/installs", req, nil)
+// RunInstall starts a game server's install container and returns the image
+// that runs, pinned by digest. Wait, Logs and Remove work on it like on any
+// container.
+func (c *Client) RunInstall(ctx context.Context, req InstallRequest) (string, error) {
+	var res runResponse
+	err := c.do(ctx, http.MethodPost, "/v1/installs", req, &res)
+	return res.Image, err
 }
