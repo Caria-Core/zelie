@@ -368,6 +368,7 @@ func (s *Server) createGame(w http.ResponseWriter, r *http.Request) {
 		s.failWith(w, "create volume", err)
 		return
 	}
+	s.syncSFTPVolumes(ctx)
 	s.Log.Info("game server created", "server", a.ID, "egg", source, "user", loginFrom(ctx).account.ID)
 	if _, err := s.startInstall(ctx, a, store.CauseInstall, store.InstallFailed); err != nil {
 		s.fail(w, "start install", err)

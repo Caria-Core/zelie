@@ -62,7 +62,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	case "panel":
 		return runPanel(stderr)
 	case "sftp":
-		return runSFTP(stderr)
+		return runSFTP(args[1:], stderr)
 	case "setup-link":
 		return setupLink(stdout, stderr)
 	case "reset-login":

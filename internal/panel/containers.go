@@ -56,6 +56,7 @@ type Core interface {
 	SetExternal(ctx context.Context, app, engine, container string, port, target int, sealedPassword string) error
 	RemoveExternal(ctx context.Context, app, engine, container string) error
 	SyncExternal(ctx context.Context, list []core.ExternalListener) error
+	SetSFTPVolumes(ctx context.Context, names []string) error
 	UpdateStatus(ctx context.Context) (core.UpdateStatus, error)
 	Update(ctx context.Context, version string) error
 	Usage(ctx context.Context, id string) (engine.Usage, error)

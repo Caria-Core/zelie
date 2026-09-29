@@ -484,3 +484,30 @@ func (s *Server) sftpConfig(w http.ResponseWriter, r *http.Request) {
 	s.sftp.mu.Unlock()
 	writeJSON(w, http.StatusOK, sftpd.ConfigResponse{Port: port})
 }
+
+// syncSFTPVolumes tells the core which volumes SFTP may use: the files of
+// game servers, and nothing else. The core keeps the list and holds the
+// SFTP user to it, so a login can never reach a database's volume.
+func (s *Server) syncSFTPVolumes(ctx context.Context) {
+	games, err := s.Store.GameServers(ctx)
+	if err != nil {
+		s.Log.Error("sftp volumes: list servers", "err", err)
+		return
+	}
+	names := []string{}
+	for _, g := range games {
+		vols, err := s.Store.Volumes(ctx, g.AppID)
+		if err != nil {
+			s.Log.Error("sftp volumes: list volumes", "server", g.AppID, "err", err)
+			return
+		}
+		for _, v := range vols {
+			if v.Path == gameVolumePath {
+				names = append(names, v.Name)
+			}
+		}
+	}
+	if err := s.Core.SetSFTPVolumes(ctx, names); err != nil {
+		s.Log.Error("sftp volumes: sync", "err", err)
+	}
+}

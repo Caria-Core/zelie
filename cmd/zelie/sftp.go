@@ -19,7 +19,15 @@ import (
 
 const sftpState = "/var/lib/zelie-sftp"
 
-func runSFTP(stderr io.Writer) int {
+func runSFTP(args []string, stderr io.Writer) int {
+	// The unit asks this before starting the server; see install.SFTPUnit.
+	if len(args) == 1 && args[0] == "--check" {
+		return 0
+	}
+	if len(args) > 0 {
+		fmt.Fprintln(stderr, "zelie: usage: zelie sftp")
+		return 2
+	}
 	if os.Geteuid() == 0 {
 		fmt.Fprintln(stderr, "zelie: the SFTP server must not run as root")
 		return 1

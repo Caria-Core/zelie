@@ -20,7 +20,8 @@ Zelie ships as a single `zelie` binary. On a server it runs as four processes:
 - **The SFTP server** runs as its own unprivileged user and listens on port 2222 by
   default, or on another port chosen on the Server page. It has no access to the volumes.
   It asks the panel who may log in to which game server, and passes every file operation to
-  the core. The core lets its user call the file routes and no others.
+  the core. The core lets its user call the file routes and no others, and only on the volumes
+  of game servers: the panel gives the core that list, and the core keeps it across restarts.
 
 Keeping these apart means a bug in the web interface gives an attacker an unprivileged
 account and a short list of allowed requests, not root on the server. It also means the

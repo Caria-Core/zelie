@@ -40,6 +40,7 @@ type appCore struct {
 	keep       []string // what the last sweep was told
 	caches     []string // apps whose build cache went
 	external   map[string]core.ExternalListener
+	sftpVols   []string     // what SFTP was last allowed to reach
 	extSets    []string     // "app port sealed?" of each SetExternal
 	takenPorts map[int]bool // ports something else on the server holds
 	version    string       // the version the core runs

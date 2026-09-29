@@ -90,6 +90,12 @@ func TestUnits(t *testing.T) {
 				t.Errorf("SFTP unit lacks %q:\n%s", want, sftp)
 			}
 		}
+		// The check comes before the start, so a binary that lacks the command
+		// is skipped, not restarted in a loop.
+		cond, start := strings.Index(sftp, "ExecCondition="+Binary+" sftp --check\n"), strings.Index(sftp, "ExecStart=")
+		if cond < 0 || cond > start {
+			t.Errorf("SFTP unit does not check the binary first:\n%s", sftp)
+		}
 		if strings.Contains(sftp, "AmbientCapabilities") {
 			t.Errorf("SFTP unit may bind low ports:\n%s", sftp)
 		}

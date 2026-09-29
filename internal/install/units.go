@@ -121,6 +121,10 @@ Wants=network-online.target
 
 [Service]
 User=` + SFTPUser + `
+# An older binary, such as one an update went back to, does not know this
+# command and exits with 2. systemd then skips the unit without calling it
+# failed and without restarting it, instead of starting it over and over.
+ExecCondition=` + Binary + ` sftp --check
 ExecStart=` + Binary + ` sftp
 Restart=always
 RestartSec=2

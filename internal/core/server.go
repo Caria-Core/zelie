@@ -75,6 +75,10 @@ type Server struct {
 	Paths   engine.Paths
 	Log     *slog.Logger
 	Allowed peer.Policy
+	// SFTPUID is the user of the SFTP server, and SFTPVolumes the volumes
+	// it may use. Without a user there is no such rule to apply.
+	SFTPUID     uint32
+	SFTPVolumes *SFTPVolumes
 	// Host describes the server; tests replace it.
 	Host func() (engine.Host, error)
 
@@ -110,6 +114,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/volumes/{name}/files/compress", s.compressFiles)
 	mux.HandleFunc("POST /v1/volumes/{name}/files/extract", s.extractFile)
 	mux.HandleFunc("POST /v1/volumes/{name}/peek", s.peekVolume)
+	mux.HandleFunc("PUT /v1/sftp/volumes", s.setSFTPVolumes)
 	mux.HandleFunc("GET /v1/links/{app}", s.links)
 	mux.HandleFunc("PUT /v1/links/{app}", s.setLinks)
 	mux.HandleFunc("PUT /v1/forwards/{app}", s.setForwards)
@@ -149,7 +154,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/offsite/backups", s.listOffsite)
 	mux.HandleFunc("DELETE /v1/offsite/backups/{app}/{name}", s.removeOffsiteBackup)
 	mux.HandleFunc("POST /v1/offsite/backups/{app}/{name}/fetch", s.fetchBackup)
-	return peer.RequireRoutes(s.Allowed, s.Log, mux)
+	return s.onlySFTPVolumes(peer.RequireRoutes(s.Allowed, s.Log, mux))
 }
 
 // SFTPRoutes are the only routes the SFTP process may use: the file

@@ -33,10 +33,12 @@ func runCore(stderr io.Writer) int {
 	defer stop()
 
 	policy := panelPolicy(log)
+	var sftpUID uint32
 	// The SFTP server may use the file routes and nothing else.
 	setUpSFTP(ctx, log)
 	if uid, ok := lookupUID(install.SFTPUser); ok {
 		policy.Routes = map[uint32][]string{uid: core.SFTPRoutes}
+		sftpUID = uid
 	} else {
 		log.Warn("SFTP user not found, SFTP cannot reach the core", "user", install.SFTPUser)
 	}
@@ -88,7 +90,14 @@ func runCore(stderr io.Writer) int {
 		}
 	}()
 
+	sftpVolumes, err := core.LoadSFTPVolumes("/var/lib/zelie/sftp-volumes.json")
+	if err != nil {
+		log.Error("start core", "err", err)
+		return 1
+	}
+
 	s := &core.Server{
+		SFTPUID: sftpUID, SFTPVolumes: sftpVolumes,
 		Engine: e, Paths: engine.DefaultPaths, Log: log, Allowed: policy,
 		Builder:  build.New(e, engine.DefaultPaths, "/var/lib/zelie/build"),
 		Secrets:  keys,

@@ -1140,6 +1140,11 @@ func TestSFTPUserGetsFileRoutesOnly(t *testing.T) {
 	e := newFileEnv(t)
 	e.write("a.txt", "a")
 	e.s.Allowed.Routes = map[uint32][]string{4242: SFTPRoutes}
+	e.s.SFTPUID = 4242
+	e.s.SFTPVolumes, _ = LoadSFTPVolumes(filepath.Join(t.TempDir(), "sftp-volumes.json"))
+	if err := e.s.SFTPVolumes.Set([]string{"srv-vol"}); err != nil {
+		t.Fatal(err)
+	}
 	sftp := &peer.Peer{UID: 4242}
 	for _, tc := range []struct {
 		method, path, body string
@@ -1164,5 +1169,65 @@ func TestSFTPUserGetsFileRoutesOnly(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(filepath.Join(e.vol, "a.txt")); string(b) != "a" {
 		t.Errorf("a refused request changed the file: %q", b)
+	}
+}
+
+func TestSFTPUserGetsRegisteredVolumesOnly(t *testing.T) {
+	e := newFileEnv(t)
+	e.write("a.txt", "a")
+	f := e.s.Engine.(*fakeEngine)
+	f.volumeDirs["db-vol"] = e.outside
+	list := filepath.Join(t.TempDir(), "sftp-volumes.json")
+	e.s.Allowed.Routes = map[uint32][]string{4242: SFTPRoutes}
+	e.s.SFTPUID = 4242
+	e.s.SFTPVolumes, _ = LoadSFTPVolumes(list)
+	sftp, panel := &peer.Peer{UID: 4242}, &peer.Peer{UID: 999}
+	get := func(p *peer.Peer, vol string) int {
+		return request(t, e.s, p, "POST", "/v1/volumes/"+vol+"/files/list", `{"path":""}`).Code
+	}
+
+	// Nothing is registered yet, so the SFTP user gets nothing.
+	if code := get(sftp, "srv-vol"); code != http.StatusForbidden {
+		t.Errorf("before registering: %d", code)
+	}
+	// Only the panel may register, and it may not be the SFTP user.
+	if rec := request(t, e.s, sftp, "PUT", "/v1/sftp/volumes", `{"volumes":["db-vol"]}`); rec.Code != http.StatusForbidden {
+		t.Errorf("the SFTP user registering a volume: %d", rec.Code)
+	}
+	if code := get(sftp, "db-vol"); code != http.StatusForbidden {
+		t.Errorf("a volume it registered itself: %d", code)
+	}
+	if rec := request(t, e.s, panel, "PUT", "/v1/sftp/volumes", `{"volumes":["srv-vol"]}`); rec.Code != http.StatusNoContent {
+		t.Fatalf("the panel registering: %d %s", rec.Code, rec.Body)
+	}
+	if rec := request(t, e.s, panel, "PUT", "/v1/sftp/volumes", `{"volumes":["../x"]}`); rec.Code != http.StatusBadRequest {
+		t.Errorf("a bad name: %d", rec.Code)
+	}
+	for vol, want := range map[string]int{
+		"srv-vol": http.StatusOK,        // registered
+		"db-vol":  http.StatusForbidden, // exists, not registered: a database's, say
+		"nothing": http.StatusForbidden, // not registered, not there
+	} {
+		if code := get(sftp, vol); code != want {
+			t.Errorf("SFTP user, volume %s: %d, want %d", vol, code, want)
+		}
+	}
+	// The panel is not held to the list.
+	if code := get(panel, "db-vol"); code != http.StatusOK {
+		t.Errorf("the panel on an unregistered volume: %d", code)
+	}
+
+	// A restarted core reads the list back.
+	e.s.SFTPVolumes, _ = LoadSFTPVolumes(list)
+	if code := get(sftp, "srv-vol"); code != http.StatusOK {
+		t.Errorf("after a restart: %d", code)
+	}
+	if code := get(sftp, "db-vol"); code != http.StatusForbidden {
+		t.Errorf("after a restart, an unregistered volume: %d", code)
+	}
+	// And a new list replaces the old one.
+	request(t, e.s, panel, "PUT", "/v1/sftp/volumes", `{"volumes":[]}`)
+	if code := get(sftp, "srv-vol"); code != http.StatusForbidden {
+		t.Errorf("after the list was emptied: %d", code)
 	}
 }

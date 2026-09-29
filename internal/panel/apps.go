@@ -893,6 +893,9 @@ func (s *Server) deleteApp(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, "delete app", err)
 		return
 	}
+	if a.IsGame() {
+		s.syncSFTPVolumes(ctx)
+	}
 	if err := s.syncRoutes(ctx, nil); err != nil {
 		s.fail(w, "update routes", err)
 		return

@@ -341,6 +341,7 @@ func (s *Server) Serve(ctx context.Context, socket string) error {
 		go s.watchVolumes(ctx)
 		s.syncAllLinks(ctx)
 		s.syncExternal(ctx)
+		s.syncSFTPVolumes(ctx)
 		go s.runReleaseCheck(ctx)
 		go s.runImageCheck(ctx)
 		go s.runSteamCheck(ctx)

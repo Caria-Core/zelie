@@ -16,6 +16,10 @@ func TestRun(t *testing.T) {
 		{args: []string{"version"}, wantCode: 0, wantStdout: "zelie "},
 		{args: []string{"help"}, wantCode: 0, wantStdout: "Usage: zelie"},
 		{args: nil, wantCode: 2, wantStderr: "Usage: zelie"},
+		// What the SFTP unit's ExecCondition runs; an old binary answers
+		// "unknown command" with 2 instead.
+		{args: []string{"sftp", "--check"}, wantCode: 0},
+		{args: []string{"sftp", "extra"}, wantCode: 2, wantStderr: "usage: zelie sftp"},
 		{args: []string{"nope"}, wantCode: 2, wantStderr: `unknown command "nope"`},
 	}
 	for _, tt := range tests {

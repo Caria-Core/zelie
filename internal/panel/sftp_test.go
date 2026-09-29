@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -369,4 +370,48 @@ func TestSFTPRoom(t *testing.T) {
 	if _, out := sftpAsk(e, sftpUID, "POST", "/local/sftp/room", sftpd.RoomRequest{Server: "survival"}); out["room"] != 1000.0 {
 		t.Errorf("room %v", out)
 	}
+}
+
+func (c *appCore) SetSFTPVolumes(_ context.Context, names []string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.sftpVols = slices.Clone(names)
+	return nil
+}
+
+func TestCoreIsToldWhichVolumesSFTPMayUse(t *testing.T) {
+	e := newSFTPEnv(t)
+	ctx := context.Background()
+	vols, _ := e.s.Store.Volumes(ctx, "survival")
+	if !slices.Equal(e.core.sftpVols, []string{vols[0].Name}) {
+		t.Fatalf("after creating a server: %v, want %v", e.core.sftpVols, vols[0].Name)
+	}
+	// A database's volume is never on the list, nor an app's.
+	if code, out := e.b.do("POST", "/api/apps", map[string]any{"id": "web", "source": "image", "image": "busybox:1.37", "port": 8080}); code != http.StatusCreated {
+		t.Fatalf("create app: %d %v", code, out)
+	}
+	path, disk := "/data", int64(64)
+	if _, err := e.s.createVolume(ctx, mustApp(t, e, "web"), volumeRequest{Path: &path, LimitMB: &disk}); err != nil {
+		t.Fatal(err)
+	}
+	e.core.sftpVols = nil
+	e.s.syncSFTPVolumes(ctx)
+	if !slices.Equal(e.core.sftpVols, []string{vols[0].Name}) {
+		t.Errorf("with an app volume around: %v", e.core.sftpVols)
+	}
+	if code, _ := e.b.do("DELETE", "/api/apps/survival", nil); code != http.StatusNoContent && code != http.StatusOK {
+		t.Fatalf("delete: %d", code)
+	}
+	if len(e.core.sftpVols) != 0 {
+		t.Errorf("after deleting the server: %v", e.core.sftpVols)
+	}
+}
+
+func mustApp(t *testing.T, e *appEnv, id string) store.App {
+	t.Helper()
+	a, err := e.s.Store.App(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return a
 }
