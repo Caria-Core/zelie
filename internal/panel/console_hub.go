@@ -205,6 +205,7 @@ type consoleHub struct {
 	cancel    context.CancelFunc // stops the follower of container
 	loaded    bool               // there is a console to show, or none is to be looked for
 	lines     []string
+	eula      bool // the container's console said it wants the EULA accepted
 	install   []string
 	state     string
 	subs      map[*consoleSub]struct{}
@@ -260,7 +261,7 @@ func (h *consoleHub) replace(container string, cancel context.CancelFunc) {
 	if h.cancel != nil {
 		h.cancel()
 	}
-	h.container, h.cancel, h.lines, h.loaded = container, cancel, nil, true
+	h.container, h.cancel, h.lines, h.loaded, h.eula = container, cancel, nil, true, false
 }
 
 // refusesEULA recognises what Minecraft servers print when eula.txt does
@@ -268,6 +269,8 @@ func (h *consoleHub) replace(container string, cancel context.CancelFunc) {
 func refusesEULA(line string) bool {
 	return strings.Contains(strings.ToLower(line), "you need to agree to the eula in order to run the server")
 }
+
+var eulaMessage = []byte(`{"type":"eula"}`)
 
 // eulaNeeded tells the sockets that the server stopped for want of the
 // EULA's acceptance.
@@ -277,8 +280,11 @@ func (h *consoleHub) eulaNeeded(container string) {
 	if h.container != container {
 		return
 	}
+	// Kept for a socket that opens after the line, as one does that
+	// the browser reconnects a moment later.
+	h.eula = true
 	for sub := range h.subs {
-		sub.push([]byte(`{"type":"eula"}`), false)
+		sub.push(eulaMessage, false)
 	}
 }
 
@@ -310,6 +316,9 @@ func (h *consoleHub) subscribe(s *Server, sub *consoleSub, state string) {
 	sub.pushForced(encodeState(h.state))
 	for _, l := range lastLines(h.lines, consoleBacklog) {
 		sub.pushForced(encodeConsole("line", l))
+	}
+	if h.eula {
+		sub.pushForced(eulaMessage)
 	}
 	if h.state == "installing" {
 		for _, l := range lastLines(h.install, consoleBacklog) {
