@@ -7,18 +7,11 @@ package sftpd
 
 import (
 	"context"
-	"crypto/ed25519"
-	"crypto/rand"
 	"encoding/json"
-	"encoding/pem"
 	"errors"
-	"fmt"
 	"io"
 	"log/slog"
 	"net"
-	"os"
-	"path/filepath"
-	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -27,6 +20,7 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/Caria-Core/zelie/internal/core"
+	"github.com/Caria-Core/zelie/internal/hostkey"
 )
 
 // Files is the part of the core's file API that SFTP uses.
@@ -58,11 +52,9 @@ type Server struct {
 	// MaxPerIP is how many connections one address may hold open. Zero
 	// means the default of 8.
 	MaxPerIP int
-	// Poll is how often the panel is asked which port to listen on. Zero
-	// means every 15 seconds.
-	Poll time.Duration
-	// Listen opens the port; nil listens on all addresses. Tests replace it.
-	Listen func(port int) (net.Listener, error)
+	// IdleExit is how long the server stays up with no connection open.
+	// Zero means five minutes.
+	IdleExit time.Duration
 
 	hostKey ssh.Signer
 	conf    *ssh.ServerConfig
@@ -76,34 +68,11 @@ func (s *Server) Fingerprint() string { return ssh.FingerprintSHA256(s.hostKey.P
 
 // LoadHostKey reads the host key, or makes one if there is none yet.
 func (s *Server) LoadHostKey() error {
-	pemBytes, err := os.ReadFile(s.HostKeyPath)
-	if errors.Is(err, os.ErrNotExist) {
-		_, priv, gerr := ed25519.GenerateKey(rand.Reader)
-		if gerr != nil {
-			return gerr
-		}
-		block, gerr := ssh.MarshalPrivateKey(priv, "zelie sftp host key")
-		if gerr != nil {
-			return gerr
-		}
-		pemBytes = pem.EncodeToMemory(block)
-		if gerr := os.MkdirAll(filepath.Dir(s.HostKeyPath), 0o700); gerr != nil {
-			return gerr
-		}
-		tmp := s.HostKeyPath + ".tmp"
-		if gerr := os.WriteFile(tmp, pemBytes, 0o600); gerr != nil {
-			return gerr
-		}
-		if gerr := os.Rename(tmp, s.HostKeyPath); gerr != nil {
-			return gerr
-		}
-	} else if err != nil {
+	key, _, err := hostkey.LoadOrCreate(s.HostKeyPath)
+	if err != nil {
 		return err
 	}
-	s.hostKey, err = ssh.ParsePrivateKey(pemBytes)
-	if err != nil {
-		return fmt.Errorf("read host key %s: %w", s.HostKeyPath, err)
-	}
+	s.hostKey = key
 	s.conf = s.serverConfig()
 	return nil
 }
@@ -152,78 +121,55 @@ func ipOf(a net.Addr) string {
 	return a.String()
 }
 
-// Run serves until ctx ends. The panel says which port to listen on, and
-// is asked again from time to time: a port changed in the panel takes
-// effect within one poll, and connections already open stay open.
-func (s *Server) Run(ctx context.Context) error {
-	if err := s.LoadHostKey(); err != nil {
-		return err
-	}
-	poll := s.Poll
-	if poll == 0 {
-		poll = 15 * time.Second
-	}
-	var current net.Listener
-	port := 0
-	defer func() {
-		if current != nil {
-			current.Close()
-		}
-	}()
-	for first := true; ; first = false {
-		want, err := s.Panel.Config(ctx, s.Fingerprint())
-		switch {
-		case err != nil:
-			// The panel may still be starting; a running service keeps what it has.
-			if first || current == nil {
-				s.Log.Warn("waiting for the panel", "err", err)
-			}
-		case want != port:
-			l, err := s.listen(want)
-			if err != nil {
-				s.Log.Error("cannot listen for SFTP, will try again", "port", want, "err", err)
-				break
-			}
-			if current != nil {
-				current.Close()
-			}
-			current, port = l, want
-			s.Log.Info("SFTP listening", "port", want, "fingerprint", s.Fingerprint())
-			go s.Serve(ctx, l)
-		}
-		wait := poll
-		if current == nil {
-			wait = 2 * time.Second
-		}
-		select {
-		case <-ctx.Done():
-			return nil
-		case <-time.After(wait):
-		}
-	}
-}
-
-func (s *Server) listen(port int) (net.Listener, error) {
-	if s.Listen != nil {
-		return s.Listen(port)
-	}
-	return net.Listen("tcp", ":"+strconv.Itoa(port))
-}
-
-// Serve accepts connections on l until l is closed or ctx ends.
+// Serve accepts connections on l until l is closed, ctx ends, or no
+// connection has been open for IdleExit. It returns nil in each case. The
+// listener belongs to systemd, which keeps the port and starts the server
+// again when someone connects, so closing it here loses nothing.
 func (s *Server) Serve(ctx context.Context, l net.Listener) error {
 	if s.conf == nil {
 		if err := s.LoadHostKey(); err != nil {
 			return err
 		}
 	}
+	idle := s.IdleExit
+	if idle == 0 {
+		idle = 5 * time.Minute
+	}
+	var (
+		mu    sync.Mutex
+		open  int
+		idled bool
+		conns sync.WaitGroup
+	)
+	timer := time.AfterFunc(idle, func() {
+		mu.Lock()
+		defer mu.Unlock()
+		if open == 0 {
+			idled = true
+			l.Close()
+		}
+	})
+	defer timer.Stop()
+	returned := make(chan struct{})
+	defer close(returned)
 	go func() {
-		<-ctx.Done()
-		l.Close()
+		select {
+		case <-ctx.Done():
+			l.Close()
+		case <-returned:
+		}
 	}()
 	for {
 		c, err := l.Accept()
 		if err != nil {
+			mu.Lock()
+			done := idled
+			mu.Unlock()
+			if done {
+				// A connection accepted as the timer fired is served out.
+				conns.Wait()
+				return nil
+			}
 			if ctx.Err() != nil || errors.Is(err, net.ErrClosed) {
 				return nil
 			}
@@ -233,7 +179,20 @@ func (s *Server) Serve(ctx context.Context, l net.Listener) error {
 			}
 			return err
 		}
-		go s.handle(ctx, c)
+		mu.Lock()
+		open++
+		timer.Stop()
+		mu.Unlock()
+		conns.Add(1)
+		go func() {
+			defer conns.Done()
+			s.handle(ctx, c)
+			mu.Lock()
+			defer mu.Unlock()
+			if open--; open == 0 {
+				timer.Reset(idle)
+			}
+		}()
 	}
 }
 

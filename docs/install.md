@@ -41,8 +41,10 @@ administrator.
   They do not touch Docker, which can keep running next to them.
 - Three system users, `zelie`, `zelie-proxy` and `zelie-sftp`, which cannot log in.
 - Five systemd services: `zelie-containerd`, `zelie-core`, `zelie-proxy`, `zelie-panel` and
-  `zelie-sftp`. The SFTP server listens on port 2222 by default; the Server page changes it. If
-  ufw is on, the install opens port 2222 in it.
+  `zelie-sftp`, and a socket, `zelie-sftp.socket`, for the last one. The socket holds port 2222
+  by default; the Server page changes it. The SFTP server starts when someone connects and stops
+  after five idle minutes, so it uses no memory while nobody is using it. If ufw is on, the
+  install opens port 2222 in it.
 - An nftables table named `zelie`, which only concerns Zelie's own container networks.
   Other rules, such as ufw's or Docker's, are left as they are.
 - Data under `/var/lib/zelie`, `/var/lib/zelie-panel`, `/var/lib/zelie-proxy` and
@@ -58,6 +60,6 @@ downloads the release, checks its signature, and restarts Zelie's own services. 
 databases and game servers keep running. If the new version does not answer within a
 minute and a half, the old one is put back and the page says why. The previous binary
 stays next to the new one as `/usr/local/bin/zelie.old`. A server installed before SFTP
-existed gets the SFTP user and service the first time it starts on a version that has them.
+existed gets the SFTP user, service and socket the first time it starts on a version that has them.
 
 Running the install command again also updates Zelie.

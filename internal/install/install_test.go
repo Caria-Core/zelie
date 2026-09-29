@@ -74,7 +74,7 @@ func TestUnits(t *testing.T) {
 		t.Errorf("domain proxy unit:\n%s", p)
 	}
 	for name, u := range domain {
-		if name != "zelie-core.service" && (!strings.Contains(u, "User=") || !strings.Contains(u, "NoNewPrivileges=yes")) {
+		if name != "zelie-core.service" && name != SFTPSocket && (!strings.Contains(u, "User=") || !strings.Contains(u, "NoNewPrivileges=yes")) {
 			t.Errorf("%s runs with too much:\n%s", name, u)
 		}
 	}
@@ -85,7 +85,7 @@ func TestUnits(t *testing.T) {
 	// nothing else, whichever way the panel is reached.
 	for _, u := range []map[string]string{tunnel, domain} {
 		sftp := u["zelie-sftp.service"]
-		for _, want := range []string{"User=zelie-sftp\n", "ExecStart=" + Binary + " sftp\n", "CapabilityBoundingSet=\n", "NoNewPrivileges=yes", "ProtectSystem=strict", "StateDirectory=zelie-sftp"} {
+		for _, want := range []string{"User=zelie-sftp\n", "ExecStart=" + Binary + " sftp\n", "CapabilityBoundingSet=\n", "NoNewPrivileges=yes", "ProtectSystem=strict", "StateDirectory=zelie-sftp", "Requires=zelie-sftp.socket\n", "Restart=on-failure\n"} {
 			if !strings.Contains(sftp, want) {
 				t.Errorf("SFTP unit lacks %q:\n%s", want, sftp)
 			}
@@ -95,6 +95,12 @@ func TestUnits(t *testing.T) {
 		cond, start := strings.Index(sftp, "ExecCondition="+Binary+" sftp --check\n"), strings.Index(sftp, "ExecStart=")
 		if cond < 0 || cond > start {
 			t.Errorf("SFTP unit does not check the binary first:\n%s", sftp)
+		}
+		if strings.Contains(sftp, "[Install]") || strings.Contains(sftp, "Restart=always") {
+			t.Errorf("SFTP unit is enabled itself or restarts after an idle exit:\n%s", sftp)
+		}
+		if sock := u[SFTPSocket]; !strings.Contains(sock, "ListenStream=2222\n") || !strings.Contains(sock, "Accept=no\n") || !strings.Contains(sock, "WantedBy=sockets.target") {
+			t.Errorf("SFTP socket:\n%s", sock)
 		}
 		if strings.Contains(sftp, "AmbientCapabilities") {
 			t.Errorf("SFTP unit may bind low ports:\n%s", sftp)
@@ -401,10 +407,13 @@ func TestSetUpSFTPOnAnOlderInstall(t *testing.T) {
 	if b, _ := os.ReadFile(filepath.Join(f.root, UnitDir, "zelie-sftp.service")); string(b) != SFTPUnit() {
 		t.Errorf("unit:\n%s", b)
 	}
-	for _, want := range []string{"systemctl daemon-reload", "systemctl enable --now zelie-sftp", "ufw allow 2222/tcp comment Zelie SFTP"} {
+	for _, want := range []string{"systemctl daemon-reload", "systemctl enable --now zelie-sftp.socket", "ufw allow 2222/tcp comment Zelie SFTP"} {
 		if !slices.Contains(f.commands, want) {
 			t.Errorf("did not run %q: %v", want, f.commands)
 		}
+	}
+	if b, _ := os.ReadFile(filepath.Join(f.root, UnitDir, "zelie-sftp.socket")); string(b) != SFTPSocketUnit() {
+		t.Errorf("socket:\n%s", b)
 	}
 	// The other services keep running as they are.
 	for _, c := range f.commands {
@@ -421,8 +430,9 @@ func TestSetUpSFTPOnAnOlderInstall(t *testing.T) {
 		t.Errorf("second: %v %v %v", made, err, f.commands)
 	}
 
-	// A unit that was lost is made again.
-	os.Remove(filepath.Join(f.root, UnitDir, "zelie-sftp.service"))
+	// A unit that was lost is made again, as is the socket on a server that
+	// has only the service.
+	os.Remove(filepath.Join(f.root, UnitDir, "zelie-sftp.socket"))
 	if made, err := SetUpSFTP(ctx, exec, f.root); err != nil || !made {
 		t.Errorf("after the unit was lost: %v %v", made, err)
 	}

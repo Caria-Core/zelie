@@ -219,8 +219,6 @@ func (p *fakePanel) Room(context.Context, string) (*int64, error) {
 	return &n, nil
 }
 
-func (p *fakePanel) Config(context.Context, string) (int, error) { return 2222, nil }
-
 type env struct {
 	addr    string
 	files   *fakeFiles
@@ -230,9 +228,15 @@ type env struct {
 	outside string
 	server  *Server
 	key     ssh.Signer
+	// served gets what Serve returned, once it has.
+	served chan error
 }
 
-func newEnv(t *testing.T) *env {
+func newEnv(t *testing.T) *env { return newEnvIdle(t, 0) }
+
+// newEnvIdle is newEnv with a server that leaves after idle with no
+// connection open; zero means the default.
+func newEnvIdle(t *testing.T, idle time.Duration) *env {
 	t.Helper()
 	base := t.TempDir()
 	e := &env{alpha: filepath.Join(base, "alpha"), beta: filepath.Join(base, "beta"), outside: filepath.Join(base, "outside")}
@@ -258,7 +262,7 @@ func newEnv(t *testing.T) *env {
 		passwords: map[string]string{"alpha": "alpha-secret", "beta": "beta-secret"},
 		keys:      map[string][]byte{"alpha": e.key.PublicKey().Marshal()},
 	}
-	e.server = &Server{Panel: e.panel, Files: e.files, Log: slog.New(slog.NewTextHandler(io.Discard, nil)), HostKeyPath: filepath.Join(base, "state", "host_key"), MaxPerIP: 6}
+	e.server = &Server{Panel: e.panel, Files: e.files, Log: slog.New(slog.NewTextHandler(io.Discard, nil)), HostKeyPath: filepath.Join(base, "state", "host_key"), MaxPerIP: 6, IdleExit: idle}
 	if err := e.server.LoadHostKey(); err != nil {
 		t.Fatal(err)
 	}
@@ -267,9 +271,9 @@ func newEnv(t *testing.T) *env {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() { e.server.Serve(ctx, l); close(done) }()
-	t.Cleanup(func() { cancel(); <-done })
+	e.served = make(chan error, 1)
+	go func() { e.served <- e.server.Serve(ctx, l) }()
+	t.Cleanup(func() { cancel(); <-e.served })
 	e.addr = l.Addr().String()
 	return e
 }
@@ -307,6 +311,43 @@ func TestHostKeyIsKept(t *testing.T) {
 	}
 	if st, err := os.Stat(e.server.HostKeyPath); err != nil || st.Mode().Perm() != 0o600 {
 		t.Errorf("host key file: %v %v", st, err)
+	}
+}
+
+func TestExitsWhenIdle(t *testing.T) {
+	e := newEnvIdle(t, 50*time.Millisecond)
+	select {
+	case err := <-e.served:
+		if err != nil {
+			t.Errorf("an idle exit is not an error: %v", err)
+		}
+		e.served <- nil
+	case <-time.After(5 * time.Second):
+		t.Fatal("the server did not leave while idle")
+	}
+}
+
+func TestStaysWhileAConnectionIsOpen(t *testing.T) {
+	e := newEnvIdle(t, 100*time.Millisecond)
+	c, err := e.dial("alpha", ssh.Password("alpha-secret"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-e.served:
+		t.Fatal("the server left with a connection open")
+	case <-time.After(500 * time.Millisecond):
+	}
+	// The idle time counts from the last connection closing.
+	c.Close()
+	select {
+	case err := <-e.served:
+		if err != nil {
+			t.Errorf("an idle exit is not an error: %v", err)
+		}
+		e.served <- nil
+	case <-time.After(5 * time.Second):
+		t.Fatal("the server did not leave after the connection closed")
 	}
 }
 

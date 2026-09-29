@@ -31,13 +31,20 @@ LockPersonality=yes
 // update waits for each of them to answer.
 var Services = []string{"zelie-core", "zelie-proxy", "zelie-panel"}
 
-// SFTPService is the SFTP server. It is not in Services: the port it needs
-// may be taken by something else on the machine, which must not fail an
-// update.
-const SFTPService = "zelie-sftp"
+// SFTPService is the SFTP server, and SFTPSocket the socket systemd holds for
+// it. Neither is in Services: the port may be taken by something else on the
+// machine, which must not fail an update.
+const (
+	SFTPService = "zelie-sftp"
+	SFTPSocket  = SFTPService + ".socket"
+)
 
 // allServices is Services and the SFTP service.
 func allServices() []string { return append(slices.Clone(Services), SFTPService) }
+
+// enabledUnits are the units that are enabled and started at install: the
+// services, and the SFTP socket, which starts its service on demand.
+func enabledUnits() []string { return append(slices.Clone(Services), SFTPSocket) }
 
 // Units returns the systemd units for opts, by file name.
 func Units(opts Options) map[string]string {
@@ -50,6 +57,7 @@ func Units(opts Options) map[string]string {
 	}
 	return map[string]string{
 		SFTPService + ".service": SFTPUnit(),
+		SFTPSocket:               SFTPSocketUnit(),
 		"zelie-core.service": `[Unit]
 Description=Zelie core
 Documentation=https://github.com/Caria-Core/zelie
@@ -109,15 +117,16 @@ WantedBy=multi-user.target
 	}
 }
 
-// SFTPUnit is the unit of the SFTP server. It listens on a port above 1023,
-// which the panel chooses, so it needs no capability at all. It only talks
-// to the panel and the core over their sockets.
+// SFTPUnit is the unit of the SFTP server. It has no [Install] section: the
+// socket starts it when someone connects, and it exits when idle. It gets
+// its port from the socket, which is above 1023, so it needs no capability
+// at all. It only talks to the panel and the core over their sockets.
 func SFTPUnit() string {
 	return `[Unit]
 Description=Zelie SFTP server
 Documentation=https://github.com/Caria-Core/zelie
-After=network-online.target zelie-core.service zelie-panel.service
-Wants=network-online.target
+Requires=` + SFTPSocket + `
+After=` + SFTPSocket + ` zelie-core.service zelie-panel.service
 
 [Service]
 User=` + SFTPUser + `
@@ -126,25 +135,41 @@ User=` + SFTPUser + `
 # failed and without restarting it, instead of starting it over and over.
 ExecCondition=` + Binary + ` sftp --check
 ExecStart=` + Binary + ` sftp
-Restart=always
+# Not "always": the server exits cleanly when nobody is connected, and the
+# socket starts it again with the next connection.
+Restart=on-failure
 RestartSec=2
 CapabilityBoundingSet=
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 StateDirectory=zelie-sftp
 StateDirectoryMode=0700
 UMask=0077
-` + hardening + `
+` + hardening
+}
+
+// SFTPSocketUnit is the socket systemd listens on for the SFTP server. The
+// port is the default; the core changes it with a drop-in when the panel
+// says so.
+func SFTPSocketUnit() string {
+	return fmt.Sprintf(`[Unit]
+Description=Zelie SFTP port
+Documentation=https://github.com/Caria-Core/zelie
+
+[Socket]
+ListenStream=%d
+Accept=no
+
 [Install]
-WantedBy=multi-user.target
-`
+WantedBy=sockets.target
+`, DefaultSFTPPort)
 }
 
 // unitNames lists the unit files in start order.
 func unitNames() []string {
 	all := allServices()
-	out := make([]string, len(all))
-	for i, s := range all {
-		out[i] = s + ".service"
+	out := make([]string, 0, len(all)+1)
+	for _, s := range all {
+		out = append(out, s+".service")
 	}
-	return out
+	return append(out, SFTPSocket)
 }

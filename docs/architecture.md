@@ -17,8 +17,9 @@ Zelie ships as a single `zelie` binary. On a server it runs as four processes:
   either: the proxy hands it web traffic over a Unix socket.
 - **The proxy** runs as its own unprivileged user and may only bind ports 80 and 443. It
   terminates HTTPS and forwards each domain to the container that serves it.
-- **The SFTP server** runs as its own unprivileged user and listens on port 2222 by
-  default, or on another port chosen on the Server page. It has no access to the volumes.
+- **The SFTP server** runs as its own unprivileged user. systemd holds its port, 2222 by
+  default or another one chosen on the Server page, and starts the server when someone
+  connects; it exits after five minutes with no connection open. It has no access to the volumes.
   It asks the panel who may log in to which game server, and passes every file operation to
   the core. The core lets its user call the file routes and no others, and only on the volumes
   of game servers: the panel gives the core that list, and the core keeps it across restarts.
@@ -170,8 +171,8 @@ subsystem: no shell, no commands, no port forwarding. Wrong passwords are counte
 address and per server, as on the login page, and one address may hold only a few
 connections open. Files are written whole, through a temporary file in the core, so an
 upload that breaks halfway leaves the old file as it was; for the same reason a file can
-only be written from start to end, which every common SFTP program does. The host key is
-made on first start and its fingerprint is shown on the Server page.
+only be written from start to end, which every common SFTP program does. The core makes
+the host key, so its fingerprint is on the Server page before anyone has connected.
 
 Players connect straight to the game server, not through the proxy. The administrator
 gives Zelie a pool of ports, as in Pterodactyl and Pelican, and each server takes some of

@@ -9,6 +9,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -18,6 +19,7 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
+	"github.com/Caria-Core/zelie/internal/core"
 	"github.com/Caria-Core/zelie/internal/peer"
 	"github.com/Caria-Core/zelie/internal/sftpd"
 	"github.com/Caria-Core/zelie/internal/store"
@@ -310,7 +312,7 @@ func TestWhoMayAskAsSFTP(t *testing.T) {
 		"the service asks for a setup link":   {sftpUID, "POST", "/local/setup-link", http.StatusNotFound},
 		"the service reads the game":          {sftpUID, "GET", "/api/games/survival", http.StatusNotFound},
 		"the proxy reaches the sftp routes":   {proxyUID, "POST", "/local/sftp/auth", http.StatusMethodNotAllowed},
-		"root reaches the sftp routes":        {0, "POST", "/local/sftp/config", http.StatusNotFound},
+		"root reaches the sftp routes":        {0, "POST", "/local/sftp/room", http.StatusNotFound},
 		"someone else reaches the sftp route": {1000, "POST", "/local/sftp/auth", http.StatusForbidden},
 	} {
 		code, _ := sftpAsk(e, tc.uid, tc.method, tc.path, sftpd.AuthRequest{Server: "survival", IP: "127.0.0.1"})
@@ -320,23 +322,21 @@ func TestWhoMayAskAsSFTP(t *testing.T) {
 	}
 	// Without a user for the service, nothing gets in as it.
 	e.s.SFTPUID = func() uint32 { return 0 }
-	if code, _ := sftpAsk(e, sftpUID, "POST", "/local/sftp/config", sftpd.ConfigRequest{}); code != http.StatusForbidden {
+	if code, _ := sftpAsk(e, sftpUID, "POST", "/local/sftp/room", sftpd.RoomRequest{}); code != http.StatusForbidden {
 		t.Errorf("the service before its user exists: %d", code)
 	}
 }
 
 func TestSFTPPortAndHostKey(t *testing.T) {
 	e := newSFTPEnv(t)
+	e.core.sftpStatus = core.SFTPStatus{HostKey: "SHA256:abc"}
 	code, out := e.b.do("GET", "/api/sftp", nil)
-	if code != http.StatusOK || out["port"] != 2222.0 || out["running"] != false || out["host_key"] != "" {
-		t.Fatalf("before the service reports: %d %v", code, out)
+	if code != http.StatusOK || out["port"] != 2222.0 || out["running"] != false || out["host_key"] != "SHA256:abc" {
+		t.Fatalf("with the socket down: %d %v", code, out)
 	}
-	code, out = sftpAsk(e, sftpUID, "POST", "/local/sftp/config", sftpd.ConfigRequest{Fingerprint: "SHA256:abc"})
-	if code != http.StatusOK || out["port"] != 2222.0 {
-		t.Fatalf("config: %d %v", code, out)
-	}
+	e.core.sftpStatus.Listening = true
 	if _, out := e.b.do("GET", "/api/sftp", nil); out["running"] != true || out["host_key"] != "SHA256:abc" {
-		t.Errorf("after: %v", out)
+		t.Errorf("with the socket up: %v", out)
 	}
 	e.core.address.Address = "203.0.113.7"
 	if _, out := e.b.do("GET", "/api/games/survival/sftp", nil); out["host_key"] != "SHA256:abc" || out["host"] != "203.0.113.7" {
@@ -355,8 +355,18 @@ func TestSFTPPortAndHostKey(t *testing.T) {
 	if code, out := e.b.do("PUT", "/api/sftp", map[string]int{"port": 2300}); code != http.StatusOK || out["port"] != 2300.0 {
 		t.Fatalf("set: %d %v", code, out)
 	}
-	if _, out := sftpAsk(e, sftpUID, "POST", "/local/sftp/config", sftpd.ConfigRequest{Fingerprint: "SHA256:abc"}); out["port"] != 2300.0 {
-		t.Errorf("the service is told %v", out)
+	if e.core.sftpPort != 2300 {
+		t.Errorf("the core is told port %d", e.core.sftpPort)
+	}
+	e.core.sftpPortErr = errors.New("systemctl failed")
+	if code, out := e.b.do("PUT", "/api/sftp", map[string]int{"port": 2301}); code != http.StatusBadGateway || out["code"] != "sftp.port_failed" {
+		t.Errorf("when the core cannot change the port: %d %v", code, out)
+	}
+	e.core.sftpPortErr = nil
+	e.core.sftpPort = 0
+	e.s.syncSFTPPort(context.Background())
+	if e.core.sftpPort != 2301 {
+		t.Errorf("after a sync the core has port %d, the database holds 2301", e.core.sftpPort)
 	}
 }
 
@@ -370,6 +380,22 @@ func TestSFTPRoom(t *testing.T) {
 	if _, out := sftpAsk(e, sftpUID, "POST", "/local/sftp/room", sftpd.RoomRequest{Server: "survival"}); out["room"] != 1000.0 {
 		t.Errorf("room %v", out)
 	}
+}
+
+func (c *appCore) SetSFTPPort(_ context.Context, port int) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.sftpPortErr != nil {
+		return c.sftpPortErr
+	}
+	c.sftpPort = port
+	return nil
+}
+
+func (c *appCore) SFTP(context.Context) (core.SFTPStatus, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.sftpStatus, nil
 }
 
 func (c *appCore) SetSFTPVolumes(_ context.Context, names []string) error {

@@ -34,7 +34,6 @@ const (
 	maxSSHKeys       = 20
 	minRSABits       = 2048
 	sftpPasswordLen  = 24
-	sftpSeenWithin   = 90 * time.Second
 	sftpLoginWindow  = 15 * time.Minute
 	sftpMaxBodyBytes = 16 << 10
 )
@@ -53,16 +52,12 @@ var (
 	errSFTPPort      = msg.Define(http.StatusBadRequest, "sftp.bad_port", "Give a port from 1024 to 65535.")
 	errSFTPPortTaken = msg.Define(http.StatusConflict, "sftp.port_taken", "Port {port} is in the pool of game server ports. Choose another.")
 	errSFTPDenied    = msg.Define(http.StatusForbidden, "sftp.denied", "The login was refused.")
+	errSFTPPortFail  = msg.Define(http.StatusBadGateway, "sftp.port_failed", "The SFTP port could not be changed. Look at the core's log.")
 	errSFTPWait      = msg.Define(http.StatusTooManyRequests, "sftp.wait", "Too many wrong passwords. Try again later.")
 )
 
-// sftpState is what the panel knows about the running SFTP service, which
-// tells it at every poll.
+// sftpState holds what limits wrong SFTP passwords.
 type sftpState struct {
-	mu          sync.Mutex
-	fingerprint string
-	seen        time.Time
-
 	once   sync.Once
 	byIP   *failures
 	byGame *failures
@@ -204,9 +199,11 @@ func (s *Server) deleteSSHKey(w http.ResponseWriter, r *http.Request) {
 
 type sftpServerJSON struct {
 	Port int `json:"port"`
-	// HostKey is the fingerprint the service reported; empty until it has.
+	// HostKey is the fingerprint of the host key; empty if the core could
+	// not be asked.
 	HostKey string `json:"host_key"`
-	// Running is whether the service asked the panel for its port lately.
+	// Running is whether the port is open. The server behind it starts
+	// with the first connection and stops when idle.
 	Running bool `json:"running"`
 }
 
@@ -215,9 +212,14 @@ func (s *Server) sftpInfo(ctx context.Context) (sftpServerJSON, error) {
 	if err != nil {
 		return sftpServerJSON{}, err
 	}
-	s.sftp.mu.Lock()
-	defer s.sftp.mu.Unlock()
-	return sftpServerJSON{Port: port, HostKey: s.sftp.fingerprint, Running: s.now().Sub(s.sftp.seen) < sftpSeenWithin && !s.sftp.seen.IsZero()}, nil
+	out := sftpServerJSON{Port: port}
+	st, err := s.Core.SFTP(ctx)
+	if err != nil {
+		s.Log.Warn("ask the core about SFTP", "err", err)
+		return out, nil
+	}
+	out.HostKey, out.Running = st.HostKey, st.Listening
+	return out, nil
 }
 
 func (s *Server) getSFTP(w http.ResponseWriter, r *http.Request) {
@@ -254,6 +256,11 @@ func (s *Server) setSFTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.Store.SetSFTPPort(ctx, store.ThisNode, req.Port); err != nil {
 		s.fail(w, "set sftp port", err)
+		return
+	}
+	if err := s.Core.SetSFTPPort(ctx, req.Port); err != nil {
+		s.Log.Error("set the sftp port in the core", "port", req.Port, "err", err)
+		writeError(w, errSFTPPortFail.Err())
 		return
 	}
 	s.Log.Info("sftp port set", "port", req.Port, "user", loginFrom(ctx).account.ID)
@@ -337,7 +344,6 @@ func (s *Server) sftpRoutes() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /local/sftp/auth", s.sftpAuth)
 	mux.HandleFunc("POST /local/sftp/room", s.sftpRoom)
-	mux.HandleFunc("POST /local/sftp/config", s.sftpConfig)
 	return mux
 }
 
@@ -467,24 +473,6 @@ func (s *Server) sftpRoom(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// sftpConfig is how the service learns its port, and how the panel learns
-// the service's host key.
-func (s *Server) sftpConfig(w http.ResponseWriter, r *http.Request) {
-	var req sftpd.ConfigRequest
-	if !decodeSmall(w, r, &req) {
-		return
-	}
-	port, err := s.Store.SFTPPort(r.Context(), store.ThisNode)
-	if err != nil {
-		s.fail(w, "read sftp port", err)
-		return
-	}
-	s.sftp.mu.Lock()
-	s.sftp.fingerprint, s.sftp.seen = truncate(req.Fingerprint, 100), s.now()
-	s.sftp.mu.Unlock()
-	writeJSON(w, http.StatusOK, sftpd.ConfigResponse{Port: port})
-}
-
 // syncSFTPVolumes tells the core which volumes SFTP may use: the files of
 // game servers and files apps, and nothing else. The core keeps the list and holds the
 // SFTP user to it, so a login can never reach a database's volume.
@@ -509,5 +497,18 @@ func (s *Server) syncSFTPVolumes(ctx context.Context) {
 	}
 	if err := s.Core.SetSFTPVolumes(ctx, names); err != nil {
 		s.Log.Error("sftp volumes: sync", "err", err)
+	}
+}
+
+// syncSFTPPort makes the socket listen on the port the database holds, in
+// case the two differ, such as after a restore or a failed change.
+func (s *Server) syncSFTPPort(ctx context.Context) {
+	port, err := s.Store.SFTPPort(ctx, store.ThisNode)
+	if err != nil {
+		s.Log.Error("sftp port: read", "err", err)
+		return
+	}
+	if err := s.Core.SetSFTPPort(ctx, port); err != nil {
+		s.Log.Error("sftp port: sync", "err", err)
 	}
 }

@@ -138,7 +138,7 @@ jobs:
       - name: Logs
         if: failure()
         run: |
-          sudo journalctl -u zelie-core -u zelie-proxy -u zelie-panel -u zelie-sftp -u zelie-update --no-pager | tail -n 300
+          sudo journalctl -u zelie-core -u zelie-proxy -u zelie-panel -u zelie-sftp -u zelie-sftp.socket -u zelie-update --no-pager | tail -n 300
           # What game server containers printed, and what their volumes hold.
           sudo find /var/lib/zelie -type f -name 'paper-*.log' 2>/dev/null |
             while read -r f; do echo "== $f"; sudo tail -n 60 "$f"; done

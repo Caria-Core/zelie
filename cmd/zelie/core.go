@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"os/user"
+	"path/filepath"
 	"strconv"
 	"syscall"
 
@@ -101,6 +102,12 @@ func runCore(stderr io.Writer) int {
 
 	s := &core.Server{
 		SFTPUID: sftpUID, SFTPVolumes: sftpVolumes,
+		SFTPSocket: &core.SFTPSocket{
+			DropIn:  filepath.Join(install.UnitDir, install.SFTPSocket+".d", "port.conf"),
+			HostKey: filepath.Join(sftpState, "host_key"),
+			User:    install.SFTPUser,
+			Run:     runCmd,
+		},
 		Engine: e, Paths: engine.DefaultPaths, Log: log, Allowed: policy,
 		Builder:  build.New(e, engine.DefaultPaths, "/var/lib/zelie/build"),
 		Secrets:  keys,

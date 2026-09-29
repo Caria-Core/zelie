@@ -290,8 +290,8 @@ func (in *Installer) services(ctx context.Context) (bool, string, error) {
 	// right after would only race whoever talks to it next.
 	// So must one that runs an older binary than the one now in place.
 	var restart []string
-	all := allServices()
-	for i, name := range unitNames() {
+	for _, name := range unitNames() {
+		unit := strings.TrimSuffix(name, ".service")
 		file := in.path(filepath.Join(UnitDir, name))
 		changed := true
 		if old, err := os.ReadFile(file); err == nil && string(old) == units[name] {
@@ -299,17 +299,21 @@ func (in *Installer) services(ctx context.Context) (bool, string, error) {
 		} else if err := os.WriteFile(file, []byte(units[name]), 0o644); err != nil {
 			return false, "", err
 		}
-		if out, err := in.Exec(ctx, "systemctl", "is-active", all[i]); err != nil || strings.TrimSpace(out) != "active" {
+		if out, err := in.Exec(ctx, "systemctl", "is-active", unit); err != nil || strings.TrimSpace(out) != "active" {
 			continue
 		}
-		if changed || in.staleBinary(ctx, all[i]) {
-			restart = append(restart, all[i])
+		// A socket runs no binary of its own.
+		if changed || (unit != SFTPSocket && in.staleBinary(ctx, unit)) {
+			restart = append(restart, unit)
 		}
 	}
 	if out, err := in.Exec(ctx, "systemctl", "daemon-reload"); err != nil {
 		return false, "", fmt.Errorf("systemctl daemon-reload: %v: %s", err, out)
 	}
-	args := append([]string{"enable", "--now"}, all...)
+	// The SFTP service is left out: its socket starts it, and the service
+	// has no [Install] section to enable.
+	enabled := enabledUnits()
+	args := append([]string{"enable", "--now"}, enabled...)
 	if out, err := in.Exec(ctx, "systemctl", args...); err != nil {
 		return false, "", fmt.Errorf("systemctl enable: %v: %s", err, out)
 	}
@@ -319,7 +323,7 @@ func (in *Installer) services(ctx context.Context) (bool, string, error) {
 			return false, "", fmt.Errorf("systemctl restart: %v: %s", err, out)
 		}
 	}
-	return true, strings.Join(all, ", "), nil
+	return true, strings.Join(enabled, ", "), nil
 }
 
 // sftpPort lets the SFTP port through ufw, when ufw is on. Other firewalls

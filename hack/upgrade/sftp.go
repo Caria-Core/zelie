@@ -17,8 +17,10 @@ import (
 
 // sftpCheck logs in to the game server over SFTP, as a person's program
 // would: with the server's own password, which the panel shows once, to the
-// port the panel names. A server updated from a release without SFTP gets
-// its user and service from the new core, so the port may need a moment.
+// port the panel names. The first connection starts the SFTP server, which
+// systemd does through the socket the core set up. A server updated from a
+// release without SFTP gets its user and socket from the new core, so the
+// port may need a moment.
 func sftpCheck(c *client) error {
 	step("make an SFTP password for the server")
 	if err := c.confirm(); err != nil {
@@ -39,14 +41,14 @@ func sftpCheck(c *client) error {
 		HostKey string `json:"host_key"`
 	}
 	var conn *ssh.Client
-	// The service reports its host key to the panel with each poll, which
-	// is how the panel can show it.
-	err := waitFor("the SFTP server to answer with a host key", 3*time.Minute, func() error {
+	// The panel shows the host key the core made, so it is there before
+	// the server has ever started.
+	err := waitFor("the SFTP server to answer with the panel's host key", 3*time.Minute, func() error {
 		if err := c.do("GET", "/api/games/"+gameID+"/sftp", nil, &info); err != nil {
 			return err
 		}
 		if info.HostKey == "" {
-			return errors.New("the panel has not been told a host key yet")
+			return errors.New("the panel shows no host key yet")
 		}
 		var err error
 		conn, err = ssh.Dial("tcp", net.JoinHostPort("127.0.0.1", fmt.Sprint(info.Port)), &ssh.ClientConfig{

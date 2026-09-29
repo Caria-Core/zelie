@@ -2,12 +2,15 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"syscall"
 	"time"
@@ -36,21 +39,50 @@ func runSFTP(args []string, stderr io.Writer) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	l, err := systemdListener(os.Getenv, os.Getpid())
+	if err != nil {
+		fmt.Fprintf(stderr, "zelie: %v\n", err)
+		return 1
+	}
+	defer l.Close()
+
 	s := &sftpd.Server{
 		Panel:       sftpd.NewPanelClient(panelSocket),
 		Files:       core.NewClient(core.DefaultSocket),
 		Log:         log,
 		HostKeyPath: filepath.Join(sftpState, "host_key"),
 	}
-	if err := s.Run(ctx); err != nil {
+	if err := s.Serve(ctx, l); err != nil {
 		log.Error("SFTP server stopped", "err", err)
 		return 1
 	}
+	log.Info("SFTP server stopped")
 	return 0
 }
 
+// systemdListener takes the socket systemd passes to a service it started
+// for a socket unit: the first one, as file descriptor 3. The port belongs
+// to systemd, so a server started by hand has none and does not open one.
+func systemdListener(getenv func(string) string, pid int) (net.Listener, error) {
+	const first = 3 // SD_LISTEN_FDS_START
+	if getenv("LISTEN_PID") != strconv.Itoa(pid) {
+		return nil, errors.New("no socket from systemd: the SFTP server is started by zelie-sftp.socket")
+	}
+	if n, err := strconv.Atoi(getenv("LISTEN_FDS")); err != nil || n < 1 {
+		return nil, errors.New("no socket from systemd: LISTEN_FDS is not set")
+	}
+	syscall.CloseOnExec(first)
+	f := os.NewFile(first, "zelie-sftp.socket")
+	defer f.Close()
+	l, err := net.FileListener(f)
+	if err != nil {
+		return nil, fmt.Errorf("use the socket from systemd: %w", err)
+	}
+	return l, nil
+}
+
 // setUpSFTP gives a server that was installed before SFTP existed its user
-// and service. An update only restarts the services it knew of, so this is
+// service and socket. An update only restarts the services it knew of, so this is
 // where the new one appears. A failure is logged and does not keep the core
 // from starting.
 func setUpSFTP(ctx context.Context, log *slog.Logger) {

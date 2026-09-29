@@ -13,27 +13,35 @@ import (
 const DefaultSFTPPort = 2222
 
 // SetUpSFTP gives a server that was installed before SFTP existed the SFTP
-// service: its user, its unit, and a place in the firewall. An update
-// restarts the services it knew of, so the new one has to come from the
+// server: its user, its units, and a place in the firewall. An update
+// restarts the services it knew of, so the new ones have to come from the
 // core, which starts on the new binary. It does nothing on a server that
 // has both already, and reports whether it made anything.
 func SetUpSFTP(ctx context.Context, run ExecFunc, root string) (bool, error) {
-	unit := filepath.Join(root, UnitDir, SFTPService+".service")
+	units := map[string]string{SFTPService + ".service": SFTPUnit(), SFTPSocket: SFTPSocketUnit()}
 	made, err := ensureUser(ctx, run, SFTPUser)
 	if err != nil {
 		return false, err
 	}
-	if _, err := os.Stat(unit); err == nil && !made {
+	missing := made
+	for name := range units {
+		if _, err := os.Stat(filepath.Join(root, UnitDir, name)); err != nil {
+			missing = true
+		}
+	}
+	if !missing {
 		return false, nil
 	}
-	if err := os.WriteFile(unit, []byte(SFTPUnit()), 0o644); err != nil {
-		return false, err
+	for name, body := range units {
+		if err := os.WriteFile(filepath.Join(root, UnitDir, name), []byte(body), 0o644); err != nil {
+			return false, err
+		}
 	}
 	if out, err := run(ctx, "systemctl", "daemon-reload"); err != nil {
 		return false, fmt.Errorf("systemctl daemon-reload: %v: %s", err, strings.TrimSpace(out))
 	}
-	if out, err := run(ctx, "systemctl", "enable", "--now", SFTPService); err != nil {
-		return false, fmt.Errorf("systemctl enable %s: %v: %s", SFTPService, err, strings.TrimSpace(out))
+	if out, err := run(ctx, "systemctl", "enable", "--now", SFTPSocket); err != nil {
+		return false, fmt.Errorf("systemctl enable %s: %v: %s", SFTPSocket, err, strings.TrimSpace(out))
 	}
 	openSFTPPort(ctx, run)
 	return true, nil

@@ -42,9 +42,6 @@ type Panel interface {
 	// Room is how many more bytes the server's disk limit leaves, or nil
 	// when that is not known.
 	Room(ctx context.Context, server string) (*int64, error)
-	// Config reports the host key's fingerprint and returns the port to
-	// listen on.
-	Config(ctx context.Context, fingerprint string) (int, error)
 }
 
 // The requests and answers of the panel's SFTP routes, which only this
@@ -61,12 +58,6 @@ type (
 	}
 	RoomResponse struct {
 		Room *int64 `json:"room,omitempty"`
-	}
-	ConfigRequest struct {
-		Fingerprint string `json:"fingerprint"`
-	}
-	ConfigResponse struct {
-		Port int `json:"port"`
 	}
 )
 
@@ -137,16 +128,4 @@ func (c *PanelClient) Room(ctx context.Context, server string) (*int64, error) {
 		return nil, fmt.Errorf("the panel answered %d", status)
 	}
 	return out.Room, nil
-}
-
-func (c *PanelClient) Config(ctx context.Context, fingerprint string) (int, error) {
-	var out ConfigResponse
-	status, err := c.post(ctx, "/local/sftp/config", ConfigRequest{Fingerprint: fingerprint}, &out)
-	if err != nil {
-		return 0, err
-	}
-	if status != http.StatusOK {
-		return 0, fmt.Errorf("the panel answered %d", status)
-	}
-	return out.Port, nil
 }

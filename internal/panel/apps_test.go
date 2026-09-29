@@ -31,31 +31,34 @@ func init() {
 // appCore keeps containers in memory the way the core would, and opens
 // sealed variables with a real key.
 type appCore struct {
-	mu         sync.Mutex
-	keys       *secret.Keys
-	containers map[string]engine.Status
-	env        map[string][]string
-	builds     []string
-	removed    []string // images
-	keep       []string // what the last sweep was told
-	caches     []string // apps whose build cache went
-	external   map[string]core.ExternalListener
-	sftpVols   []string     // what SFTP was last allowed to reach
-	extSets    []string     // "app port sealed?" of each SetExternal
-	takenPorts map[int]bool // ports something else on the server holds
-	version    string       // the version the core runs
-	updatedTo  string
-	suggest    string   // the test command builds find
-	buildEnv   []string // the variables the last build got, opened
-	args       map[string][]string
-	cpuUsec    int64
-	testExit   int
-	tests      []engine.Spec
-	failBuild  bool
-	crash      bool              // new containers stop right away
-	crashImage string            // containers of this image stop right away
-	digests    map[string]string // what each registry tag points at now
-	next       byte
+	mu          sync.Mutex
+	keys        *secret.Keys
+	containers  map[string]engine.Status
+	env         map[string][]string
+	builds      []string
+	removed     []string // images
+	keep        []string // what the last sweep was told
+	caches      []string // apps whose build cache went
+	external    map[string]core.ExternalListener
+	sftpVols    []string // what SFTP was last allowed to reach
+	sftpPort    int      // the port the SFTP socket was last told
+	sftpPortErr error
+	sftpStatus  core.SFTPStatus
+	extSets     []string     // "app port sealed?" of each SetExternal
+	takenPorts  map[int]bool // ports something else on the server holds
+	version     string       // the version the core runs
+	updatedTo   string
+	suggest     string   // the test command builds find
+	buildEnv    []string // the variables the last build got, opened
+	args        map[string][]string
+	cpuUsec     int64
+	testExit    int
+	tests       []engine.Spec
+	failBuild   bool
+	crash       bool              // new containers stop right away
+	crashImage  string            // containers of this image stop right away
+	digests     map[string]string // what each registry tag points at now
+	next        byte
 
 	installs    []core.InstallRequest
 	installExit int  // what the install containers exit with
