@@ -24,13 +24,21 @@
 		{#each g.ports as p (p.id)}
 			<li class="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 px-4 py-3">
 				<span class="font-mono text-[15px] select-all">{address(p)}</span>
-				{#if p.default}
-					<span class="rounded-full bg-selected px-2.5 py-0.5 text-xs">{t('network.default')}</span>
-				{/if}
+				<span class="flex flex-wrap items-center gap-1.5">
+					{#if p.default}
+						<span class="rounded-full bg-selected px-2.5 py-0.5 text-xs">{t('network.default')}</span>
+					{/if}
+					{#each p.used_by as use (use.env)}
+						<span class="rounded-full bg-selected px-2.5 py-0.5 text-xs" title={use.env}>{use.name}</span>
+					{/each}
+				</span>
 			</li>
 		{/each}
 	</ul>
 	<p class="text-sm text-muted">{t('network.defaultHint')}</p>
+	{#if g.ports.some((p) => p.used_by.length)}
+		<p class="text-sm text-muted">{t('network.usedByHint')}</p>
+	{/if}
 	{#if node?.private}
 		<p class="text-sm text-muted">
 			{t('network.private')}

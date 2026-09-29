@@ -97,6 +97,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/volumes", s.createVolume)
 	mux.HandleFunc("DELETE /v1/volumes/{name}", s.removeVolume)
 	mux.HandleFunc("POST /v1/volumes/{name}/prepare", s.prepareVolume)
+	mux.HandleFunc("POST /v1/volumes/{name}/peek", s.peekVolume)
 	mux.HandleFunc("GET /v1/links/{app}", s.links)
 	mux.HandleFunc("PUT /v1/links/{app}", s.setLinks)
 	mux.HandleFunc("PUT /v1/forwards/{app}", s.setForwards)

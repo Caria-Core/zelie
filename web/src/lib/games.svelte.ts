@@ -12,7 +12,21 @@ export type GameVariable = {
 	rules?: string[];
 };
 
-export type GamePort = { id: number; ip: string; port: number; address: string; default: boolean };
+// A variable of the egg that holds one of the server's ports, such as the query port.
+export type PortUse = { env: string; name: string };
+
+export type GamePort = { id: number; ip: string; port: number; address: string; default: boolean; used_by: PortUse[] };
+
+// Set for games installed with SteamCMD. A build is Steam's number for one
+// version of the game; either may be empty when it is not known yet.
+export type GameSteam = {
+	app_id: number;
+	installed_build: string;
+	latest_build: string;
+	update_available: boolean;
+	checked_at: string | null;
+	auto_update: boolean;
+};
 
 export type Game = {
 	id: string;
@@ -34,6 +48,7 @@ export type Game = {
 	// stopped, starting, running, stopping or crashed.
 	state: string;
 	crashing?: Msg;
+	steam?: GameSteam;
 };
 
 export type EggPreview = {
@@ -43,6 +58,8 @@ export type EggPreview = {
 	startup: string;
 	variables: GameVariable[];
 	features: string[];
+	// The variables that take an extra port each, in the order they get them.
+	port_variables: PortUse[];
 };
 
 export type Allocation = { id: number; ip: string; port: number; app?: string };
@@ -77,6 +94,19 @@ export async function acceptEula(id: string): Promise<void> {
 export async function power(id: string, action: 'start' | 'stop' | 'restart' | 'kill'): Promise<void> {
 	await api('POST', `/games/${encodeURIComponent(id)}/power`, { action });
 	await Promise.all([loadGame(id), reloadList()]);
+}
+
+// Brings a Steam game to its latest build: a running server restarts, which
+// updates it as it starts, and a stopped one is installed again.
+export async function updateSteam(id: string): Promise<void> {
+	await api('POST', `/games/${encodeURIComponent(id)}/steam/update`);
+	await Promise.all([loadGame(id), reloadList()]);
+}
+
+// Lets Zelie update the server by itself once nobody is playing.
+export async function setAutoUpdate(id: string, on: boolean): Promise<void> {
+	await api('PUT', `/games/${encodeURIComponent(id)}/steam`, { auto_update: on });
+	await loadGame(id);
 }
 
 // Players connect straight to the machine, not through the panel's address,

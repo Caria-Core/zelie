@@ -31,7 +31,7 @@ func (s *Server) sweepImages(ctx context.Context) {
 		s.Log.Error("images: list", "err", err)
 		return
 	}
-	removed, err := s.Core.SweepImages(ctx, keep)
+	removed, err := s.Core.SweepImages(ctx, append(keep, s.steamImages(ctx)...))
 	if err != nil {
 		s.Log.Error("images: sweep", "err", err)
 	}

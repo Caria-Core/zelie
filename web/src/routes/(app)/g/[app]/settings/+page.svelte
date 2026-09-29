@@ -5,7 +5,7 @@
 	import { reload } from '$lib/apps.svelte';
 	import { ask } from '$lib/ask.svelte';
 	import { messageOf } from '$lib/errors';
-	import { game, gameState, loadGame } from '$lib/games.svelte';
+	import { game, gameState, loadGame, setAutoUpdate } from '$lib/games.svelte';
 	import { t } from '$lib/i18n';
 	import Button from '$lib/ui/Button.svelte';
 	import ErrorText from '$lib/ui/ErrorText.svelte';
@@ -27,6 +27,18 @@
 			await api('POST', `/games/${encodeURIComponent(g.id)}/reinstall`);
 			await Promise.all([loadGame(g.id), reload()]);
 			await goto(`/g/${g.id}`);
+		} catch (err) {
+			error = messageOf(err);
+		} finally {
+			busy = false;
+		}
+	}
+
+	async function autoUpdate(on: boolean) {
+		busy = true;
+		error = '';
+		try {
+			await setAutoUpdate(g.id, on);
 		} catch (err) {
 			error = messageOf(err);
 		} finally {
@@ -58,6 +70,29 @@
 		<Button kind="secondary" class="self-start" {busy} disabled={!stopped} onclick={reinstall}><RotateCcw size={16} />{t('settings.reinstall')}</Button>
 		{#if !stopped}<p class="text-sm text-muted">{t('settings.reinstallStop')}</p>{/if}
 	</section>
+
+	{#if g.steam}
+		<section class="flex flex-col gap-3">
+			<div>
+				<h2 class="font-medium">{t('settings.steamTitle')}</h2>
+				<p class="text-sm text-muted">{t('settings.steamLead')}</p>
+			</div>
+			<label class="flex items-start gap-2.5 text-[15px]">
+				<input
+					type="checkbox"
+					class="mt-1 size-4 accent-[var(--fg)]"
+					checked={g.steam.auto_update}
+					disabled={busy}
+					onchange={(e) => autoUpdate(e.currentTarget.checked)}
+				/>
+				<span>{t('settings.steamAuto')}<span class="block text-sm text-muted">{t('settings.steamAutoHint')}</span></span>
+			</label>
+			<p class="text-sm text-muted">
+				{g.steam.installed_build ? t('settings.steamInstalled', { build: g.steam.installed_build }) : t('settings.steamNoBuild')}
+				{#if g.steam.latest_build}{' ' + t('settings.steamLatest', { build: g.steam.latest_build })}{/if}
+			</p>
+		</section>
+	{/if}
 
 	<section class="flex flex-col gap-4 rounded-2xl border border-danger/30 p-5">
 		<div>
