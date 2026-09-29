@@ -58,6 +58,7 @@ var (
 	errNoEULA        = msg.Define(http.StatusConflict, "game.no_eula", "This game has no EULA to accept.")
 	errBadEggKind    = msg.Define(http.StatusBadRequest, "game.bad_egg_kind", "The kind must be empty or runtime.")
 	errRuntimeEgg    = msg.Define(http.StatusBadRequest, "game.runtime_egg", "{egg} runs your own files. Create it with New app, Files.")
+	errBadStartup    = msg.Define(http.StatusBadRequest, "game.bad_startup", "The startup command must be at most {max} characters, without control characters.")
 	errNotAnApp      = msg.Define(http.StatusConflict, "game.not_an_app", "This is a game server, which has its own page.")
 	errInstallExit   = msg.Define(0, "game.install_failed", "The install script exited with code {code}.")
 	errInstallTime   = msg.Define(0, "game.install_timeout", "The install did not finish within {minutes} minutes.")
@@ -144,6 +145,9 @@ type gameRequest struct {
 	// Ports is how many ports the server takes from the pool; the first
 	// is the one players connect to.
 	Ports int `json:"ports"`
+	// Allocations picks which pool ports fill which roles. Roles it does
+	// not name take the lowest free ports, as when it is left out.
+	Allocations *portPick `json:"allocations"`
 	// AcceptEULA is the administrator's answer to the EULA that eggs with
 	// the "eula" feature (Minecraft) ask for. Zelie writes it into the
 	// server's files before each start.
@@ -191,6 +195,61 @@ func pickImage(e *egg.Egg, want string) (string, *msg.Error) {
 		}
 	}
 	return "", errEggImage.Err("image", truncate(want, 128))
+}
+
+// chooseImage is the image a request asks for. The egg's images, by
+// reference or label, are open to everyone; an administrator may name any
+// other. current is what the server has now, which empty asks to keep.
+func chooseImage(ctx context.Context, e *egg.Egg, want, current string) (string, *msg.Error) {
+	if want == "" && current != "" {
+		return current, nil
+	}
+	image, bad := pickImage(e, want)
+	if bad == nil || !loginFrom(ctx).account.Admin {
+		return image, bad
+	}
+	if bad := checkImageRef(want); bad != nil {
+		return "", bad
+	}
+	return want, nil
+}
+
+// mayUnlock says whether the request may change what the egg locks. The
+// locks are there for the customers a host gives accounts to, not for the
+// administrators, and not for a files app, whose owner is the one who would
+// have set them.
+func mayUnlock(ctx context.Context, a store.App) bool {
+	return a.IsFiles() || loginFrom(ctx).account.Admin
+}
+
+const maxStartupBytes = 4096
+
+// checkStartup validates a startup command an administrator typed. Blank
+// means the egg's own, which the caller resolves.
+func checkStartup(cmd string) *msg.Error {
+	if len(cmd) > maxStartupBytes {
+		return errBadStartup.Err("max", maxStartupBytes)
+	}
+	for _, c := range cmd {
+		if c < ' ' && c != '\n' && c != '\t' || c == 0x7f {
+			return errBadStartup.Err("max", maxStartupBytes)
+		}
+	}
+	return nil
+}
+
+// checkImageRef validates an image an administrator typed, as an app's
+// image is.
+func checkImageRef(ref string) *msg.Error {
+	switch {
+	case ref == "" || len(ref) > 255 || strings.ContainsAny(ref, " \t\n"):
+		return errNoImage.Err()
+	case strings.HasPrefix(ref, engine.LocalImages):
+		return errReservedImage.Err()
+	case !validImage(ref):
+		return errBadImage.Err("image", truncate(ref, 128))
+	}
+	return nil
 }
 
 // maxVariableBytes keeps a variable's value to something a container's
@@ -292,12 +351,17 @@ func (s *Server) createGame(w http.ResponseWriter, r *http.Request) {
 		writeError(w, errEULARequired.Err())
 		return
 	}
-	image, bad := pickImage(e, req.Image)
+	image, bad := chooseImage(ctx, e, req.Image, "")
 	if bad != nil {
 		writeError(w, bad)
 		return
 	}
-	vars, bad := gameVariables(e, nil, req.Variables, false)
+	vars, bad := gameVariables(e, nil, req.Variables, mayUnlock(ctx, store.App{}))
+	if bad != nil {
+		writeError(w, bad)
+		return
+	}
+	wish, bad := wishedPorts(e, req.Allocations)
 	if bad != nil {
 		writeError(w, bad)
 		return
@@ -310,6 +374,7 @@ func (s *Server) createGame(w http.ResponseWriter, r *http.Request) {
 		writeError(w, errGamePorts.Err("max", maxGamePorts))
 		return
 	}
+	req.Ports = max(req.Ports, wish.count())
 	h, err := s.Core.Host(ctx)
 	if err != nil {
 		s.coreFailed(w, "read host", err)
@@ -326,12 +391,13 @@ func (s *Server) createGame(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	p, err := s.place(ctx, store.ThisNode, needs{Ports: req.Ports})
+	p, err := s.place(ctx, store.ThisNode, needs{Ports: req.Ports, Chosen: wish.ids})
 	if err != nil {
 		s.failWith(w, "place server", err)
 		return
 	}
-	a.Port = p.Allocations[0].Port
+	primary, _, _ := wish.split(p.Allocations)
+	a.Port = primary.Port
 	switch err := s.Store.CreateApp(ctx, a); {
 	case errors.Is(err, store.ErrExists):
 		writeError(w, errAppExists.Err())
@@ -352,10 +418,11 @@ func (s *Server) createGame(w http.ResponseWriter, r *http.Request) {
 		if !errors.Is(err, store.ErrInUse) || try == 2 {
 			break
 		}
-		if p, err = s.place(ctx, store.ThisNode, needs{Ports: req.Ports}); err != nil {
+		if p, err = s.place(ctx, store.ThisNode, needs{Ports: req.Ports, Chosen: wish.ids}); err != nil {
 			break
 		}
-		a.Port = p.Allocations[0].Port
+		primary, _, _ = wish.split(p.Allocations)
+		a.Port = primary.Port
 		if err = s.Store.UpdateApp(ctx, a); err != nil {
 			break
 		}
@@ -374,7 +441,16 @@ func (s *Server) createGame(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, "store egg", err)
 		return
 	}
-	assignPorts(e, vars, req.Variables, portNumbers(p.Allocations[1:]))
+	_, chosen, auto := wish.split(p.Allocations)
+	given := maps.Clone(req.Variables)
+	if given == nil {
+		given = map[string]string{}
+	}
+	for env, port := range chosen {
+		vars[env] = strconv.Itoa(port)
+		given[env] = vars[env]
+	}
+	assignPorts(e, vars, given, auto)
 	g := store.GameServer{AppID: a.ID, EggID: stored.ID, Image: image, Startup: e.Startup, Variables: vars, SteamAppID: steamAppID(e, vars)}
 	if needsEULA {
 		g.EULAAcceptedAt = s.now()
@@ -426,13 +502,19 @@ func (s *Server) gameLimits(a *store.App, disk *int64, h engine.Host) *msg.Error
 }
 
 type gameVariableJSON struct {
-	Env         string   `json:"env"`
-	Name        string   `json:"name"`
-	Description string   `json:"description,omitempty"`
-	Value       string   `json:"value"`
-	Default     string   `json:"default"`
-	Editable    bool     `json:"editable"`
-	Rules       []string `json:"rules,omitempty"`
+	Env         string `json:"env"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Value       string `json:"value"`
+	Default     string `json:"default"`
+	Editable    bool   `json:"editable"`
+	// Locked is set when the egg keeps users from changing the variable,
+	// which an administrator can still do.
+	Locked bool `json:"locked,omitempty"`
+	// Port is set for a variable that holds one of the server's ports,
+	// which are chosen on the network page.
+	Port  bool     `json:"port,omitempty"`
+	Rules []string `json:"rules,omitempty"`
 }
 
 type gamePortJSON struct {
@@ -548,7 +630,7 @@ func (s *Server) gameOut(ctx context.Context, a store.App) (gameJSON, error) {
 		}
 		out.Ports = append(out.Ports, gamePortJSON{ID: p.ID, IP: p.IP, Port: p.Port, Address: host, Default: p.Port == a.Port, UsedBy: portUses(e, g.Variables, p.Port)})
 	}
-	out.Variables = variablesOut(e, g.Variables, a.IsFiles())
+	out.Variables = variablesOut(e, g.Variables, mayUnlock(ctx, a))
 	// Without the node, only the placeholder for its name stays as written.
 	this, _ := s.Store.Node(ctx, store.ThisNode)
 	out.StartupPreview = egg.Expand(g.Startup, gameVars(a, g, this), a.Port)
@@ -575,7 +657,7 @@ func variablesOut(e *egg.Egg, values map[string]string, unlock bool) []gameVaria
 		}
 		out = append(out, gameVariableJSON{
 			Env: v.Env, Name: name, Description: v.Description, Value: value, Default: v.Default,
-			Editable: v.UserEditable || unlock, Rules: v.Rules,
+			Editable: v.UserEditable || unlock, Locked: !v.UserEditable, Port: isPortVariable(v), Rules: v.Rules,
 		})
 	}
 	return out
@@ -616,7 +698,7 @@ func (s *Server) eggPreview(w http.ResponseWriter, r *http.Request) {
 		// What a new files app starts with, so the form shows it.
 		values = withFilesDefaults(e, nil)
 	}
-	out := eggPreviewJSON{Name: e.Name, Description: e.Description, Startup: e.Startup, Images: []gameImageJSON{}, Variables: variablesOut(e, values, runtime), Features: featuresOut(e), PortVariables: portVariableNames(e)}
+	out := eggPreviewJSON{Name: e.Name, Description: e.Description, Startup: e.Startup, Images: []gameImageJSON{}, Variables: variablesOut(e, values, runtime || loginFrom(r.Context()).account.Admin), Features: featuresOut(e), PortVariables: portVariableNames(e)}
 	for _, img := range e.Images {
 		out.Images = append(out.Images, gameImageJSON{Label: img.Label, Ref: img.Ref})
 	}
@@ -681,8 +763,12 @@ func (s *Server) managesGameConfirmed(next http.HandlerFunc) http.HandlerFunc {
 type gameSettingsRequest struct {
 	// Variables holds the values to change; the others stay as they are.
 	Variables map[string]string `json:"variables"`
-	// Image is one of the egg's images; empty keeps the current one.
+	// Image is one of the egg's images, or for an administrator any image;
+	// empty keeps the current one.
 	Image string `json:"image"`
+	// Startup replaces the egg's startup command; empty goes back to the
+	// egg's. Only administrators set it, and nil keeps the current one.
+	Startup *string `json:"startup"`
 }
 
 // updateGameSettings changes the image and the editable variables a server
@@ -707,20 +793,32 @@ func (s *Server) updateGameSettings(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, "load egg", err)
 		return
 	}
-	image := g.Image
-	if req.Image != "" {
-		var bad *msg.Error
-		if image, bad = pickImage(e, req.Image); bad != nil {
-			writeError(w, bad)
-			return
-		}
-	}
-	vars, bad := gameVariables(e, g.Variables, req.Variables, a.IsFiles())
+	image, bad := chooseImage(ctx, e, req.Image, g.Image)
 	if bad != nil {
 		writeError(w, bad)
 		return
 	}
-	if err := s.Store.SetGameSettings(ctx, a.ID, image, vars); err != nil {
+	startup := g.Startup
+	if req.Startup != nil {
+		if !loginFrom(ctx).account.Admin {
+			writeError(w, errAdminOnly.Err())
+			return
+		}
+		startup = strings.TrimSpace(*req.Startup)
+		if bad := checkStartup(startup); bad != nil {
+			writeError(w, bad)
+			return
+		}
+		if startup == "" {
+			startup = e.Startup
+		}
+	}
+	vars, bad := gameVariables(e, g.Variables, req.Variables, mayUnlock(ctx, a))
+	if bad != nil {
+		writeError(w, bad)
+		return
+	}
+	if err := s.Store.SetGameSettings(ctx, a.ID, image, startup, vars); err != nil {
 		s.fail(w, "save game settings", err)
 		return
 	}
@@ -739,7 +837,83 @@ func (s *Server) updateGameSettings(w http.ResponseWriter, r *http.Request) {
 			changed = append(changed, name)
 		}
 	}
-	s.Log.Info("game settings changed", "server", a.ID, "user", loginFrom(ctx).account.ID, "image", image, "variables", changed)
+	s.Log.Info("game settings changed", "server", a.ID, "user", loginFrom(ctx).account.ID, "image", image, "startup_changed", startup != g.Startup, "variables", changed)
+	out, err := s.gameOut(ctx, a)
+	if err != nil {
+		s.fail(w, "describe game server", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+type gameResourcesRequest struct {
+	// Zero keeps what the server has now.
+	MemoryMB int64   `json:"memory_mb"`
+	CPUs     float64 `json:"cpus"`
+	DiskMB   int64   `json:"disk_mb"`
+}
+
+// updateGameResources changes a server's memory, CPUs and disk. Memory and
+// CPUs are read when the server starts, so a running one keeps its limits
+// until it is started again; the disk limit is checked from the next
+// measurement on.
+func (s *Server) updateGameResources(w http.ResponseWriter, r *http.Request) {
+	a, _, ok := s.gameFrom(w, r)
+	if !ok {
+		return
+	}
+	if a.IsFiles() {
+		writeError(w, errNotForFiles.Err())
+		return
+	}
+	var req gameResourcesRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	ctx := r.Context()
+	vols, err := s.Store.Volumes(ctx, a.ID)
+	if err != nil {
+		s.fail(w, "list volumes", err)
+		return
+	}
+	i := slices.IndexFunc(vols, func(v store.Volume) bool { return v.Path == gameVolumePath })
+	if i < 0 {
+		s.fail(w, "find volume", errors.New("the server has no volume"))
+		return
+	}
+	vol := vols[i]
+	if req.MemoryMB != 0 {
+		a.MemoryMB = req.MemoryMB
+	}
+	if req.CPUs != 0 {
+		a.CPUs = req.CPUs
+	}
+	if req.DiskMB != 0 {
+		vol.LimitMB = req.DiskMB
+	}
+	h, err := s.Core.Host(ctx)
+	if err != nil {
+		s.coreFailed(w, "read host", err)
+		return
+	}
+	disk := vol.LimitMB
+	if bad := s.gameLimits(&a, &disk, h); bad != nil {
+		writeError(w, bad)
+		return
+	}
+	if err := s.checkVolume(ctx, vol); err != nil {
+		s.failWith(w, "check volume", err)
+		return
+	}
+	if err := s.Store.UpdateApp(ctx, a); err != nil {
+		s.fail(w, "save game resources", err)
+		return
+	}
+	if err := s.Store.UpdateVolume(ctx, vol); err != nil {
+		s.fail(w, "update volume", err)
+		return
+	}
+	s.Log.Info("game resources changed", "server", a.ID, "user", loginFrom(ctx).account.ID, "memory_mb", a.MemoryMB, "cpus", a.CPUs, "disk_mb", vol.LimitMB)
 	out, err := s.gameOut(ctx, a)
 	if err != nil {
 		s.fail(w, "describe game server", err)

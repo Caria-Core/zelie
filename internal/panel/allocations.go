@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/netip"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -43,6 +44,8 @@ var (
 	errAllocationInUse = msg.Define(http.StatusConflict, "allocation.in_use", "A server uses this port. Delete the server first.")
 	errNoRange         = msg.Define(http.StatusConflict, "allocation.no_range", "No free block of {count} ports was found on this server.")
 	errNoFreePort      = msg.Define(http.StatusConflict, "allocation.none_free", "There are no free ports left. Add more to the pool first.")
+	errPortNotFree     = msg.Define(http.StatusConflict, "allocation.not_free", "Port {port} is used by another server.")
+	errPortTwice       = msg.Define(http.StatusBadRequest, "allocation.twice", "A port can be given to one role only.")
 	errAdminOnly       = msg.Define(http.StatusForbidden, "session.admin_only", "Only an administrator can do this.")
 )
 
@@ -260,9 +263,13 @@ func (s *Server) deleteAllocation(w http.ResponseWriter, r *http.Request) {
 // needs is what a new server needs from a node.
 type needs struct {
 	Ports int // how many ports it takes; the first is its main one
+	// Chosen are allocations the request picked, by id. They are taken
+	// first, and count towards Ports.
+	Chosen []int64
 }
 
-// placement is where a new server goes.
+// placement is where a new server goes. Allocations lists the chosen ones
+// in the order asked for, then the ones found free, lowest port first.
 type placement struct {
 	Node        int64
 	Allocations []store.Allocation
@@ -277,8 +284,22 @@ func (s *Server) place(ctx context.Context, node int64, w needs) (placement, err
 		return placement{}, err
 	}
 	p := placement{Node: node}
+	picked := make(map[int64]bool, len(w.Chosen))
+	for _, id := range w.Chosen {
+		i := slices.IndexFunc(list, func(a store.Allocation) bool { return a.ID == id })
+		switch {
+		case i < 0:
+			return placement{}, errNoAllocation.Err()
+		case list[i].AppID != "":
+			return placement{}, errPortNotFree.Err("port", list[i].Port)
+		case picked[id]:
+			return placement{}, errPortTwice.Err()
+		}
+		picked[id] = true
+		p.Allocations = append(p.Allocations, list[i])
+	}
 	for _, a := range list {
-		if a.AppID == "" && len(p.Allocations) < w.Ports {
+		if a.AppID == "" && !picked[a.ID] && len(p.Allocations) < w.Ports {
 			p.Allocations = append(p.Allocations, a)
 		}
 	}

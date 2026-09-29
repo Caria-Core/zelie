@@ -278,12 +278,10 @@ func (req appRequest) apply(a *store.App) *msg.Error {
 		a.AutoDeploy = *req.AutoDeploy
 	}
 	switch {
-	case a.Source == store.SourceImage && (a.Image == "" || len(a.Image) > 255 || strings.ContainsAny(a.Image, " \t\n")):
-		return errNoImage.Err()
-	case a.Source == store.SourceImage && strings.HasPrefix(a.Image, engine.LocalImages):
-		return errReservedImage.Err()
-	case a.Source == store.SourceImage && !validImage(a.Image):
-		return errBadImage.Err("image", a.Image)
+	case a.Source == store.SourceImage:
+		if bad := checkImageRef(a.Image); bad != nil {
+			return bad
+		}
 	case a.Source == store.SourceGitHub:
 		if bad := checkRepo(a.Repo, a.Branch); bad != nil {
 			return bad

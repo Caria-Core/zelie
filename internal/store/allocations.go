@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -192,4 +193,45 @@ func (s *Store) AssignAllocations(ctx context.Context, appID string, ids []int64
 func (s *Store) UnassignAllocations(ctx context.Context, appID string) error {
 	_, err := s.db.ExecContext(ctx, "UPDATE allocations SET app_id = NULL WHERE app_id = ?", appID)
 	return err
+}
+
+// ReplaceGamePorts makes ids the ports a server holds, at once: the ones it
+// no longer lists go back to the pool and the new ones are taken. port is
+// the server's main port, and variables the game server's values with the
+// port variables changed. A port another server holds fails with ErrInUse,
+// one that is not on the node with ErrNotFound, and nothing changes then.
+func (s *Store) ReplaceGamePorts(ctx context.Context, nodeID int64, appID string, ids []int64, port int, variables map[string]string) error {
+	vars, err := json.Marshal(variables)
+	if err != nil {
+		return err
+	}
+	return s.tx(ctx, func(tx *sql.Tx) error {
+		for _, id := range ids {
+			var owner sql.NullString
+			err := tx.QueryRowContext(ctx, "SELECT app_id FROM allocations WHERE id = ? AND node_id = ?", id, nodeID).Scan(&owner)
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrNotFound
+			}
+			if err != nil {
+				return err
+			}
+			if owner.Valid && owner.String != appID {
+				return ErrInUse
+			}
+		}
+		if _, err := tx.ExecContext(ctx, "UPDATE allocations SET app_id = NULL WHERE app_id = ?", appID); err != nil {
+			return err
+		}
+		for _, id := range ids {
+			if _, err := tx.ExecContext(ctx, "UPDATE allocations SET app_id = ? WHERE id = ?", appID, id); err != nil {
+				return err
+			}
+		}
+		res, err := tx.ExecContext(ctx, "UPDATE apps SET port = ? WHERE id = ?", port, appID)
+		if err := oneRow(res, err); err != nil {
+			return err
+		}
+		res, err = tx.ExecContext(ctx, "UPDATE game_servers SET variables = ? WHERE app_id = ?", string(vars), appID)
+		return oneRow(res, err)
+	})
 }

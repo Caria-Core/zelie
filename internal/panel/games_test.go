@@ -1,10 +1,13 @@
 package panel
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"maps"
 	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strconv"
 	"strings"
@@ -170,7 +173,7 @@ func TestCreateGameAndInstall(t *testing.T) {
 		t.Errorf("port address: %v", ports[0])
 	}
 	vars := out["variables"].([]any)
-	if len(vars) != 3 || vars[0].(map[string]any)["value"] != "1.20.4" || vars[0].(map[string]any)["description"] != "What to install." || vars[1].(map[string]any)["editable"] != false {
+	if len(vars) != 3 || vars[0].(map[string]any)["value"] != "1.20.4" || vars[0].(map[string]any)["description"] != "What to install." || vars[1].(map[string]any)["editable"] != true || vars[1].(map[string]any)["locked"] != true || vars[0].(map[string]any)["locked"] != nil {
 		t.Errorf("variables: %v", vars)
 	}
 	if out["startup"] != "java -Xmx{{SERVER_MEMORY}}M -jar server.jar --port {{SERVER_PORT}}" {
@@ -246,9 +249,8 @@ func TestGameRequestsAreChecked(t *testing.T) {
 		"not in the list":   {map[string]any{"egg": "quake"}, 404, "game.no_egg"},
 		"egg does not load": {map[string]any{"egg_url": "https://example.com/missing.json"}, 422, "game.egg_unusable"},
 		"bad name":          {map[string]any{"egg": "minecraft-paper", "name": "Not Valid"}, 400, "app.bad_name"},
-		"other image":       {map[string]any{"egg": "minecraft-paper", "image": "alpine"}, 400, "game.bad_image"},
+		"bad image":         {map[string]any{"egg": "minecraft-paper", "image": "not an image"}, 400, "app.no_image"},
 		"unknown variable":  {map[string]any{"egg": "minecraft-paper", "variables": map[string]string{"NOPE": "1"}}, 400, "game.unknown_variable"},
-		"locked variable":   {map[string]any{"egg": "minecraft-paper", "variables": map[string]string{"BUILD": "nightly"}}, 400, "game.variable_locked"},
 		"bad value":         {map[string]any{"egg": "minecraft-paper", "variables": map[string]string{"SLOTS": "many"}}, 400, "game.bad_variable"},
 		"required is empty": {map[string]any{"egg": "minecraft-paper", "variables": map[string]string{"VERSION": ""}}, 400, "game.bad_variable"},
 		"too little memory": {map[string]any{"egg": "minecraft-paper", "memory_mb": 16}, 400, "game.bad_memory"},
@@ -551,15 +553,17 @@ func TestUpdateGameSettings(t *testing.T) {
 		body map[string]any
 		code string
 	}{
-		"locked":            {map[string]any{"variables": map[string]string{"BUILD": "nightly"}}, "game.variable_locked"},
 		"unknown":           {map[string]any{"variables": map[string]string{"NOPE": "1"}}, "game.unknown_variable"},
 		"not a number":      {map[string]any{"variables": map[string]string{"SLOTS": "many"}}, "game.bad_variable"},
 		"required is empty": {map[string]any{"variables": map[string]string{"VERSION": ""}}, "game.bad_variable"},
 		"too long":          {map[string]any{"variables": map[string]string{"VERSION": strings.Repeat("1", 21)}}, "game.bad_variable"},
 		"null byte":         {map[string]any{"variables": map[string]string{"VERSION": "1\x00"}}, "game.bad_variable"},
 		"huge":              {map[string]any{"variables": map[string]string{"VERSION": strings.Repeat("1", 9<<10)}}, "game.bad_variable"},
-		"other image":       {map[string]any{"image": "alpine"}, "game.bad_image"},
-		"unknown field":     {map[string]any{"startup": "rm -rf /"}, "server.bad_request"},
+		"bad image":         {map[string]any{"image": "not an image"}, "app.no_image"},
+		"reserved image":    {map[string]any{"image": "zelie.local/x"}, "app.reserved_image"},
+		"long startup":      {map[string]any{"startup": strings.Repeat("x", 4097)}, "game.bad_startup"},
+		"startup null byte": {map[string]any{"startup": "run\x00"}, "game.bad_startup"},
+		"unknown field":     {map[string]any{"privileged": true}, "server.bad_request"},
 	} {
 		before, _ := e.s.Store.GameServer(context.Background(), "survival")
 		if code, out := e.b.do("PUT", "/api/games/survival/variables", c.body); code != http.StatusBadRequest || out["code"] != c.code {
@@ -605,5 +609,140 @@ func TestChangedVariablesReachTheNextStart(t *testing.T) {
 	}
 	if !slices.Contains(env, "SLOTS=64") || !slices.Contains(env, "VERSION=1.19") {
 		t.Errorf("env %v", env)
+	}
+}
+
+// asCustomer sends a request to a handler as an account that is not an
+// administrator, which no route lets through yet: hosts will give their
+// customers such accounts, and the egg's locks apply to them.
+func (e *appEnv) asCustomer(t *testing.T, h http.HandlerFunc, method, app string, body any) (int, map[string]any) {
+	t.Helper()
+	raw, _ := json.Marshal(body)
+	req := httptest.NewRequest(method, "/", bytes.NewReader(raw))
+	req.SetPathValue("app", app)
+	var l login
+	l.account.Admin = false
+	req = req.WithContext(context.WithValue(req.Context(), loginKey{}, l))
+	rec := httptest.NewRecorder()
+	h(rec, req)
+	var out map[string]any
+	json.Unmarshal(rec.Body.Bytes(), &out)
+	return rec.Code, out
+}
+
+func TestMayUnlock(t *testing.T) {
+	as := func(admin bool) context.Context {
+		var l login
+		l.account.Admin = admin
+		return context.WithValue(context.Background(), loginKey{}, l)
+	}
+	game, files := store.App{Kind: store.KindGame}, store.App{Source: store.SourceFiles}
+	for _, c := range []struct {
+		admin bool
+		app   store.App
+		want  bool
+	}{{true, game, true}, {false, game, false}, {false, files, true}, {true, files, true}} {
+		if got := mayUnlock(as(c.admin), c.app); got != c.want {
+			t.Errorf("admin %v, app %+v: %v", c.admin, c.app, got)
+		}
+	}
+}
+
+// The egg's locks hold for customers, and rules and image checks hold for
+// everyone.
+func TestCustomersAreHeldByTheEgg(t *testing.T) {
+	e, _ := newGameEnv(t)
+	if code, out := e.b.do("POST", "/api/games", map[string]any{"name": "survival", "egg": "minecraft-paper"}); code != http.StatusCreated {
+		t.Fatalf("create: %d %v", code, out)
+	}
+	e.install(t, "survival")
+	before, _ := e.s.Store.GameServer(context.Background(), "survival")
+
+	for name, body := range map[string]map[string]any{
+		"locked variable": {"variables": map[string]string{"BUILD": "nightly"}},
+		"other image":     {"image": "alpine"},
+	} {
+		want := map[string]string{"locked variable": "game.variable_locked", "other image": "game.bad_image"}[name]
+		if code, out := e.asCustomer(t, e.s.updateGameSettings, "PUT", "survival", body); code != http.StatusBadRequest || out["code"] != want {
+			t.Errorf("%s: %d %v", name, code, out)
+		}
+	}
+	if code, out := e.asCustomer(t, e.s.updateGameSettings, "PUT", "survival", map[string]any{"startup": "sh"}); code != http.StatusForbidden || out["code"] != "session.admin_only" {
+		t.Errorf("startup: %d %v", code, out)
+	}
+	if code, out := e.asCustomer(t, e.s.updateGameSettings, "PUT", "survival", map[string]any{"variables": map[string]string{"SLOTS": "many"}}); code != http.StatusBadRequest || out["code"] != "game.bad_variable" {
+		t.Errorf("rules: %d %v", code, out)
+	}
+	if after, _ := e.s.Store.GameServer(context.Background(), "survival"); after.Image != before.Image || after.Startup != before.Startup || !maps.Equal(after.Variables, before.Variables) {
+		t.Errorf("a refused change was saved: %+v", after)
+	}
+	// What the egg leaves open, they can change, and they see what is locked.
+	code, out := e.asCustomer(t, e.s.updateGameSettings, "PUT", "survival", map[string]any{"image": "Java 17", "variables": map[string]string{"SLOTS": "8"}})
+	if code != http.StatusOK || out["image"] != "ghcr.io/example/java:17" {
+		t.Fatalf("allowed change: %d %v", code, out)
+	}
+	for _, v := range out["variables"].([]any) {
+		v := v.(map[string]any)
+		if want := v["env"] != "BUILD"; v["editable"] != want {
+			t.Errorf("%v is editable for a customer: %v", v["env"], v["editable"])
+		}
+	}
+	if code, out := e.asCustomer(t, e.s.createGame, "POST", "", map[string]any{"name": "mine", "egg": "minecraft-paper", "variables": map[string]string{"BUILD": "nightly"}}); code != http.StatusBadRequest || out["code"] != "game.variable_locked" {
+		t.Errorf("create with a locked variable: %d %v", code, out)
+	}
+	if code, out := e.asCustomer(t, e.s.createGame, "POST", "", map[string]any{"name": "mine", "egg": "minecraft-paper", "image": "alpine"}); code != http.StatusBadRequest || out["code"] != "game.bad_image" {
+		t.Errorf("create with another image: %d %v", code, out)
+	}
+}
+
+// Administrators are not held by the locks: they set locked variables, any
+// image and the startup command, and reset the command to the egg's.
+func TestAdministratorsSetWhatTheEggLocks(t *testing.T) {
+	e, _ := newGameEnv(t)
+	code, out := e.b.do("POST", "/api/games", map[string]any{
+		"name": "survival", "egg": "minecraft-paper", "image": "ghcr.io/example/own:1", "variables": map[string]string{"BUILD": "nightly"},
+	})
+	if code != http.StatusCreated || out["image"] != "ghcr.io/example/own:1" {
+		t.Fatalf("create: %d %v", code, out)
+	}
+	e.install(t, "survival")
+	g, _ := e.s.Store.GameServer(context.Background(), "survival")
+	if g.Variables["BUILD"] != "nightly" {
+		t.Errorf("variables %v", g.Variables)
+	}
+
+	code, out = e.b.do("PUT", "/api/games/survival/variables", map[string]any{
+		"image": "registry.example.com/team/java:21", "startup": "  java -jar other.jar {{SERVER_PORT}}\n", "variables": map[string]string{"BUILD": "beta"},
+	})
+	if code != http.StatusOK || out["image"] != "registry.example.com/team/java:21" || out["startup"] != "java -jar other.jar {{SERVER_PORT}}" ||
+		out["startup_preview"] != "java -jar other.jar 25565" {
+		t.Fatalf("update: %d %v", code, out)
+	}
+	a, _ := e.s.Store.App(context.Background(), "survival")
+	g, _ = e.s.Store.GameServer(context.Background(), "survival")
+	if a.Image != "registry.example.com/team/java:21" || g.Startup != "java -jar other.jar {{SERVER_PORT}}" || g.Variables["BUILD"] != "beta" {
+		t.Errorf("stored %q, %+v", a.Image, g)
+	}
+
+	// Leaving it out keeps the command; an empty one goes back to the egg's.
+	if code, out = e.b.do("PUT", "/api/games/survival/variables", map[string]any{"variables": map[string]string{"SLOTS": "5"}}); code != http.StatusOK || out["startup"] != "java -jar other.jar {{SERVER_PORT}}" {
+		t.Errorf("kept: %d %v", code, out)
+	}
+	if code, out = e.b.do("PUT", "/api/games/survival/variables", map[string]any{"startup": ""}); code != http.StatusOK ||
+		out["startup"] != "java -Xmx{{SERVER_MEMORY}}M -jar server.jar --port {{SERVER_PORT}}" {
+		t.Errorf("reset: %d %v", code, out)
+	}
+	// The egg's rules still hold for them.
+	if code, out = e.b.do("PUT", "/api/games/survival/variables", map[string]any{"variables": map[string]string{"SLOTS": "many"}}); code != http.StatusBadRequest || out["code"] != "game.bad_variable" {
+		t.Errorf("rules: %d %v", code, out)
+	}
+	code, out = e.b.do("POST", "/api/eggs/preview", map[string]any{"egg": "minecraft-paper"})
+	if code != http.StatusOK {
+		t.Fatalf("preview: %d %v", code, out)
+	}
+	for _, v := range out["variables"].([]any) {
+		if v := v.(map[string]any); v["editable"] != true {
+			t.Errorf("preview shows %v as locked to an administrator", v["env"])
+		}
 	}
 }

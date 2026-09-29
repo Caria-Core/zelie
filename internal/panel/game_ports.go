@@ -1,12 +1,16 @@
 package panel
 
 import (
+	"errors"
+	"maps"
+	"net/http"
 	"slices"
 	"strconv"
 	"strings"
 
 	"github.com/Caria-Core/zelie/internal/egg"
 	"github.com/Caria-Core/zelie/internal/engine"
+	"github.com/Caria-Core/zelie/internal/msg"
 	"github.com/Caria-Core/zelie/internal/store"
 )
 
@@ -148,4 +152,210 @@ func portVariableNames(e *egg.Egg) []portUseJSON {
 		out = append(out, portUseJSON{Env: v.Env, Name: name})
 	}
 	return out
+}
+
+var (
+	errStopForPorts = msg.Define(http.StatusConflict, "game.stop_for_ports", "Stop the server to change its ports.")
+	errNotForFiles  = msg.Define(http.StatusConflict, "game.not_for_files", "This is for game servers. A files app has its own settings page.")
+	errNoPortRole   = msg.Define(http.StatusBadRequest, "game.no_port_role", "{env} is not a port variable of this egg.")
+)
+
+// portPick is the pool allocations, by id, a request wants for the roles
+// of a new server's ports. Roles it leaves out get the lowest free ports.
+type portPick struct {
+	Primary   int64            `json:"primary"`
+	Variables map[string]int64 `json:"variables"`
+}
+
+// portWish is a portPick sorted out for place: the allocations to ask for,
+// and which role each is for.
+type portWish struct {
+	ids     []int64
+	primary bool
+	envs    []string // the variable of each id after the first, if primary
+	vars    int
+}
+
+// wishedPorts checks that the variables a pick names hold ports of the egg.
+func wishedPorts(e *egg.Egg, pick *portPick) (portWish, *msg.Error) {
+	var w portWish
+	if pick == nil {
+		return w, nil
+	}
+	if pick.Primary != 0 {
+		w.primary = true
+		w.ids = append(w.ids, pick.Primary)
+	}
+	known := map[string]egg.Variable{}
+	for _, v := range portVariables(e) {
+		known[v.Env] = v
+	}
+	for _, env := range slices.Sorted(maps.Keys(pick.Variables)) {
+		if _, ok := known[env]; !ok {
+			return w, errNoPortRole.Err("env", truncate(env, 64))
+		}
+		w.ids = append(w.ids, pick.Variables[env])
+		w.envs = append(w.envs, env)
+	}
+	w.vars = len(w.envs)
+	return w, nil
+}
+
+// count is how many ports the server needs at least: its main one and one
+// for each variable that was given a port.
+func (w portWish) count() int { return 1 + w.vars }
+
+// split says which of the placed allocations is the main port, which port
+// each chosen variable got, and the ports left for the others.
+func (w portWish) split(all []store.Allocation) (primary store.Allocation, chosen map[string]int, auto []int) {
+	chosen = map[string]int{}
+	rest := all
+	if w.primary {
+		primary, rest = all[0], all[1:]
+	}
+	for _, env := range w.envs {
+		chosen[env] = rest[0].Port
+		rest = rest[1:]
+	}
+	if !w.primary {
+		primary, rest = rest[0], rest[1:]
+	}
+	return primary, chosen, portNumbers(rest)
+}
+
+type gamePortsRequest struct {
+	// Primary is the port players connect to. Zero keeps the current one.
+	Primary int64 `json:"primary"`
+	// Variables gives a port to a port variable. One that is not listed
+	// keeps the port it holds, if it holds one of the server's.
+	Variables map[string]int64 `json:"variables"`
+	// Extra are the other ports the server keeps, which no variable holds.
+	Extra []int64 `json:"extra"`
+}
+
+// updateGamePorts changes which pool ports a stopped server holds. The
+// forwards follow at the next start.
+func (s *Server) updateGamePorts(w http.ResponseWriter, r *http.Request) {
+	a, g, ok := s.gameFrom(w, r)
+	if !ok {
+		return
+	}
+	if a.IsFiles() {
+		writeError(w, errNotForFiles.Err())
+		return
+	}
+	var req gamePortsRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	ctx := r.Context()
+	if g.InstallState == store.InstallRunning {
+		writeError(w, errInstalling.Err())
+		return
+	}
+	if s.gameState(ctx, a) != stateStopped {
+		writeError(w, errStopForPorts.Err())
+		return
+	}
+	_, e, _, err := s.gameParts(ctx, a.ID)
+	if err != nil {
+		s.fail(w, "load egg", err)
+		return
+	}
+	pool, err := s.Store.Allocations(ctx, store.ThisNode)
+	if err != nil {
+		s.fail(w, "list allocations", err)
+		return
+	}
+	held := map[int64]store.Allocation{}
+	byPort := map[int]int64{}
+	for _, p := range pool {
+		if p.AppID == a.ID {
+			held[p.ID] = p
+			byPort[p.Port] = p.ID
+		}
+	}
+
+	primary := req.Primary
+	if primary == 0 {
+		primary = byPort[a.Port]
+	}
+	ids := []int64{primary}
+	roles := map[string]int64{}
+	for _, env := range slices.Sorted(maps.Keys(req.Variables)) {
+		if !slices.ContainsFunc(portVariables(e), func(v egg.Variable) bool { return v.Env == env }) {
+			writeError(w, errNoPortRole.Err("env", truncate(env, 64)))
+			return
+		}
+		roles[env] = req.Variables[env]
+		ids = append(ids, req.Variables[env])
+	}
+	ids = append(ids, req.Extra...)
+	// A variable the request leaves out keeps its port, so long as that
+	// port stays with the server.
+	for _, v := range portVariables(e) {
+		if _, listed := roles[v.Env]; listed {
+			continue
+		}
+		port, err := strconv.Atoi(g.Variables[v.Env])
+		if id, ok := byPort[port]; err == nil && ok && !slices.Contains(ids, id) {
+			roles[v.Env] = id
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) > maxGamePorts {
+		writeError(w, errGamePorts.Err("max", maxGamePorts))
+		return
+	}
+	chosen := map[int64]store.Allocation{}
+	for _, id := range ids {
+		i := slices.IndexFunc(pool, func(p store.Allocation) bool { return p.ID == id })
+		switch {
+		case i < 0:
+			writeError(w, errNoAllocation.Err())
+			return
+		case pool[i].AppID != "" && pool[i].AppID != a.ID:
+			writeError(w, errPortNotFree.Err("port", pool[i].Port))
+			return
+		}
+		if _, twice := chosen[id]; twice {
+			writeError(w, errPortTwice.Err())
+			return
+		}
+		chosen[id] = pool[i]
+	}
+
+	vars := maps.Clone(g.Variables)
+	for env, id := range roles {
+		value := strconv.Itoa(chosen[id].Port)
+		for _, v := range e.Variables {
+			if v.Env == env {
+				if err := v.Check(value); err != nil {
+					writeError(w, errBadVariable.Err("name", env, "detail", err.Error()))
+					return
+				}
+			}
+		}
+		vars[env] = value
+	}
+	err = s.Store.ReplaceGamePorts(ctx, store.ThisNode, a.ID, ids, chosen[primary].Port, vars)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		writeError(w, errNoAllocation.Err())
+		return
+	case errors.Is(err, store.ErrInUse):
+		writeError(w, errPortNotFree.Err("port", 0))
+		return
+	case err != nil:
+		s.fail(w, "change game ports", err)
+		return
+	}
+	a.Port = chosen[primary].Port
+	s.Log.Info("game ports changed", "server", a.ID, "user", loginFrom(ctx).account.ID, "count", len(ids))
+	out, err := s.gameOut(ctx, a)
+	if err != nil {
+		s.fail(w, "describe game server", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
 }

@@ -712,3 +712,100 @@ func TestGameImageIsPinnedOnFirstStart(t *testing.T) {
 		t.Errorf("recorded image %q", a.Image)
 	}
 }
+
+func TestChangeAServersResources(t *testing.T) {
+	e := newPowerEnv(t)
+	e.newGame(t, "survival", consoleEggURL, nil)
+	vols, _ := e.s.Store.Volumes(context.Background(), "survival")
+	put := func(body map[string]any) (int, map[string]any) {
+		return e.b.do("PUT", "/api/games/survival/resources", body)
+	}
+
+	// What is not sent stays.
+	code, out := put(map[string]any{"memory_mb": 1536})
+	if code != http.StatusOK || out["memory_mb"] != 1536.0 || out["cpus"] != 1.0 || out["disk_mb"] != float64(10<<10) {
+		t.Fatalf("memory only: %d %v", code, out)
+	}
+	code, out = put(map[string]any{"memory_mb": 2048, "cpus": 2, "disk_mb": 20 << 10})
+	if code != http.StatusOK || out["memory_mb"] != 2048.0 || out["cpus"] != 2.0 || out["disk_mb"] != float64(20<<10) {
+		t.Fatalf("all three: %d %v", code, out)
+	}
+	a, _ := e.s.Store.App(context.Background(), "survival")
+	vols, _ = e.s.Store.Volumes(context.Background(), "survival")
+	if a.MemoryMB != 2048 || a.CPUs != 2 || len(vols) != 1 || vols[0].LimitMB != 20<<10 {
+		t.Errorf("stored %+v, volumes %+v", a, vols)
+	}
+
+	for name, c := range map[string]struct {
+		body map[string]any
+		code string
+	}{
+		"too little memory":  {map[string]any{"memory_mb": 16}, "game.bad_memory"},
+		"too much memory":    {map[string]any{"memory_mb": 1 << 20}, "game.bad_memory"},
+		"too many cpus":      {map[string]any{"cpus": 64}, "game.bad_cpus"},
+		"negative cpus":      {map[string]any{"cpus": -1}, "game.bad_cpus"},
+		"tiny disk":          {map[string]any{"disk_mb": 8}, "volume.small"},
+		"more than the disk": {map[string]any{"disk_mb": 1 << 30}, "volume.over_disk"},
+		"unknown field":      {map[string]any{"pids": 5}, "server.bad_request"},
+	} {
+		if code, out := put(c.body); code != http.StatusBadRequest || out["code"] != c.code {
+			t.Errorf("%s: %d %v", name, code, out)
+		}
+	}
+	// A refused change keeps every part of it out, the good ones too.
+	if code, _ := put(map[string]any{"memory_mb": 512, "disk_mb": 8}); code != http.StatusBadRequest {
+		t.Errorf("mixed request: %d", code)
+	}
+	if after, _ := e.s.Store.App(context.Background(), "survival"); after.MemoryMB != 2048 {
+		t.Errorf("memory %d after a refused request", after.MemoryMB)
+	}
+
+	// The limits apply from the next start.
+	if code, out := e.power(t, "survival", "start"); code != http.StatusAccepted {
+		t.Fatalf("start: %d %v", code, out)
+	}
+	e.settle(t, "survival")
+	spec := e.core.games[e.liveContainer(t, "survival")]
+	if spec.MemoryBytes != gameMemory(2048) || spec.CPUs != 2 {
+		t.Errorf("limits %d %v", spec.MemoryBytes, spec.CPUs)
+	}
+	e.waitState(t, "survival", "starting")
+
+	// A running server takes new limits too; they wait for its next start.
+	if code, out := put(map[string]any{"memory_mb": 1024}); code != http.StatusOK || out["state"] == "stopped" {
+		t.Errorf("while running: %d %v", code, out)
+	}
+	if spec2 := e.core.games[e.liveContainer(t, "survival")]; spec2.MemoryBytes != gameMemory(2048) {
+		t.Errorf("the running container changed: %d", spec2.MemoryBytes)
+	}
+
+	if code, out := e.b.do("PUT", "/api/games/nothing/resources", map[string]any{}); code != http.StatusNotFound || out["code"] != "game.not_found" {
+		t.Errorf("no server: %d %v", code, out)
+	}
+}
+
+// The usage the app pages poll answers for a game server's container too.
+func TestGameUsage(t *testing.T) {
+	e := newPowerEnv(t)
+	e.newGame(t, "survival", consoleEggURL, nil)
+	if _, u := e.b.do("GET", "/api/apps/survival/usage", nil); u["running"] != false {
+		t.Errorf("stopped %v", u)
+	}
+	if code, out := e.power(t, "survival", "start"); code != http.StatusAccepted {
+		t.Fatalf("start: %d %v", code, out)
+	}
+	e.settle(t, "survival")
+	if _, u := e.b.do("GET", "/api/apps/survival/usage", nil); u["running"] != true || u["memory_bytes"] != float64(84<<20) {
+		t.Errorf("running %v", u)
+	}
+}
+
+func TestFilesAppsKeepTheirOwnSettings(t *testing.T) {
+	e := newRuntimeEnv(t)
+	e.newFiles(t, "site", nil)
+	for _, path := range []string{"resources", "ports"} {
+		if code, out := e.b.do("PUT", "/api/games/site/"+path, map[string]any{}); code != http.StatusConflict || out["code"] != "game.not_for_files" {
+			t.Errorf("%s: %d %v", path, code, out)
+		}
+	}
+}

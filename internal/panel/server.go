@@ -232,6 +232,8 @@ func (s *Server) Handler() http.Handler {
 	web.HandleFunc("GET /api/games/{app}", s.adminOnly(s.getGame))
 	web.HandleFunc("POST /api/games/{app}/eula", s.adminOnly(s.acceptEULA))
 	web.HandleFunc("PUT /api/games/{app}/variables", s.managesGame(s.updateGameSettings))
+	web.HandleFunc("PUT /api/games/{app}/ports", s.managesGame(s.updateGamePorts))
+	web.HandleFunc("PUT /api/games/{app}/resources", s.managesGame(s.updateGameResources))
 	web.HandleFunc("GET /api/games/{app}/files/list", s.managesGame(s.listGameFiles))
 	web.HandleFunc("GET /api/games/{app}/files/content", s.managesGame(s.readGameFile))
 	web.HandleFunc("PUT /api/games/{app}/files/content", s.managesGame(s.writeGameFile))
