@@ -242,6 +242,7 @@ const (
 	CauseRecover  = "recover"  // the live image again, after it stopped by itself
 	CauseRestore  = "restore"  // the live image again, after a backup was put back
 	CauseBackup   = "backup"   // the live image again, after the app was stopped for its backup
+	CauseUpdate   = "update"   // what the image's tag points at now; a database is backed up first
 )
 
 // Deployment is one attempt to put a version of an app live.

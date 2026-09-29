@@ -32,6 +32,13 @@ export async function restart(id: string): Promise<void> {
 	await Promise.all([load(id), reloadList()]);
 }
 
+// update deploys what the image's tag points at now; a database is backed
+// up first.
+export async function update(id: string): Promise<void> {
+	await api('POST', `/apps/${encodeURIComponent(id)}/update`);
+	await Promise.all([load(id), reloadList()]);
+}
+
 export async function stop(id: string): Promise<void> {
 	await api('POST', `/apps/${encodeURIComponent(id)}/stop`);
 	await Promise.all([load(id), reloadList()]);

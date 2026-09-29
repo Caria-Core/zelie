@@ -1,12 +1,12 @@
 <script lang="ts">
-	import { ArrowUpRight, Clock, Cpu, Ellipsis, MemoryStick, Play, RotateCw, Rocket, Square } from '@lucide/svelte';
+	import { ArrowUpRight, CircleArrowUp, Clock, Cpu, Ellipsis, MemoryStick, Play, RotateCw, Rocket, Square } from '@lucide/svelte';
 	import { untrack } from 'svelte';
 	import { page } from '$app/state';
 	import { api } from '$lib/api';
 	import { engineLabel, shownState } from '$lib/apps.svelte';
 	import { ask } from '$lib/ask.svelte';
 	import { say, t } from '$lib/i18n';
-	import { busy, current, deploy, load, restart, start, stop } from '$lib/current.svelte';
+	import { busy, current, deploy, load, restart, start, stop, update } from '$lib/current.svelte';
 	import { messageOf } from '$lib/errors';
 	import { megabytes, type Usage } from '$lib/host.svelte';
 	import AppIcon from '$lib/ui/AppIcon.svelte';
@@ -82,6 +82,25 @@
 	async function askRestart() {
 		const ok = await ask({ title: t('app.restartConfirm', { app: id }), text: t('app.restartConfirmText'), action: t('app.restart') });
 		if (ok) run(restart);
+	}
+
+	async function askUpdate() {
+		const a = current.app!;
+		const ok = await ask({
+			title: t('app.updateConfirm', { app: id }),
+			text: a.engine ? t('app.updateDbText') : t('app.updateAppText'),
+			action: t('app.update')
+		});
+		if (ok) run(update);
+	}
+
+	// What the update notice says: versions when the images give them.
+	function updateLine(a: NonNullable<typeof current.app>): string {
+		const u = a.update!;
+		const name = a.engine ? `${engineLabel[a.engine]} ` : '';
+		if (u.current && u.version) return name + t('app.updateVersions', { from: u.current, to: u.version });
+		if (u.version) return name + t('app.updateTo', { to: u.version });
+		return t('app.updateBuild', { image: a.image ?? '' });
 	}
 
 	async function run(fn: (id: string) => Promise<void>) {
@@ -226,6 +245,18 @@
 			<p class="rounded-xl border border-danger/30 px-4 py-3 text-sm text-danger">{t('app.crashing', { why: say(a.crashing) })}</p>
 		{:else if a.stopped}
 			<p class="text-sm text-muted">{t('app.stoppedNote')}</p>
+		{/if}
+		{#if a.update && !busy()}
+			<div class="flex flex-wrap items-center justify-between gap-x-6 gap-y-3 rounded-xl border border-line px-4 py-3">
+				<div class="flex min-w-0 flex-1 basis-72 items-start gap-3">
+					<CircleArrowUp size={18} class="mt-0.5 shrink-0 text-ok" />
+					<div class="min-w-0">
+						<p class="text-sm"><span class="font-medium">{t('app.updateTitle')}</span> · {updateLine(a)}</p>
+						<p class="mt-0.5 text-sm text-muted">{a.engine ? t('app.updateDbShort') : t('app.updateAppShort')}</p>
+					</div>
+				</div>
+				<Button kind="secondary" onclick={askUpdate} busy={starting} disabled={!!a.volume_full || (!!a.engine && a.stopped)}>{t('app.update')}</Button>
+			</div>
 		{/if}
 		<!-- The baseline is a shadow, not a border, so the active tab's underline
 		     can sit on it without overflowing and bringing up a scroll bar. -->

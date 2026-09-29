@@ -211,6 +211,20 @@ func (s *Server) runDeployment(ctx context.Context, appID string, id int64) {
 	if d.Cause == store.CauseRecover {
 		s.lastOutput(ctx, app.ID, out)
 	}
+	if d.Cause == store.CauseUpdate && app.IsDatabase() {
+		fmt.Fprintln(out, "Backing up the database before the update.")
+		if !s.backupBusy.take(app.ID) {
+			fail(errBackupBusy.Err())
+			return
+		}
+		b, err := s.makeBackup(ctx, app, store.BackupUpdate)
+		s.backupBusy.done(app.ID)
+		if err != nil {
+			fail(errUpdateBackup.Err("detail", err.Error()))
+			return
+		}
+		fmt.Fprintf(out, "Backed up (%d bytes). It is on the Backups tab.\n", b.Bytes)
+	}
 	switch {
 	case d.Image != "":
 		// A restart or rollback runs an image that already exists.
@@ -300,6 +314,7 @@ func (s *Server) runDeployment(ctx context.Context, appID string, id int64) {
 		return
 	}
 	fmt.Fprintln(out, "The new version is live.")
+	s.imageUpdates.wentLive(app.ID, d.Image)
 	if d.Cause != store.CauseRecover {
 		s.crashes.reset(app.ID)
 	}

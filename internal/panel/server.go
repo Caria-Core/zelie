@@ -53,6 +53,8 @@ type Server struct {
 	GitHubHTTP *http.Client
 	// HealthCheck replaces the HTTP request of the health check in tests.
 	HealthCheck func(ctx context.Context, url, host string) (int, error)
+	// Registry answers what image tags point at; nil asks the real ones.
+	Registry Registry
 	// PortCheck replaces the connection a database's health check makes.
 	PortCheck func(ctx context.Context, ip netip.Addr, port int) bool
 
@@ -65,6 +67,8 @@ type Server struct {
 	// Releases returns the latest release; tests replace GitHub.
 	Releases func(ctx context.Context) (Release, error)
 	releases releases
+	// imageUpdates are newer builds of the tags apps run.
+	imageUpdates imageUpdates
 
 	// externalMu keeps two requests from picking the same port.
 	externalMu sync.Mutex
@@ -138,6 +142,7 @@ func (s *Server) Handler() http.Handler {
 	web.HandleFunc("PUT /api/apps/{app}/env", s.signedIn(s.setEnv))
 	web.HandleFunc("POST /api/apps/{app}/deployments", s.signedIn(s.newDeployment))
 	web.HandleFunc("POST /api/apps/{app}/restart", s.signedIn(s.restartApp))
+	web.HandleFunc("POST /api/apps/{app}/update", s.signedIn(s.updateImage))
 	web.HandleFunc("POST /api/apps/{app}/stop", s.signedIn(s.stopHandler))
 	web.HandleFunc("POST /api/apps/{app}/start", s.signedIn(s.startHandler))
 	web.HandleFunc("POST /api/apps/{app}/deployments/{id}/rollback", s.signedIn(s.rollback))
@@ -256,6 +261,7 @@ func (s *Server) Serve(ctx context.Context, socket string) error {
 		s.syncAllLinks(ctx)
 		s.syncExternal(ctx)
 		go s.runReleaseCheck(ctx)
+		go s.runImageCheck(ctx)
 		s.runImageSweep(ctx)
 	}()
 	l, err := net.Listen("unix", socket)

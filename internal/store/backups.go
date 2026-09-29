@@ -21,6 +21,8 @@ const (
 	BackupFound = "found"
 	// BackupUploaded is a dump from another server that someone uploaded.
 	BackupUploaded = "uploaded"
+	// BackupUpdate is taken just before a database moves to a new image.
+	BackupUpdate = "update"
 )
 
 // Backup states.
