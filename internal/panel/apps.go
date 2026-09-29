@@ -855,6 +855,16 @@ func (s *Server) deleteApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.removeAppImages(ctx, a.ID)
+	if ports, err := s.Store.AppAllocations(ctx, a.ID); err != nil {
+		s.fail(w, "list ports", err)
+		return
+	} else if len(ports) > 0 {
+		// Closing the ports here; the pool takes them back with the app.
+		if err := s.Core.ClearForwards(ctx, a.ID); err != nil {
+			s.coreFailed(w, "close ports", err)
+			return
+		}
+	}
 	if _, err := s.Store.ExternalAccess(ctx, a.ID); err == nil {
 		// Its containers are gone, and its user with them.
 		if err := s.Core.RemoveExternal(ctx, a.ID, a.Engine, ""); err != nil {

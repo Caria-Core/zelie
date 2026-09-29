@@ -26,6 +26,9 @@ type Core interface {
 	RunApp(ctx context.Context, s engine.Spec, sealedEnv []string, linked ...core.LinkedVar) (string, error)
 	Pin(ctx context.Context, image string) (string, error)
 	SetLinks(ctx context.Context, app string, links []engine.Link) error
+	SetForwards(ctx context.Context, app string, forwards []engine.Forward) error
+	ClearForwards(ctx context.Context, app string) error
+	UsedPorts(ctx context.Context) ([]int, error)
 	Build(ctx context.Context, app, version string, env, sealedEnv []string, source io.Reader, out io.Writer) (build.Result, error)
 	Wait(ctx context.Context, id string) (int, error)
 	SecretKey(ctx context.Context) (secret.PublicKey, error)

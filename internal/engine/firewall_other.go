@@ -12,3 +12,5 @@ func applyFirewall(*firewall) error { return errors.New("the host firewall needs
 func deleteLink(string) error { return nil }
 
 func ensureHostInput(context.Context) error { return nil }
+
+func ensureHostForward(context.Context, []portMap, bool) error { return nil }

@@ -32,6 +32,7 @@ type fakeEngine struct {
 	images        []engine.Image
 	volumes       []string
 	links         map[string][]engine.Link
+	forwards      map[string][]engine.Forward
 
 	containers []engine.Status // replaces List's answer when set
 	listMu     sync.Mutex      // for tests that change containers while the core reads them
@@ -137,6 +138,25 @@ func (f *fakeEngine) SetLinks(_ context.Context, app string, links []engine.Link
 		f.links = map[string][]engine.Link{}
 	}
 	f.links[app] = links
+	return nil
+}
+
+func (f *fakeEngine) SetForwards(_ context.Context, app string, forwards []engine.Forward) error {
+	for other, list := range f.forwards {
+		for _, x := range forwards {
+			if other != app && slices.ContainsFunc(list, func(y engine.Forward) bool { return x.Port == y.Port && x.Proto == y.Proto }) {
+				return &engine.PortForwardedError{Port: x.Port, Proto: x.Proto}
+			}
+		}
+	}
+	if f.forwards == nil {
+		f.forwards = map[string][]engine.Forward{}
+	}
+	if len(forwards) == 0 {
+		delete(f.forwards, app)
+	} else {
+		f.forwards[app] = forwards
+	}
 	return nil
 }
 

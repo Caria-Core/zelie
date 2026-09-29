@@ -567,8 +567,11 @@ func (e *Engine) Stop(ctx context.Context, id string, grace time.Duration) error
 	case <-ctx.Done():
 		return ctx.Err()
 	}
-	_, err = task.Delete(ctx)
-	return err
+	if _, err := task.Delete(ctx); err != nil {
+		return err
+	}
+	// A stopped container no longer gets the ports forwarded to it.
+	return e.refresh(ctx)
 }
 
 // Remove stops the container if needed and deletes it with its snapshot and

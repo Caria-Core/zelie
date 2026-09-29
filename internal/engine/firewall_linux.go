@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"net"
+	"net/netip"
 
 	"github.com/google/nftables"
 	"github.com/google/nftables/binaryutil"
@@ -21,6 +22,10 @@ import (
 //   - Containers on different networks cannot reach each other, except
 //     through the openings links make: one address to another, on one TCP
 //     port.
+//   - Ports forwarded to a container (see Forward) are open from outside,
+//     to that container's port only. The address translation lives in a
+//     second table, since NAT in an inet table needs a newer kernel than
+//     the rest of the rules do.
 //
 // The rules live in a table of their own, so they work next to ufw,
 // firewalld or hand-written rules without touching them. The table is
@@ -79,6 +84,12 @@ func applyFirewall(fw *firewall) error {
 	rule(input, fromBridge, drop)
 
 	rule(forward, fromBridge, toBridge, established, accept)
+	// Traffic from outside that was sent to a forwarded port. Nothing here
+	// opens more than the one port; it also keeps a rule added later by
+	// someone else from catching it first.
+	for _, f := range fw.forwards {
+		rule(forward, notFromBridge, ipv4, toAddr(f.to), l4proto(protoNumber(f.Proto)), dport(f.Target), dnatted, accept)
+	}
 	// Containers of one app share a bridge. Their traffic only passes
 	// through here when br_netfilter is loaded, as Docker does.
 	for _, b := range fw.bridges {
@@ -92,11 +103,84 @@ func applyFirewall(fw *firewall) error {
 	}, accept)
 	rule(forward, fromBridge, toBridge, drop)
 
+	if err := addForwards(c, fw.forwards); err != nil {
+		return err
+	}
+
 	if err := c.Flush(); err != nil {
 		return fmt.Errorf("install host firewall rules: %w", err)
 	}
 	return nil
 }
+
+// addForwards replaces the NAT table that sends forwarded host ports to
+// their containers. Traffic from outside is translated before routing;
+// traffic from the host itself, such as a player on the same machine, in
+// the output chain. Only packets addressed to the host are touched, so
+// traffic the host merely routes on its way is left alone.
+func addForwards(c *nftables.Conn, forwards []portMap) error {
+	table := &nftables.Table{Family: nftables.TableFamilyIPv4, Name: "zelie-nat"}
+	c.AddTable(table)
+	c.DelTable(table)
+	c.AddTable(table)
+	if len(forwards) == 0 {
+		// The table stays empty for the next change to fill.
+		return nil
+	}
+	pre := c.AddChain(&nftables.Chain{
+		Name: "prerouting", Table: table, Type: nftables.ChainTypeNAT,
+		Hooknum: nftables.ChainHookPrerouting, Priority: nftables.ChainPriorityNATDest,
+	})
+	out := c.AddChain(&nftables.Chain{
+		Name: "output", Table: table, Type: nftables.ChainTypeNAT,
+		Hooknum: nftables.ChainHookOutput, Priority: nftables.ChainPriorityNATDest,
+	})
+	for _, f := range forwards {
+		var to []expr.Any
+		if a := f.IP; a.IsValid() && !a.IsUnspecified() {
+			to = toAddr(a)
+		} else {
+			to = toLocal
+		}
+		dnat := []expr.Any{
+			&expr.Immediate{Register: 1, Data: f.to.AsSlice()},
+			&expr.Immediate{Register: 2, Data: binaryutil.BigEndian.PutUint16(f.Target)},
+			&expr.NAT{Type: expr.NATTypeDestNAT, Family: unix.NFPROTO_IPV4, RegAddrMin: 1, RegProtoMin: 2},
+		}
+		match := func(chain *nftables.Chain, first ...[]expr.Any) {
+			var all []expr.Any
+			for _, e := range append(first, to, l4proto(protoNumber(f.Proto)), dport(f.Port), dnat) {
+				all = append(all, e...)
+			}
+			c.AddRule(&nftables.Rule{Table: table, Chain: chain, Exprs: all})
+		}
+		match(pre, notFromBridge)
+		// A connection to 127.0.0.1 keeps its source address through
+		// translation and would be dropped on its way out.
+		match(out, notLoopback)
+	}
+	return nil
+}
+
+func protoNumber(proto string) byte {
+	if proto == "udp" {
+		return unix.IPPROTO_UDP
+	}
+	return unix.IPPROTO_TCP
+}
+
+// toAddr matches packets sent to one address.
+func toAddr(a netip.Addr) []expr.Any {
+	b := a.As4()
+	return []expr.Any{
+		&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 16, Len: 4},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: b[:]},
+	}
+}
+
+// The bit of a connection's conntrack status that says its destination was
+// translated (IPS_DST_NAT).
+const ctStatusDNAT = 1 << 5
 
 // Matching the first bytes of the name is how nft's "zelie*" works.
 var (
@@ -107,6 +191,32 @@ var (
 	toBridge = []expr.Any{
 		&expr.Meta{Key: expr.MetaKeyOIFNAME, Register: 1},
 		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte("zelie")},
+	}
+	notFromBridge = []expr.Any{
+		&expr.Meta{Key: expr.MetaKeyIIFNAME, Register: 1},
+		&expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: []byte("zelie")},
+	}
+	// toLocal matches packets sent to an address of the host itself.
+	toLocal = []expr.Any{
+		&expr.Fib{Register: 1, FlagDADDR: true, ResultADDRTYPE: true},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.NativeEndian.PutUint32(unix.RTN_LOCAL)},
+	}
+	notLoopback = []expr.Any{
+		&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 16, Len: 4},
+		&expr.Bitwise{SourceRegister: 1, DestRegister: 1, Len: 4, Mask: []byte{255, 0, 0, 0}, Xor: []byte{0, 0, 0, 0}},
+		&expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: []byte{127, 0, 0, 0}},
+	}
+	// dnatted matches connections whose destination was translated.
+	dnatted = []expr.Any{
+		&expr.Ct{Register: 1, Key: expr.CtKeySTATUS},
+		&expr.Bitwise{
+			SourceRegister: 1,
+			DestRegister:   1,
+			Len:            4,
+			Mask:           binaryutil.NativeEndian.PutUint32(ctStatusDNAT),
+			Xor:            binaryutil.NativeEndian.PutUint32(0),
+		},
+		&expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: []byte{0, 0, 0, 0}},
 	}
 	established = []expr.Any{
 		&expr.Ct{Register: 1, Key: expr.CtKeySTATE},

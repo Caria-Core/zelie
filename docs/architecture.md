@@ -144,6 +144,14 @@ Zelie reads Pterodactyl and Pelican eggs, so existing game definitions work. The
 streams over a WebSocket authorised with a short-lived signed token. Files are available
 over SFTP and in the panel, locked to the server's own volume.
 
+Players connect straight to the game server, not through the proxy. The administrator
+gives Zelie a pool of ports, as in Pterodactyl and Pelican, and each server takes some of
+them. Zelie suggests a range that leaves out ports other software on the machine already
+uses. The core opens a port with an nftables rule that sends traffic for it to the
+container, and one that lets exactly that traffic through; where ufw or another iptables
+firewall is present, the same opening is made there. The rules follow the container when
+it restarts with a new address, and go when the server is deleted.
+
 ## State and secrets
 
 The panel keeps its state in SQLite. An app's variables can be marked secret. The panel

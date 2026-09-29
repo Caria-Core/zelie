@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -149,6 +150,10 @@ func (e *Engine) refreshLocked(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	forwards, err := e.loadForwards()
+	if err != nil {
+		return err
+	}
 	nets, err := e.networks.all()
 	if err != nil {
 		return err
@@ -184,10 +189,37 @@ func (e *Engine) refreshLocked(ctx context.Context) error {
 			}
 		}
 	}
+	// A forward goes to a running container, or to one about to start:
+	// the firewall is refreshed just before a task starts, not after. Its
+	// address is the one that changes when the app restarts, and this is
+	// where it is followed.
+	starting := map[string]netip.Addr{}
+	for _, c := range list {
+		if c.IP.IsValid() && c.State == "created" {
+			starting[c.App] = c.IP
+		}
+	}
+	for app, fs := range forwards {
+		to, ok := starting[app]
+		if r := p.running[app]; len(r) > 0 {
+			to, ok = r[0], true
+		}
+		if !ok {
+			continue
+		}
+		for _, f := range fs {
+			fw.forwards = append(fw.forwards, portMap{f, to})
+		}
+	}
 	fw.sort()
 	if time.Since(p.inputAt) >= hostInputEvery {
 		if err := ensureHostInput(ctx); err != nil {
 			return err
+		}
+		if p.applied != nil {
+			if err := ensureHostForward(ctx, p.applied.forwards, false); err != nil {
+				return err
+			}
 		}
 		p.inputAt = time.Now()
 	}
@@ -195,6 +227,9 @@ func (e *Engine) refreshLocked(ctx context.Context) error {
 		return nil
 	}
 	if err := applyFirewall(fw); err != nil {
+		return err
+	}
+	if err := ensureHostForward(ctx, fw.forwards, true); err != nil {
 		return err
 	}
 	p.applied = fw
@@ -238,8 +273,9 @@ type allowed struct {
 }
 
 type firewall struct {
-	bridges []string
-	allow   []allowed
+	bridges  []string
+	allow    []allowed
+	forwards []portMap
 }
 
 func (f *firewall) sort() {
@@ -254,8 +290,18 @@ func (f *firewall) sort() {
 		return int(a.port) - int(b.port)
 	})
 	f.allow = slices.Compact(f.allow)
+	slices.SortFunc(f.forwards, func(a, b portMap) int {
+		return cmp.Or(
+			cmp.Compare(a.Port, b.Port),
+			cmp.Compare(a.Proto, b.Proto),
+			a.IP.Compare(b.IP),
+			a.to.Compare(b.to),
+			cmp.Compare(a.Target, b.Target),
+		)
+	})
+	f.forwards = slices.Compact(f.forwards)
 }
 
 func (f *firewall) equal(g *firewall) bool {
-	return slices.Equal(f.bridges, g.bridges) && slices.Equal(f.allow, g.allow)
+	return slices.Equal(f.bridges, g.bridges) && slices.Equal(f.allow, g.allow) && slices.Equal(f.forwards, g.forwards)
 }

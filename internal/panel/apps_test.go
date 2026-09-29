@@ -58,6 +58,10 @@ type appCore struct {
 
 	links map[string][]engine.Link
 
+	forwards  map[string][]engine.Forward
+	cleared   []string // apps whose forwards were cleared
+	usedPorts []int    // what the machine holds
+
 	volumes     map[string]bool
 	sizes       map[string]int64
 	mounts      map[string][]engine.VolumeMount // by container
@@ -278,6 +282,30 @@ func (c *appCore) SyncExternal(_ context.Context, list []core.ExternalListener) 
 		c.external[l.App] = l
 	}
 	return nil
+}
+
+func (c *appCore) SetForwards(_ context.Context, app string, forwards []engine.Forward) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.forwards == nil {
+		c.forwards = map[string][]engine.Forward{}
+	}
+	c.forwards[app] = forwards
+	return nil
+}
+
+func (c *appCore) ClearForwards(_ context.Context, app string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.forwards, app)
+	c.cleared = append(c.cleared, app)
+	return nil
+}
+
+func (c *appCore) UsedPorts(context.Context) ([]int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Clone(c.usedPorts), nil
 }
 
 func (c *appCore) UpdateStatus(context.Context) (core.UpdateStatus, error) {

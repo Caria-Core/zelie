@@ -302,5 +302,28 @@ CREATE TABLE reset_token (
 	hash       BLOB NOT NULL,
 	expires_at INTEGER NOT NULL
 ) STRICT;
+`, `
+-- Machines that run servers. Zelie has one, this one; a row per machine is
+-- what lets servers and their ports say which machine they belong to.
+CREATE TABLE nodes (
+	id         INTEGER PRIMARY KEY,
+	name       TEXT NOT NULL,
+	created_at INTEGER NOT NULL
+) STRICT;
+INSERT INTO nodes (id, name, created_at) VALUES (1, 'This server', unixepoch());
+
+-- The ports a node may give to game servers, one row per address and port.
+-- A row covers TCP and UDP. ip 0.0.0.0 means every address of the machine.
+-- app_id is the server using it, if any.
+CREATE TABLE allocations (
+	id         INTEGER PRIMARY KEY,
+	node_id    INTEGER NOT NULL REFERENCES nodes(id),
+	ip         TEXT NOT NULL DEFAULT '0.0.0.0',
+	port       INTEGER NOT NULL CHECK (port BETWEEN 1 AND 65535),
+	app_id     TEXT REFERENCES apps(id) ON DELETE SET NULL,
+	created_at INTEGER NOT NULL,
+	UNIQUE (node_id, ip, port)
+) STRICT;
+CREATE INDEX allocations_app ON allocations(app_id);
 `,
 }
