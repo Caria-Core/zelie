@@ -93,6 +93,16 @@ type Spec struct {
 	// directory and go when it does. Like Mounts, only the core sets them.
 	Files []File
 
+	// User is the user and group the process runs as inside the container,
+	// in place of the image's own. Game servers run as an ordinary user, the
+	// way Pterodactyl's images expect.
+	User *IDs
+	// WorkDir replaces the image's working directory.
+	WorkDir string
+	// Stdin keeps the container's standard input open for WriteStdin. It
+	// stays open until the container is stopped or removed.
+	Stdin bool
+
 	// Builder runs the container as the builder: in the builder's own ID
 	// block, so what it writes stays readable by the next build step. Only
 	// one builder container exists at a time. Like Mounts, only the core
@@ -101,6 +111,13 @@ type Spec struct {
 	// Nesting lets a builder run containers of its own: see nestingOpts.
 	Nesting bool
 }
+
+// IDs is a user and group inside a container.
+type IDs struct{ UID, GID uint32 }
+
+// Valid reports whether both are IDs the container has. It has one block of
+// them; anything beyond is nobody.
+func (i IDs) Valid() bool { return i.UID < usernsSize && i.GID < usernsSize }
 
 // Mount binds a host directory into a container.
 type Mount struct {
@@ -138,6 +155,15 @@ func (s Spec) Validate() error {
 	}
 	if s.Nesting && !s.Builder {
 		return errors.New("only the builder may run nested containers")
+	}
+	if s.Builder && (s.User != nil || s.Stdin) {
+		return errors.New("the builder has no user or input of its own")
+	}
+	if s.User != nil && !s.User.Valid() {
+		return fmt.Errorf("user %d:%d is outside the container's IDs", s.User.UID, s.User.GID)
+	}
+	if s.WorkDir != "" && (!filepath.IsAbs(s.WorkDir) || filepath.Clean(s.WorkDir) != s.WorkDir) {
+		return fmt.Errorf("working directory %q must be an absolute, clean path", s.WorkDir)
 	}
 	targets := map[string]bool{}
 	for _, v := range s.Volumes {
@@ -182,6 +208,8 @@ type Engine struct {
 	networks *networks
 	peers    peers
 	dns      *dnsServer
+
+	stdins stdins
 
 	// createMu makes creating containers one at a time, so two requests
 	// can never pick the same ID range or race on the same name.
@@ -353,6 +381,14 @@ func (e *Engine) Run(ctx context.Context, s Spec) (err error) {
 	if len(s.Env) > 0 {
 		specOpts = append(specOpts, oci.WithEnv(s.Env))
 	}
+	ioUID, ioGID := base, base
+	if s.User != nil {
+		specOpts = append(specOpts, runAs(*s.User))
+		ioUID, ioGID = base+s.User.UID, base+s.User.GID
+	}
+	if s.WorkDir != "" {
+		specOpts = append(specOpts, oci.WithProcessCwd(s.WorkDir))
+	}
 
 	container, err := e.client.NewContainer(ctx, s.ID,
 		containerd.WithImage(image),
@@ -366,8 +402,8 @@ func (e *Engine) Run(ctx context.Context, s Spec) (err error) {
 			// Images such as nginx log to /dev/stdout, and opening that
 			// reopens the pipe, which only its owner may do. Owned by host
 			// root, that would fail for the container's root.
-			IoUid: base,
-			IoGid: base,
+			IoUid: ioUID,
+			IoGid: ioGID,
 		}),
 		containerd.WithContainerLabels(map[string]string{
 			labelUsernsBase: strconv.FormatUint(uint64(base), 10),
@@ -388,11 +424,28 @@ func (e *Engine) Run(ctx context.Context, s Spec) (err error) {
 	// process yet. runc creates the network namespace inside the container's
 	// user namespace, which the kernel requires before the container may
 	// mount its own /sys.
-	task, err := container.NewTask(ctx, cio.LogFile(LogPathFor(e.paths, s.ID)))
+	creator := cio.LogFile(LogPathFor(e.paths, s.ID))
+	if s.Stdin {
+		fifo := e.stdinPath(s.ID)
+		os.Remove(fifo)
+		if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+			return fmt.Errorf("create the input of %s: %w", s.ID, err)
+		}
+		creator = withStdin(creator, fifo)
+	}
+	task, err := container.NewTask(ctx, creator)
 	if err != nil {
 		return fmt.Errorf("create task %s: %w", s.ID, err)
 	}
 	cleanup = append(cleanup, func() { task.Delete(context.WithoutCancel(ctx), containerd.WithProcessKill) })
+	if s.Stdin {
+		// Held open from here on: the shim gives the process end of file
+		// once nobody has the fifo open for writing.
+		if _, err := e.openStdin(s.ID, true); err != nil {
+			return err
+		}
+		cleanup = append(cleanup, func() { e.closeStdin(s.ID) })
+	}
 
 	// Pin the namespace to a file so it outlives this call and can be
 	// detached from the network when the container is removed.
@@ -607,6 +660,7 @@ func (e *Engine) Stop(ctx context.Context, id string, grace time.Duration) error
 	if _, err := task.Delete(ctx); err != nil {
 		return err
 	}
+	e.closeStdin(id)
 	// A stopped container no longer gets the ports forwarded to it.
 	return e.refresh(ctx)
 }
@@ -631,6 +685,7 @@ func (e *Engine) Remove(ctx context.Context, id string) error {
 	if err := container.Delete(ctx, containerd.WithSnapshotCleanup); err != nil {
 		return err
 	}
+	e.closeStdin(id)
 	// The container is gone; what follows only frees its network and files.
 	var errs []error
 	if path := labels[labelNetNS]; path != "" {

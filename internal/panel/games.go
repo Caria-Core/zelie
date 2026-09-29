@@ -192,9 +192,9 @@ func gameVariables(e *egg.Egg, given map[string]string) (map[string]string, *msg
 	return out, nil
 }
 
-// gameEnv is the environment of a game server's containers: the egg's
-// variables, and the values the runtime sets whatever the egg declares.
-func gameEnv(a store.App, g store.GameServer, node store.Node) []string {
+// gameVars are the variables of a game server's containers: the egg's, and
+// the values the runtime sets whatever the egg declares.
+func gameVars(a store.App, g store.GameServer, node store.Node) map[string]string {
 	env := make(map[string]string, len(g.Variables)+len(egg.RuntimeVars))
 	for k, v := range g.Variables {
 		env[k] = v
@@ -212,11 +212,13 @@ func gameEnv(a store.App, g store.GameServer, node store.Node) []string {
 	env["STARTUP"] = g.Startup
 	env["P_SERVER_LOCATION"] = node.Name
 	env["P_SERVER_UUID"] = a.ID
-	out := make([]string, 0, len(env))
-	for _, k := range slices.Sorted(maps.Keys(env)) {
-		out = append(out, k+"="+env[k])
-	}
-	return out
+	return env
+}
+
+// gameEnv is gameVars as a list, for a container. The install script gets
+// the startup command as the egg wrote it.
+func gameEnv(a store.App, g store.GameServer, node store.Node) []string {
+	return envList(gameVars(a, g, node))
 }
 
 // createGame makes a game server and starts its install in the
@@ -406,6 +408,11 @@ type gameJSON struct {
 	Ports       []gamePortJSON     `json:"ports"`
 	Variables   []gameVariableJSON `json:"variables"`
 	Install     gameInstallJSON    `json:"install"`
+	// State is stopped, starting, running, stopping or crashed. Starting
+	// lasts until the game says it is ready.
+	State string `json:"state"`
+	// Crashing says why Zelie stopped bringing a crashing server back.
+	Crashing *msg.Msg `json:"crashing,omitempty"`
 }
 
 // gameOut describes a game server for the interface.
@@ -429,6 +436,8 @@ func (s *Server) gameOut(ctx context.Context, a store.App) (gameJSON, error) {
 		Ports:     []gamePortJSON{},
 		Variables: []gameVariableJSON{},
 		Install:   gameInstallJSON{State: g.InstallState, Deployment: g.InstallID},
+		State:     s.gameState(ctx, a),
+		Crashing:  s.crashes.gaveUp(a.ID),
 	}
 	if !g.InstalledAt.IsZero() {
 		out.Install.InstalledAt = &g.InstalledAt

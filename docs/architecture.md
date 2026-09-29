@@ -152,6 +152,14 @@ container, and one that lets exactly that traffic through; where ufw or another 
 firewall is present, the same opening is made there. The rules follow the container when
 it restarts with a new address, and go when the server is deleted.
 
+A game server runs as an ordinary user, 988 inside its container as in Wings. Before
+each start the core gives that user every file of the server's volume and edits the
+config files the egg lists, staying inside the volume however a link in it points. The
+image's own entrypoint starts the game with its console open. To stop it Zelie sends the
+egg's stop command or signal, and kills the game only if it is still running a minute
+later. A server that exits by itself is started again like a crashing app, with a
+growing delay.
+
 A new server is set up by the egg's install script. Zelie runs it once, in a container
 of its own that is built from the egg's install image, with the server's files mounted
 at `/mnt/server` and the same isolation and limits as any other container. Its output is

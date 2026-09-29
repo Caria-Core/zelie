@@ -15,6 +15,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -38,6 +39,9 @@ type fakeEngine struct {
 	listMu     sync.Mutex      // for tests that change containers while the core reads them
 	exec       func(args []string, stdin io.Reader, stdout io.Writer) uint32
 	volumeDir  string
+	stdin      map[string][]string
+	stdinErr   error
+	signalled  map[string]syscall.Signal
 	// More volumes by name, and those a running container holds.
 	volumeDirs  map[string]string
 	usedVolumes map[string]bool
@@ -172,6 +176,25 @@ func (f *fakeEngine) Wait(_ context.Context, id string) (uint32, error) {
 		return 0, errdefs.ErrNotFound
 	}
 	return 3, nil
+}
+
+func (f *fakeEngine) WriteStdin(_ context.Context, id string, data []byte) error {
+	if f.stdinErr != nil {
+		return f.stdinErr
+	}
+	if f.stdin == nil {
+		f.stdin = map[string][]string{}
+	}
+	f.stdin[id] = append(f.stdin[id], string(data))
+	return nil
+}
+
+func (f *fakeEngine) Signal(_ context.Context, id string, sig syscall.Signal) error {
+	if f.signalled == nil {
+		f.signalled = map[string]syscall.Signal{}
+	}
+	f.signalled[id] = sig
+	return nil
 }
 
 func (f *fakeEngine) RemoveImage(_ context.Context, name string) error {

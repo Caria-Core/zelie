@@ -303,6 +303,11 @@ func (s *Server) runDeployment(ctx context.Context, appID string, id int64) {
 		return
 	}
 
+	if app.IsGame() {
+		s.startGame(ctx, app, d, vols, out, set, fail)
+		return
+	}
+
 	set(store.DeployStarting)
 	// Two versions writing to the same files at once could corrupt them, so
 	// an app with volumes has a short gap between versions instead.

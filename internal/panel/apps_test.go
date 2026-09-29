@@ -60,6 +60,21 @@ type appCore struct {
 	installExit int  // what the install containers exit with
 	installHang bool // install containers never exit
 
+	// Game servers: the specs their containers were made from (those with
+	// a console), what they printed, what was written to them and how they
+	// take being stopped.
+	games       map[string]engine.Spec
+	gameLog     map[string]string
+	consoles    map[string][]string
+	signals     map[string][]string
+	prepares    []preparedVolume
+	prepareNote []string
+	prepareErr  error
+	stdinErr    error
+	stubborn    bool // ignores the stop command and SIGTERM; only a kill ends it
+	// A volume was prepared while a container had it running.
+	preparedBusy bool
+
 	links map[string][]engine.Link
 
 	forwards  map[string][]engine.Forward
@@ -162,6 +177,14 @@ func (c *appCore) runApp(s engine.Spec, sealed []string, linked ...core.LinkedVa
 		c.tests = append(c.tests, s)
 		c.tests[len(c.tests)-1].Env = env
 	}
+	if s.Stdin {
+		if c.games == nil {
+			c.games = map[string]engine.Spec{}
+		}
+		opened := s
+		opened.Env = env
+		c.games[s.ID] = opened
+	}
 	c.containers[s.ID] = engine.Status{ID: s.ID, App: s.App, Image: s.Image, State: state, IP: netip.AddrFrom4([4]byte{10, 210, 0, c.next})}
 	c.env[s.ID] = env
 	if c.args == nil {
@@ -169,6 +192,78 @@ func (c *appCore) runApp(s engine.Spec, sealed []string, linked ...core.LinkedVa
 	}
 	c.args[s.ID] = s.Args
 	return nil
+}
+
+type preparedVolume struct {
+	Volume string
+	Req    core.PrepareRequest
+}
+
+func (c *appCore) PrepareVolume(_ context.Context, name string, req core.PrepareRequest) (core.PrepareResponse, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for id, st := range c.containers {
+		if st.State == "running" && slices.ContainsFunc(c.mounts[id], func(v engine.VolumeMount) bool { return v.Name == name }) {
+			c.preparedBusy = true
+		}
+	}
+	if c.prepareErr != nil {
+		return core.PrepareResponse{}, c.prepareErr
+	}
+	c.prepares = append(c.prepares, preparedVolume{name, req})
+	return core.PrepareResponse{Notes: c.prepareNote}, nil
+}
+
+func (c *appCore) WriteStdin(_ context.Context, id string, data []byte) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.stdinErr != nil {
+		return c.stdinErr
+	}
+	if _, ok := c.containers[id]; !ok {
+		return &core.Error{Status: http.StatusNotFound, Message: "container not found"}
+	}
+	if c.consoles == nil {
+		c.consoles = map[string][]string{}
+	}
+	c.consoles[id] = append(c.consoles[id], string(data))
+	if string(data) == "stop\n" && !c.stubborn {
+		c.exitLocked(id)
+	}
+	return nil
+}
+
+func (c *appCore) Signal(_ context.Context, id, signal string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, ok := c.containers[id]; !ok {
+		return &core.Error{Status: http.StatusNotFound, Message: "container not found"}
+	}
+	if c.signals == nil {
+		c.signals = map[string][]string{}
+	}
+	c.signals[id] = append(c.signals[id], signal)
+	if signal == "SIGKILL" || !c.stubborn {
+		c.exitLocked(id)
+	}
+	return nil
+}
+
+func (c *appCore) exitLocked(id string) {
+	if st, ok := c.containers[id]; ok {
+		st.State = "stopped"
+		c.containers[id] = st
+	}
+}
+
+// emit prints to a game container's console.
+func (c *appCore) emit(id, text string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.gameLog == nil {
+		c.gameLog = map[string]string{}
+	}
+	c.gameLog[id] += text
 }
 
 func (c *appCore) SetLinks(_ context.Context, app string, links []engine.Link) error {
@@ -203,6 +298,31 @@ func (c *appCore) Remove(_ context.Context, id string) error {
 }
 
 func (c *appCore) Logs(ctx context.Context, id string, follow bool, _ int64, w io.Writer) error {
+	c.mu.Lock()
+	_, game := c.games[id]
+	c.mu.Unlock()
+	if game {
+		sent := 0
+		for {
+			c.mu.Lock()
+			text := c.gameLog[id]
+			c.mu.Unlock()
+			if len(text) > sent {
+				if _, err := io.WriteString(w, text[sent:]); err != nil {
+					return err
+				}
+				sent = len(text)
+			}
+			if !follow {
+				return nil
+			}
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-time.After(time.Millisecond):
+			}
+		}
+	}
 	if strings.Contains(id, "-install-") {
 		_, err := io.WriteString(w, "downloading server.jar\n")
 		if follow {
@@ -245,8 +365,28 @@ func (c *appCore) Build(_ context.Context, app, version string, env, sealed []st
 
 func (c *appCore) Wait(ctx context.Context, id string) (int, error) {
 	c.mu.Lock()
+	_, game := c.games[id]
 	hang := c.installHang && strings.Contains(id, "-install-")
 	c.mu.Unlock()
+	if game {
+		// A server's process ends when it is stopped or exits.
+		for {
+			c.mu.Lock()
+			st, ok := c.containers[id]
+			c.mu.Unlock()
+			if !ok {
+				return 0, &core.Error{Status: http.StatusNotFound, Message: "container not found"}
+			}
+			if st.State != "running" {
+				return 0, nil
+			}
+			select {
+			case <-ctx.Done():
+				return 0, ctx.Err()
+			case <-time.After(time.Millisecond):
+			}
+		}
+	}
 	if hang {
 		<-ctx.Done()
 		return 0, ctx.Err()

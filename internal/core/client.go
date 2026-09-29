@@ -102,6 +102,10 @@ func (c *Client) RunApp(ctx context.Context, s engine.Spec, sealedEnv []string, 
 	req := runRequest{
 		ID: s.ID, App: s.App, Image: s.Image, Args: s.Args, Env: s.Env, SealedEnv: sealedEnv, Network: s.Network,
 		MemoryBytes: s.MemoryBytes, CPUs: s.CPUs, Pids: s.Pids,
+		WorkDir: s.WorkDir, Stdin: s.Stdin,
+	}
+	if s.User != nil {
+		req.User = &userJSON{UID: s.User.UID, GID: s.User.GID}
 	}
 	for _, v := range linked {
 		req.LinkedEnv = append(req.LinkedEnv, linkedVarJSON(v))

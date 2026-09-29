@@ -83,9 +83,12 @@ type Server struct {
 	uploading  keyset
 	uploadKick chan struct{}
 	pauses     pauses
-	restores   restores
-	dumps      dumpUploads
-	exports    exports
+	// gameRuns and watchers follow the game servers' containers.
+	gameRuns gameRuns
+	watchers sync.WaitGroup
+	restores restores
+	dumps    dumpUploads
+	exports  exports
 	// jobs are backups and restores running in the background.
 	jobs sync.WaitGroup
 	ctx  context.Context // lives as long as the server
@@ -208,6 +211,7 @@ func (s *Server) Handler() http.Handler {
 	web.HandleFunc("POST /api/games", s.adminOnly(s.createGame))
 	web.HandleFunc("GET /api/games/{app}", s.adminOnly(s.getGame))
 	web.HandleFunc("POST /api/games/{app}/reinstall", s.adminOnly(s.reinstallGame))
+	web.HandleFunc("POST /api/games/{app}/power", s.adminOnly(s.gamePower))
 	web.HandleFunc("GET /api/host", s.signedIn(s.hostInfo))
 	web.HandleFunc("GET /api/github", s.signedIn(s.githubStatus))
 	web.HandleFunc("POST /api/github/manifest", s.confirmed(s.githubManifest))
@@ -278,6 +282,7 @@ func (s *Server) Serve(ctx context.Context, socket string) error {
 		}
 		s.pinLive(ctx)
 		s.removeStaleInstalls(ctx)
+		s.resumeGames(ctx)
 		go s.supervise(ctx)
 		go s.watchVolumes(ctx)
 		s.syncAllLinks(ctx)

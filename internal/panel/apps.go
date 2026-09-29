@@ -701,7 +701,7 @@ func (s *Server) unstop(w http.ResponseWriter, r *http.Request, a store.App) boo
 
 func (s *Server) stopHandler(w http.ResponseWriter, r *http.Request) {
 	a, ok := s.appFrom(w, r)
-	if !ok {
+	if !ok || !s.notGame(w, a) {
 		return
 	}
 	if err := s.stopApp(r.Context(), a); err != nil {
@@ -832,6 +832,7 @@ func (s *Server) deleteApp(w http.ResponseWriter, r *http.Request) {
 	// A deployment in progress would start a container for an app that no
 	// longer exists.
 	s.deploys.cancel(a.ID)
+	defer s.gameRuns.forget(a.ID)
 	unlock := s.deploys.lock(a.ID)
 	defer unlock()
 	list, err := s.Core.List(ctx)

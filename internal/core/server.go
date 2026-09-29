@@ -18,6 +18,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/Caria-Core/zelie/internal/backup"
@@ -39,6 +40,8 @@ type Engine interface {
 	SetUnused(ctx context.Context, name string, since time.Time) error
 	Pin(ctx context.Context, ref string) (string, error)
 	Wait(ctx context.Context, id string) (uint32, error)
+	WriteStdin(ctx context.Context, id string, data []byte) error
+	Signal(ctx context.Context, id string, sig syscall.Signal) error
 	Usage(id string) (engine.Usage, error)
 	CreateVolume(name string) error
 	RemoveVolume(ctx context.Context, name string) error
@@ -85,12 +88,15 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/containers/{id}/stop", s.stop)
 	mux.HandleFunc("DELETE /v1/containers/{id}", s.remove)
 	mux.HandleFunc("POST /v1/containers/{id}/wait", s.wait)
+	mux.HandleFunc("POST /v1/containers/{id}/stdin", s.stdin)
+	mux.HandleFunc("POST /v1/containers/{id}/signal", s.signal)
 	mux.HandleFunc("GET /v1/containers/{id}/logs", s.logs)
 	mux.HandleFunc("GET /v1/containers/{id}/usage", s.usage)
 	mux.HandleFunc("GET /v1/host", s.host)
 	mux.HandleFunc("GET /v1/volumes", s.volumes)
 	mux.HandleFunc("POST /v1/volumes", s.createVolume)
 	mux.HandleFunc("DELETE /v1/volumes/{name}", s.removeVolume)
+	mux.HandleFunc("POST /v1/volumes/{name}/prepare", s.prepareVolume)
 	mux.HandleFunc("GET /v1/links/{app}", s.links)
 	mux.HandleFunc("PUT /v1/links/{app}", s.setLinks)
 	mux.HandleFunc("PUT /v1/forwards/{app}", s.setForwards)
@@ -189,6 +195,15 @@ type runRequest struct {
 	MemoryBytes int64             `json:"memory_bytes"`
 	CPUs        float64           `json:"cpus"`
 	Pids        int64             `json:"pids"`
+	// User, WorkDir and Stdin are for game servers: see engine.Spec.
+	User    *userJSON `json:"user,omitempty"`
+	WorkDir string    `json:"work_dir,omitempty"`
+	Stdin   bool      `json:"stdin,omitempty"`
+}
+
+type userJSON struct {
+	UID uint32 `json:"uid"`
+	GID uint32 `json:"gid"`
 }
 
 type stopRequest struct {
@@ -216,6 +231,10 @@ func (s *Server) run(w http.ResponseWriter, r *http.Request) {
 		ID: req.ID, App: req.App, Image: req.Image, Args: req.Args, Network: req.Network,
 		Env:         slices.Clone(req.Env),
 		MemoryBytes: req.MemoryBytes, CPUs: req.CPUs, Pids: req.Pids,
+		WorkDir: req.WorkDir, Stdin: req.Stdin,
+	}
+	if req.User != nil {
+		spec.User = &engine.IDs{UID: req.User.UID, GID: req.User.GID}
 	}
 	for _, v := range req.Volumes {
 		spec.Volumes = append(spec.Volumes, engine.VolumeMount{Name: v.Name, Target: v.Target})
@@ -465,6 +484,8 @@ func (s *Server) fail(w http.ResponseWriter, op, id string, err error) {
 		writeError(w, http.StatusNotFound, errors.New("container not found"))
 	case errdefs.IsAlreadyExists(err):
 		writeError(w, http.StatusConflict, errors.New("container already exists"))
+	case errdefs.IsFailedPrecondition(err):
+		writeError(w, http.StatusConflict, errors.New("the container cannot do that in its state"))
 	default:
 		s.Log.Error(op+" failed", "id", id, "err", err)
 		writeError(w, http.StatusInternalServerError, fmt.Errorf("%s failed, see the core log", op))

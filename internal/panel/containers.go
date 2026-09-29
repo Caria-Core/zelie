@@ -25,6 +25,9 @@ type Core interface {
 	Run(ctx context.Context, s engine.Spec) error
 	RunApp(ctx context.Context, s engine.Spec, sealedEnv []string, linked ...core.LinkedVar) (string, error)
 	RunInstall(ctx context.Context, req core.InstallRequest) error
+	PrepareVolume(ctx context.Context, name string, req core.PrepareRequest) (core.PrepareResponse, error)
+	WriteStdin(ctx context.Context, id string, data []byte) error
+	Signal(ctx context.Context, id, signal string) error
 	Pin(ctx context.Context, image string) (string, error)
 	SetLinks(ctx context.Context, app string, links []engine.Link) error
 	SetForwards(ctx context.Context, app string, forwards []engine.Forward) error
