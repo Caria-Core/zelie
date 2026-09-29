@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -348,6 +350,9 @@ func TestGameFileRoutesNeedALogin(t *testing.T) {
 		{"GET", "/api/games/survival/files/download?path=a"},
 		{"POST", "/api/games/survival/files/compress"},
 		{"POST", "/api/games/survival/files/extract"},
+		{"GET", "/api/games/survival/files/favorites"},
+		{"PUT", "/api/games/survival/files/favorites"},
+		{"DELETE", "/api/games/survival/files/favorites?path=a"},
 		{"PUT", "/api/games/survival/variables"},
 	} {
 		if code, _ := out.do(r[0], r[1], nil); code != http.StatusUnauthorized {
@@ -356,5 +361,63 @@ func TestGameFileRoutesNeedALogin(t *testing.T) {
 	}
 	if len(e.core.fs.ops) != 0 {
 		t.Errorf("the core was asked: %v", e.core.fs.ops)
+	}
+}
+
+func TestGameFileFavorites(t *testing.T) {
+	e := newFilesEnv(t)
+	const base = "/api/games/survival/files/favorites"
+	paths := func() []any {
+		code, out := e.b.do("GET", base, nil)
+		if code != http.StatusOK {
+			t.Fatalf("list: %d %v", code, out)
+		}
+		return out["paths"].([]any)
+	}
+	if got := paths(); len(got) != 0 {
+		t.Fatalf("at first: %v", got)
+	}
+
+	// Paths are kept relative and cleaned, and a second star changes nothing.
+	for _, p := range []string{"/oxide/oxide.config.json", "plugins/", "oxide//oxide.config.json"} {
+		if code, out := e.b.do("PUT", base, map[string]any{"path": p}); code != http.StatusNoContent {
+			t.Fatalf("add %q: %d %v", p, code, out)
+		}
+	}
+	if got := paths(); len(got) != 2 || !slices.Contains(got, any("oxide/oxide.config.json")) || !slices.Contains(got, any("plugins")) {
+		t.Errorf("after adding: %v", got)
+	}
+	for _, p := range []string{"", "/", ".", "../etc", "a/../../b", "a\x00b"} {
+		if code, out := e.b.do("PUT", base, map[string]any{"path": p}); code != http.StatusBadRequest || out["code"] != "files.bad_favorite" {
+			t.Errorf("add %q: %d %v", p, code, out)
+		}
+	}
+	if len(e.core.fs.ops) != 0 {
+		t.Errorf("the core was asked: %v", e.core.fs.ops)
+	}
+
+	// A rename in the file manager takes the stars along.
+	if code, out := e.b.do("POST", "/api/games/survival/files/rename", map[string]any{"from": "plugins", "to": "mods"}); code != http.StatusNoContent {
+		t.Fatalf("rename: %d %v", code, out)
+	}
+	if got := paths(); len(got) != 2 || !slices.Contains(got, any("mods")) {
+		t.Errorf("after rename: %v", got)
+	}
+
+	if code, out := e.b.do("DELETE", base+"?path=mods", nil); code != http.StatusNoContent {
+		t.Fatalf("remove: %d %v", code, out)
+	}
+	if got := paths(); len(got) != 1 {
+		t.Errorf("after removing: %v", got)
+	}
+	if code, out := e.b.do("DELETE", base+"?path=..%2Fx", nil); code != http.StatusBadRequest {
+		t.Errorf("remove a bad path: %d %v", code, out)
+	}
+
+	for i := range store.MaxFileFavorites {
+		e.b.do("PUT", base, map[string]any{"path": "f" + strconv.Itoa(i)})
+	}
+	if code, out := e.b.do("PUT", base, map[string]any{"path": "one-too-many"}); code != http.StatusConflict || out["code"] != "files.too_many_favorites" {
+		t.Errorf("past the limit: %d %v", code, out)
 	}
 }

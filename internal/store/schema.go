@@ -442,5 +442,15 @@ CREATE TABLE sftp_config (
 -- round again, and with them the old log files kept under those ids.
 CREATE TABLE deployment_seq (last INTEGER NOT NULL) STRICT;
 INSERT INTO deployment_seq (last) SELECT coalesce(max(id), 0) FROM deployments;
+`, `
+-- Files and folders an account has starred in a server's file manager. They
+-- belong to the account, so they follow it from one browser to another.
+CREATE TABLE file_favorites (
+	user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+	app_id     TEXT NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
+	path       TEXT NOT NULL,
+	created_at INTEGER NOT NULL,
+	PRIMARY KEY (user_id, app_id, path)
+) STRICT;
 `,
 }

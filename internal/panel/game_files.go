@@ -1,6 +1,7 @@
 package panel
 
 import (
+	"errors"
 	"io"
 	"mime"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/Caria-Core/zelie/internal/core"
+	"github.com/Caria-Core/zelie/internal/msg"
 	"github.com/Caria-Core/zelie/internal/store"
 )
 
@@ -49,6 +51,86 @@ func (s *Server) filesFrom(w http.ResponseWriter, r *http.Request) (store.App, c
 	}
 	writeError(w, errNoVolume.Err())
 	return a, core.FileRef{}, false
+}
+
+var (
+	errFavoritePath = msg.Define(http.StatusBadRequest, "files.bad_favorite", "That path cannot be a favourite.")
+	errFavoriteMany = msg.Define(http.StatusConflict, "files.too_many_favorites", "A server can have at most {limit} favourites. Remove one first.")
+)
+
+// favoritePath is a path as it is kept as a favourite: relative to the
+// server's top folder, without slashes at the ends. It is empty for a path
+// that is not one, the top folder included.
+func favoritePath(p string) string {
+	if len(p) > 4096 || strings.ContainsRune(p, 0) {
+		return ""
+	}
+	for _, part := range strings.Split(p, "/") {
+		if part == ".." {
+			return ""
+		}
+	}
+	c := strings.TrimPrefix(path.Clean("/"+p), "/")
+	if c == "" {
+		return ""
+	}
+	return c
+}
+
+func (s *Server) listFileFavorites(w http.ResponseWriter, r *http.Request) {
+	a, _, ok := s.gameFrom(w, r)
+	if !ok {
+		return
+	}
+	list, err := s.Store.FileFavorites(r.Context(), loginFrom(r.Context()).account.ID, a.ID)
+	if err != nil {
+		s.fail(w, "list file favorites", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"paths": list})
+}
+
+func (s *Server) addFileFavorite(w http.ResponseWriter, r *http.Request) {
+	a, _, ok := s.gameFrom(w, r)
+	if !ok {
+		return
+	}
+	var req gamePathRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	p := favoritePath(req.Path)
+	if p == "" {
+		writeError(w, errFavoritePath.Err())
+		return
+	}
+	err := s.Store.AddFileFavorite(r.Context(), loginFrom(r.Context()).account.ID, a.ID, p, s.now())
+	if errors.Is(err, store.ErrTooManyFavorites) {
+		writeError(w, errFavoriteMany.Err("limit", store.MaxFileFavorites))
+		return
+	}
+	if err != nil {
+		s.fail(w, "add file favorite", err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) removeFileFavorite(w http.ResponseWriter, r *http.Request) {
+	a, _, ok := s.gameFrom(w, r)
+	if !ok {
+		return
+	}
+	p := favoritePath(r.URL.Query().Get("path"))
+	if p == "" {
+		writeError(w, errFavoritePath.Err())
+		return
+	}
+	if err := s.Store.RemoveFileFavorite(r.Context(), loginFrom(r.Context()).account.ID, a.ID, p); err != nil {
+		s.fail(w, "remove file favorite", err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) fileLog(r *http.Request, a store.App, what string, paths ...string) {
@@ -143,6 +225,12 @@ func (s *Server) renameGameFile(w http.ResponseWriter, r *http.Request) {
 	if err := s.Core.RenameFile(r.Context(), ref, req.From, req.To); err != nil {
 		s.coreFailed(w, "rename file", err)
 		return
+	}
+	// A star is only a note, so a failure here is not the rename's.
+	if from, to := favoritePath(req.From), favoritePath(req.To); from != "" && to != "" {
+		if err := s.Store.MoveFileFavorites(r.Context(), a.ID, from, to); err != nil {
+			s.Log.Warn("move file favorites", "server", a.ID, "err", err)
+		}
 	}
 	s.fileLog(r, a, "renamed", req.From, req.To)
 	w.WriteHeader(http.StatusNoContent)
