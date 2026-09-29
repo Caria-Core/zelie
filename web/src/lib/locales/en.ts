@@ -95,8 +95,8 @@ export default {
 	'source.githubLead': 'Built from your code on every deploy. A Dockerfile is used if there is one.',
 	'source.image': 'Docker image',
 	'source.imageLead': 'Any public image, such as nginx:alpine or ghcr.io/owner/app.',
-	'source.database': 'Database',
-	'source.databaseLead': 'PostgreSQL, MariaDB or Redis, private to the apps you link it to.',
+	'source.needDatabase': 'Need a database?',
+	'source.createDatabase': 'Create one, then link it to the app.',
 
 	'new.title': 'New app.',
 	'new.lead': 'Where does it come from?',
