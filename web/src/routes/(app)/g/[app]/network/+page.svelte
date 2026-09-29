@@ -5,7 +5,7 @@
 	import { messageOf } from '$lib/errors';
 	import { address, game, gameState, savePorts, type Allocation, type GamePort } from '$lib/games.svelte';
 	import { t } from '$lib/i18n';
-	import { freePorts, portLabel } from '$lib/ports';
+	import { freePorts, portLabel, runFrom, runStarts } from '$lib/ports';
 	import type { NodeInfo } from '$lib/server.svelte';
 	import Button from '$lib/ui/Button.svelte';
 	import ErrorText from '$lib/ui/ErrorText.svelte';
@@ -30,10 +30,13 @@
 	let fresh = 0;
 
 	function fill() {
-		const list: Row[] = g.ports.map((p) => {
+		// The ports after the game port come with it and have no row of their own.
+		const list: Row[] = g.ports
+			.filter((p) => !p.offset)
+			.map((p) => {
 			const env = p.default ? '' : (p.used_by[0]?.env ?? '');
-			return { key: p.default ? 'primary' : env || `extra:${p.id}`, env, saved: p, id: p.id };
-		});
+				return { key: p.default ? 'primary' : env || `extra:${p.id}`, env, saved: p, id: p.id };
+			});
 		// The port players join on first, then the ones with a use, then extras.
 		const rank = (r: Row) => (r.key === 'primary' ? 0 : r.env ? 1 : 2);
 		rows = list.sort((a, b) => rank(a) - rank(b));
@@ -65,10 +68,31 @@
 	const known = $derived(
 		[...new Map([...freePorts(pool), ...g.ports].map((a) => [a.id, { id: a.id, ip: a.ip, port: a.port }])).values()].sort((a, b) => a.port - b.port)
 	);
-	const optionsFor = (r: Row) => known.filter((a) => a.id === r.id || !rows.some((o) => o.id === a.id));
-	const spare = $derived(freePorts(pool).filter((a) => !g.ports.some((p) => p.id === a.id) && !rows.some((r) => r.id === a.id)));
+	const block = $derived(g.block ?? 1);
+	const primary = $derived(rows.find((r) => r.key === 'primary'));
+	const isExtra = (r: Row) => r.key.startsWith('extra:') || r.key.startsWith('new:');
+	// A game with ports after its own takes them with the game port, from
+	// what is free or already the server's, keeping clear of the other rows.
+	const usableForRun = (a: { id: number }) => !rows.some((o) => o !== primary && !isExtra(o) && o.id === a.id);
+	const run = $derived(block > 1 && primary ? (runFrom(known, primary.id, block, usableForRun) ?? []) : []);
+	const runIds = $derived(new Set(run.map((a) => a.id)));
+	// Extras that lie on the run are part of it now.
+	const shownRows = $derived(rows.filter((r) => !(isExtra(r) && runIds.has(r.id))));
+	const starts = $derived(block > 1 ? runStarts(known, block, usableForRun) : []);
+	const optionsFor = (r: Row) => {
+		if (r.key === 'primary' && block > 1) {
+			// The current port stays in the list so the box shows it, even
+			// when its run is broken.
+			return known.filter((a) => a.id === r.id || starts.some((s) => s.id === a.id));
+		}
+		return known.filter((a) => a.id === r.id || (!rows.some((o) => o.id === a.id) && !runIds.has(a.id)));
+	};
+	const spare = $derived(freePorts(pool).filter((a) => !g.ports.some((p) => p.id === a.id) && !rows.some((r) => r.id === a.id) && !runIds.has(a.id)));
 
-	const dirty = $derived(rows.length !== g.ports.length || rows.some((r) => r.saved?.id !== r.id));
+	const held = $derived(g.ports.filter((p) => !p.offset));
+	// A broken run is mended by saving once the game port has a whole run.
+	const mends = $derived(!!g.block_broken && run.length === block);
+	const dirty = $derived(shownRows.length !== held.length || shownRows.some((r) => r.saved?.id !== r.id) || mends);
 
 	function add() {
 		const next = spare[0];
@@ -85,11 +109,11 @@
 		saved = false;
 		try {
 			const variables: Record<string, number> = {};
-			for (const r of rows) if (r.env) variables[r.env] = r.id;
+			for (const r of shownRows) if (r.env) variables[r.env] = r.id;
 			await savePorts(g.id, {
 				primary: rows.find((r) => r.key === 'primary')?.id ?? 0,
 				variables,
-				extra: rows.filter((r) => r.key !== 'primary' && !r.env).map((r) => r.id)
+				extra: shownRows.filter((r) => r.key !== 'primary' && !r.env).map((r) => r.id)
 			});
 			fill();
 			saved = true;
@@ -120,7 +144,7 @@
 		}}
 	>
 		<ul class="flex flex-col divide-y divide-line rounded-2xl border border-line">
-			{#each rows as r (r.key)}
+			{#each shownRows as r (r.key)}
 				{@const p = r.saved}
 				<li class="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 px-4 py-3">
 					<div class="flex min-w-0 flex-col gap-0.5">
@@ -159,8 +183,21 @@
 						{/if}
 					</div>
 				</li>
+				{#if r.key === 'primary' && run.length > 1}
+					{#each run.slice(1) as f, i (f.id)}
+						<li class="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 px-4 py-3">
+							<span class="min-w-0 text-[15px] text-muted">{t('network.following', { n: i + 1 })}</span>
+							<span class="pr-10 font-mono text-[15px] select-all">{portLabel(f)}</span>
+						</li>
+					{/each}
+				{/if}
 			{/each}
 		</ul>
+		{#if g.block_broken}
+			<p class="rounded-xl border border-line bg-panel px-4 py-3 text-sm" role="alert">{t('network.blockBroken', { n: block })}</p>
+		{:else if block > 1}
+			<p class="text-sm text-muted">{t('network.blockHint', { n: block - 1 })}</p>
+		{/if}
 		{#if poolOpen}
 			<p class="text-sm text-muted">{t('network.noFree')}</p>
 			<PoolAdd onadded={poolAdded} oncancel={() => (poolOpen = false)} />
@@ -168,7 +205,7 @@
 		<ErrorText message={error} />
 		<div class="flex flex-wrap items-center gap-3">
 			<Button type="submit" {busy} disabled={!dirty || !stopped}>{t('network.save')}</Button>
-			<Button kind="secondary" type="button" disabled={!stopped || busy || rows.length >= 16} onclick={add}><Plus size={16} strokeWidth={1.75} />{t('network.add')}</Button>
+			<Button kind="secondary" type="button" disabled={!stopped || busy || shownRows.length + block - 1 >= 16} onclick={add}><Plus size={16} strokeWidth={1.75} />{t('network.add')}</Button>
 			{#if saved && !dirty}<span class="text-sm text-muted" role="status">{t('network.saved')}</span>{/if}
 		</div>
 		{#if !stopped}<p class="text-sm text-muted">{t('network.stopFirst')}</p>{/if}

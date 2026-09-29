@@ -201,23 +201,27 @@ func wishedPorts(e *egg.Egg, pick *portPick) (portWish, *msg.Error) {
 	return w, nil
 }
 
-// count is how many ports the server needs at least: its main one and one
-// for each variable that was given a port.
-func (w portWish) count() int { return 1 + w.vars }
+// count is how many ports the server needs at least: its main one, or the
+// run of ports a game needs (block), and one for each variable that was
+// given a port.
+func (w portWish) count(block int) int { return max(block, 1) + w.vars }
 
 // split says which of the placed allocations is the main port, which port
-// each chosen variable got, and the ports left for the others.
-func (w portWish) split(all []store.Allocation) (primary store.Allocation, chosen map[string]int, auto []int) {
+// each chosen variable got, and the ports left for the others. A game with
+// a block has its run first, and the ports after the main one are not
+// given to variables.
+func (w portWish) split(all []store.Allocation, block int) (primary store.Allocation, chosen map[string]int, auto []int) {
 	chosen = map[string]int{}
+	block = max(block, 1)
 	rest := all
-	if w.primary {
-		primary, rest = all[0], all[1:]
+	if w.primary || block > 1 {
+		primary, rest = all[0], all[block:]
 	}
 	for _, env := range w.envs {
 		chosen[env] = rest[0].Port
 		rest = rest[1:]
 	}
-	if !w.primary {
+	if !w.primary && block == 1 {
 		primary, rest = rest[0], rest[1:]
 	}
 	return primary, chosen, portNumbers(rest)
@@ -285,6 +289,25 @@ func (s *Server) updateGamePorts(w http.ResponseWriter, r *http.Request) {
 		primary = byPort[a.Port]
 	}
 	ids := []int64{primary}
+	// A game that needs a run of ports gets it from the main port; the
+	// ports after it are not chosen. A server whose run is already broken
+	// keeps its ports as they are until the main port moves to a run that
+	// is free.
+	block := s.gameBlock(ctx, g)
+	following := map[int64]bool{}
+	if i := slices.IndexFunc(pool, func(p store.Allocation) bool { return p.ID == primary }); block > 1 && i >= 0 {
+		start := pool[i]
+		usable := func(x store.Allocation) bool { return x.AppID == "" || x.AppID == a.ID }
+		if run, ok := runAt(portIndex(pool), start, block, usable); ok {
+			for _, x := range run[1:] {
+				ids = append(ids, x.ID)
+				following[x.ID] = true
+			}
+		} else if start.Port != a.Port {
+			writeError(w, errBrokenBlock.Err("port", start.Port, "count", block))
+			return
+		}
+	}
 	roles := map[string]int64{}
 	for _, env := range slices.Sorted(maps.Keys(req.Variables)) {
 		if !slices.ContainsFunc(portVariables(e), func(v egg.Variable) bool { return v.Env == env }) {
@@ -294,7 +317,11 @@ func (s *Server) updateGamePorts(w http.ResponseWriter, r *http.Request) {
 		roles[env] = req.Variables[env]
 		ids = append(ids, req.Variables[env])
 	}
-	ids = append(ids, req.Extra...)
+	for _, id := range req.Extra {
+		if !following[id] {
+			ids = append(ids, id)
+		}
+	}
 	// A variable the request leaves out keeps its port, so long as that
 	// port stays with the server.
 	for _, v := range portVariables(e) {
@@ -302,7 +329,10 @@ func (s *Server) updateGamePorts(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		port, err := strconv.Atoi(g.Variables[v.Env])
-		if id, ok := byPort[port]; err == nil && ok && !slices.Contains(ids, id) {
+		if id, ok := byPort[port]; err == nil && ok && following[id] {
+			writeError(w, errPortTwice.Err())
+			return
+		} else if err == nil && ok && !slices.Contains(ids, id) {
 			roles[v.Env] = id
 			ids = append(ids, id)
 		}

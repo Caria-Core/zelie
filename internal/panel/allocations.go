@@ -266,6 +266,12 @@ type needs struct {
 	// Chosen are allocations the request picked, by id. They are taken
 	// first, and count towards Ports.
 	Chosen []int64
+	// Primary says the first of Chosen is the main port.
+	Primary bool
+	// Block is how many ports in a row, from the main one, the game needs
+	// (see game_block.go). They count towards Ports, and 0 or 1 means the
+	// main port stands alone.
+	Block int
 }
 
 // placement is where a new server goes. Allocations lists the chosen ones
@@ -297,6 +303,11 @@ func (s *Server) place(ctx context.Context, node int64, w needs) (placement, err
 		}
 		picked[id] = true
 		p.Allocations = append(p.Allocations, list[i])
+	}
+	if w.Block > 1 {
+		bp, err := placeBlock(list, w)
+		bp.Node = node
+		return bp, err
 	}
 	for _, a := range list {
 		if a.AppID == "" && !picked[a.ID] && len(p.Allocations) < w.Ports {

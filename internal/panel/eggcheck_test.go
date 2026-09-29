@@ -26,11 +26,11 @@ import (
 //
 //	go test -tags eggcheck -run TestCatalogEggs -v ./internal/panel
 
-// portExplanations say why an entry's Ports is not 1 plus the egg's port
-// variables: ports the game takes that the egg has no variable for.
+// portExplanations say why an entry's Ports is not its block (or 1) plus the
+// egg's port variables: ports the game takes that the egg has no variable
+// for, or a variable whose port is not opened.
 var portExplanations = map[string]string{
-	"7-days-to-die":         "the game also uses the three ports after its own (UDP)",
-	"valheim":               "Steam queries the port after the game's",
+	"7-days-to-die":         "telnet is only used from inside the container",
 	"palworld":              "RCON is only used from inside the container",
 	"ark-survival-ascended": "RCON is only used from inside the container",
 	"v-rising":              "RCON is off unless the owner turns it on",
@@ -146,19 +146,23 @@ func checkEgg(entry egg.Entry, e *egg.Egg, r *eggReport) {
 
 	// The values a new server gets: defaults, safe secrets, and ports from
 	// the range examples start at.
-	ports := max(entry.Ports, 1)
+	block := max(entry.Block, 1)
+	ports := max(entry.Ports, block)
+	if entry.Block > entry.Ports {
+		r.fail("the block of %d ports is more than the %d the entry takes", entry.Block, entry.Ports)
+	}
 	vars := map[string]string{}
 	for _, v := range e.Variables {
 		vars[v.Env] = initialValue(v)
 	}
-	extra := make([]int, 0, ports-1)
-	for i := 1; i < ports; i++ {
+	extra := make([]int, 0, ports-block)
+	for i := block; i < ports; i++ {
 		extra = append(extra, 27015+i)
 	}
 	assignPorts(e, vars, nil, extra)
 	portVars := portVariables(e)
 	_, explained := portExplanations[entry.ID]
-	switch want := 1 + len(portVars); {
+	switch want := block + len(portVars); {
 	case entry.Kind != egg.KindGame:
 	case ports != want && !explained:
 		r.fail("catalog has %d ports, the egg has %d port variables (want %d)", ports, len(portVars), want)
@@ -166,6 +170,9 @@ func checkEgg(entry egg.Entry, e *egg.Egg, r *eggReport) {
 		r.warn("the note on the number of ports is not needed any more")
 	}
 	seen := map[string]string{"27015": "SERVER_PORT"}
+	for i := 1; i < block; i++ {
+		seen[strconv.Itoa(27015+i)] = "the block of " + entry.ID
+	}
 	for _, v := range portVars {
 		if other, dup := seen[vars[v.Env]]; dup {
 			r.warn("%s shares its port with %s", v.Env, other)

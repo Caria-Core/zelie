@@ -7,7 +7,7 @@
 	import { eulaLink, type Allocation, type EggPreview } from '$lib/games.svelte';
 	import { host, loadHost, megabytes } from '$lib/host.svelte';
 	import { say, t } from '$lib/i18n';
-	import { freePorts, portLabel } from '$lib/ports';
+	import { freePorts, portLabel, runFrom, runStarts } from '$lib/ports';
 	import { defaultSize, sizeSteps } from '$lib/volumes';
 	import Button from '$lib/ui/Button.svelte';
 	import ErrorText from '$lib/ui/ErrorText.svelte';
@@ -17,7 +17,8 @@
 	import Resources from '$lib/ui/Resources.svelte';
 
 	// memory_mb, disk_mb and ports are what the game needs, for games that need more than most.
-	type Entry = { id: string; name: string; game: string; memory_mb?: number; disk_mb?: number; ports?: number };
+	// block is how many ports in a row from the game port it listens on.
+	type Entry = { id: string; name: string; game: string; memory_mb?: number; disk_mb?: number; ports?: number; block?: number };
 	const defaultMemory = 4096;
 	const steps = $derived([t('game.new.step.game'), t('game.new.step.resources'), t('game.new.step.ports'), t('game.new.step.settings')]);
 
@@ -61,19 +62,35 @@
 		for (const v of preview?.port_variables ?? []) list.push({ key: v.env, label: v.name, env: v.env });
 		return list;
 	});
-	const ports = $derived(roles.length + extra);
+	const entry = $derived(catalog.find((c) => c.id === chosen));
+	const block = $derived(chosen === 'url' ? 1 : Math.max(entry?.block ?? 1, 1));
+	const ports = $derived(roles.length + block - 1 + extra);
 	// Allocation ids picked by hand, by role key.
 	let picks = $state<Record<string, number>>({});
 	const taken = $derived(new Set(roles.flatMap((r) => (r.key in picks ? [picks[r.key]] : []))));
+	// A game that listens on ports right after its own gets them with the
+	// game port, so only ports that start a free run are offered for it,
+	// and the run keeps clear of the ports picked for the other roles.
+	const handVars = $derived(new Set(roles.flatMap((r) => (r.key !== '' && r.key in picks ? [picks[r.key]] : []))));
+	const starts = $derived(block > 1 ? runStarts(pool ?? [], block, (a) => !a.app && !handVars.has(a.id)) : []);
+	const primaryId = $derived.by(() => {
+		if (block === 1) return undefined;
+		const asked = picks[''];
+		return asked !== undefined && starts.some((a) => a.id === asked) ? asked : starts[0]?.id;
+	});
+	const run = $derived(primaryId === undefined ? [] : (runFrom(pool ?? [], primaryId, block, (a) => !a.app) ?? []));
+	const runIds = $derived(new Set(run.map((a) => a.id)));
 	const shown = $derived.by(() => {
-		const spare = freeList.filter((a) => !taken.has(a.id));
+		const spare = freeList.filter((a) => !taken.has(a.id) && !runIds.has(a.id));
 		let next = 0;
 		const out: Record<string, number | undefined> = {};
-		for (const r of roles) out[r.key] = picks[r.key] ?? spare[next++]?.id;
+		for (const r of roles) out[r.key] = r.key === '' && block > 1 ? primaryId : (picks[r.key] ?? spare[next++]?.id);
 		return out;
 	});
-	const optionsFor = (r: Role) => freeList.filter((a) => a.id === shown[r.key] || !Object.values(shown).includes(a.id));
-
+	const optionsFor = (r: Role) =>
+		r.key === '' && block > 1
+			? starts
+			: freeList.filter((a) => a.id === shown[r.key] || (!Object.values(shown).includes(a.id) && !runIds.has(a.id)));
 	const diskMB = $derived(host.info ? host.info.disk_bytes / 2 ** 20 : 102400);
 	// Variables with a port are set by the ports step; the ones the egg
 	// locks are only offered to administrators, out of the way.
@@ -81,7 +98,6 @@
 	const editable = $derived(shownVars.filter((v) => !v.locked));
 	const lockedVars = $derived(shownVars.filter((v) => v.locked));
 	const needsEula = $derived(preview?.features.includes('eula') ?? false);
-	const entry = $derived(catalog.find((c) => c.id === chosen));
 	const cardName = $derived(entry ? (entry.name === entry.game ? entry.name : `${entry.game} ${entry.name}`) : '');
 	// One card per game; a game with several eggs, such as Minecraft, offers
 	// its kinds under the cards once it is picked.
@@ -383,7 +399,8 @@
 			</div>
 			{#if pool === null}
 				<p class="text-sm text-muted">{poolError || t('game.new.portsLoading')}</p>
-			{:else if free === 0 || addOpen}
+			{:else if free === 0 || addOpen || (block > 1 && !starts.length)}
+				{#if free > 0 && block > 1 && !starts.length}<p class="text-sm text-muted">{t('game.new.noRun', { n: block })}</p>{/if}
 				<PoolAdd onadded={added} oncancel={addOpen ? () => (addOpen = false) : undefined} />
 			{:else}
 				<p class="text-sm text-muted">
@@ -392,7 +409,7 @@
 				</p>
 			{/if}
 			<ErrorText message={poolError && pool !== null ? poolError : ''} />
-			{#if free > 0}
+			{#if free > 0 && (block === 1 || starts.length)}
 				<ul class="flex flex-col divide-y divide-line rounded-2xl border border-line" aria-label={t('game.new.roles')}>
 					{#each roles as r (r.key)}
 						<li class="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 px-4 py-3">
@@ -408,8 +425,17 @@
 								{#each optionsFor(r) as a (a.id)}<option value={a.id}>{portLabel(a)}</option>{/each}
 							</select>
 						</li>
+						{#if r.key === '' && block > 1}
+							{#each run.slice(1) as f, i (f.id)}
+								<li class="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 px-4 py-3">
+									<span class="min-w-0 text-[15px] text-muted">{t('game.new.roleFollowing', { n: i + 1 })}</span>
+									<span class="font-mono text-[15px] select-all">{portLabel(f)}</span>
+								</li>
+							{/each}
+						{/if}
 					{/each}
 				</ul>
+				{#if block > 1}<p class="text-sm text-muted">{t('game.new.blockHint', { n: block - 1 })}</p>{/if}
 				<div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted">
 					{#if extra > 0}<span>{t('game.new.extraPorts', { n: extra })}</span>{/if}
 					{#if ports < Math.min(16, free)}
@@ -422,7 +448,7 @@
 			{/if}
 			<ErrorText message={error} />
 			<div class="flex items-center gap-3">
-				<Button disabled={free < ports || ports > 16 || free === 0} onclick={toSettings} busy={busy}>{shownVars.length || needsEula ? t('common.continue') : t('game.new.create')}</Button>
+				<Button disabled={free < ports || ports > 16 || free === 0 || (block > 1 && !starts.length)} onclick={toSettings} busy={busy}>{shownVars.length || needsEula ? t('common.continue') : t('game.new.create')}</Button>
 				<Button kind="quiet" type="button" onclick={() => ((error = ''), (step = 2))}>{t('new.back')}</Button>
 			</div>
 		</section>

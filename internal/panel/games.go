@@ -110,6 +110,8 @@ type catalogEntryJSON struct {
 	MemoryMB int64 `json:"memory_mb,omitempty"`
 	DiskMB   int64 `json:"disk_mb,omitempty"`
 	Ports    int   `json:"ports,omitempty"`
+	// Block is how many ports in a row from the game port the game needs.
+	Block int `json:"block,omitempty"`
 }
 
 // eggCatalog lists the games, or with ?kind=runtime the generic eggs that run
@@ -127,7 +129,7 @@ func (s *Server) eggCatalog(w http.ResponseWriter, r *http.Request) {
 	entries := egg.OfKind(kind)
 	out := make([]catalogEntryJSON, 0, len(entries))
 	for _, e := range entries {
-		out = append(out, catalogEntryJSON{ID: e.ID, Name: e.Name, Game: e.Game, MemoryMB: e.MemoryMB, DiskMB: e.DiskMB, Ports: e.Ports})
+		out = append(out, catalogEntryJSON{ID: e.ID, Name: e.Name, Game: e.Game, MemoryMB: e.MemoryMB, DiskMB: e.DiskMB, Ports: e.Ports, Block: e.Block})
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -374,7 +376,12 @@ func (s *Server) createGame(w http.ResponseWriter, r *http.Request) {
 		writeError(w, errGamePorts.Err("max", maxGamePorts))
 		return
 	}
-	req.Ports = max(req.Ports, wish.count())
+	block := blockSize(source)
+	req.Ports = max(req.Ports, wish.count(block))
+	if req.Ports > maxGamePorts {
+		writeError(w, errGamePorts.Err("max", maxGamePorts))
+		return
+	}
 	h, err := s.Core.Host(ctx)
 	if err != nil {
 		s.coreFailed(w, "read host", err)
@@ -391,12 +398,13 @@ func (s *Server) createGame(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	p, err := s.place(ctx, store.ThisNode, needs{Ports: req.Ports, Chosen: wish.ids})
+	need := needs{Ports: req.Ports, Chosen: wish.ids, Primary: wish.primary, Block: block}
+	p, err := s.place(ctx, store.ThisNode, need)
 	if err != nil {
 		s.failWith(w, "place server", err)
 		return
 	}
-	primary, _, _ := wish.split(p.Allocations)
+	primary, _, _ := wish.split(p.Allocations, block)
 	a.Port = primary.Port
 	switch err := s.Store.CreateApp(ctx, a); {
 	case errors.Is(err, store.ErrExists):
@@ -418,10 +426,10 @@ func (s *Server) createGame(w http.ResponseWriter, r *http.Request) {
 		if !errors.Is(err, store.ErrInUse) || try == 2 {
 			break
 		}
-		if p, err = s.place(ctx, store.ThisNode, needs{Ports: req.Ports, Chosen: wish.ids}); err != nil {
+		if p, err = s.place(ctx, store.ThisNode, need); err != nil {
 			break
 		}
-		primary, _, _ = wish.split(p.Allocations)
+		primary, _, _ = wish.split(p.Allocations, block)
 		a.Port = primary.Port
 		if err = s.Store.UpdateApp(ctx, a); err != nil {
 			break
@@ -441,7 +449,7 @@ func (s *Server) createGame(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, "store egg", err)
 		return
 	}
-	_, chosen, auto := wish.split(p.Allocations)
+	_, chosen, auto := wish.split(p.Allocations, block)
 	given := maps.Clone(req.Variables)
 	if given == nil {
 		given = map[string]string{}
@@ -528,6 +536,10 @@ type gamePortJSON struct {
 	// UsedBy are the egg's variables that hold this port, such as the
 	// query port.
 	UsedBy []portUseJSON `json:"used_by"`
+	// Offset is how far a port after the game port is from it, for a game
+	// that needs a run of ports. Those ports follow the game port and are
+	// not chosen on their own.
+	Offset int `json:"offset,omitempty"`
 }
 
 type gameInstallJSON struct {
@@ -554,13 +566,19 @@ type gameJSON struct {
 	EggStartup string `json:"egg_startup"`
 	// StartupPreview is the startup command with the saved values filled in,
 	// as the next start will run it.
-	StartupPreview string             `json:"startup_preview"`
-	MemoryMB       int64              `json:"memory_mb"`
-	CPUs           float64            `json:"cpus"`
-	DiskMB         int64              `json:"disk_mb"`
-	Ports          []gamePortJSON     `json:"ports"`
-	Variables      []gameVariableJSON `json:"variables"`
-	Features       []string           `json:"features"`
+	StartupPreview string         `json:"startup_preview"`
+	MemoryMB       int64          `json:"memory_mb"`
+	CPUs           float64        `json:"cpus"`
+	DiskMB         int64          `json:"disk_mb"`
+	Ports          []gamePortJSON `json:"ports"`
+	// Block is how many ports in a row from the game port the game needs,
+	// when it needs more than one. BlockBroken says the server does not
+	// hold them all: it was made before the panel kept them together, or
+	// the pool changed.
+	Block       int                `json:"block,omitempty"`
+	BlockBroken bool               `json:"block_broken,omitempty"`
+	Variables   []gameVariableJSON `json:"variables"`
+	Features    []string           `json:"features"`
 	// EULANeeded is set when the egg asks for a EULA that has not been
 	// accepted, so the server will not start.
 	EULANeeded bool            `json:"eula_needed,omitempty"`
@@ -625,12 +643,21 @@ func (s *Server) gameOut(ctx context.Context, a store.App) (gameJSON, error) {
 			node = s.nodeOut(ctx, n).Address
 		}
 	}
+	block := blockSize(stored.Source)
+	if block > 1 {
+		out.Block = block
+		out.BlockBroken = !blockIntact(ports, a.Port, block)
+	}
 	for _, p := range ports {
 		host := node
 		if p.IP != store.AnyAddress {
 			host = p.IP
 		}
-		out.Ports = append(out.Ports, gamePortJSON{ID: p.ID, IP: p.IP, Port: p.Port, Address: host, Default: p.Port == a.Port, UsedBy: portUses(e, g.Variables, p.Port)})
+		gp := gamePortJSON{ID: p.ID, IP: p.IP, Port: p.Port, Address: host, Default: p.Port == a.Port, UsedBy: portUses(e, g.Variables, p.Port)}
+		if out.Block > 1 && !out.BlockBroken && p.Port > a.Port && p.Port < a.Port+block {
+			gp.Offset = p.Port - a.Port
+		}
+		out.Ports = append(out.Ports, gp)
 	}
 	out.Variables = variablesOut(e, g.Variables, mayUnlock(ctx, a))
 	// Without the node, only the placeholder for its name stays as written.

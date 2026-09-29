@@ -19,7 +19,7 @@ export type GameVariable = {
 // A variable of the egg that holds one of the server's ports, such as the query port.
 export type PortUse = { env: string; name: string };
 
-export type GamePort = { id: number; ip: string; port: number; address: string; default: boolean; used_by: PortUse[] };
+export type GamePort = { id: number; ip: string; port: number; address: string; default: boolean; used_by: PortUse[]; offset?: number };
 
 // Set for games installed with SteamCMD. A build is Steam's number for one
 // version of the game; either may be empty when it is not known yet.
@@ -47,6 +47,10 @@ export type Game = {
 	cpus: number;
 	disk_mb: number;
 	ports: GamePort[];
+	// How many ports in a row from the game port the game needs, when more than one.
+	// Those after the game port have an offset and are not chosen on their own.
+	block?: number;
+	block_broken?: boolean;
 	variables: GameVariable[];
 	// What the egg says the game needs, such as 'eula'.
 	features: string[];

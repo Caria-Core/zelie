@@ -34,6 +34,11 @@ type Entry struct {
 	MemoryMB int64
 	DiskMB   int64
 	Ports    int
+	// Block is how many ports in a row, from the game port, the game itself
+	// opens without an egg variable to say where (Valheim's query port is
+	// always the game port plus one). They are part of Ports. Zero or one
+	// means the game port stands alone.
+	Block int
 }
 
 // Kind is what an egg is for.
@@ -123,10 +128,12 @@ var Catalog = []Entry{
 		Commit: steamCommit,
 		Path:   "7_days_to_die/egg-7-days-to-die.json",
 		// The server files are about 12 GB, and the world generator wants 8 GB. It uses
-		// the game port and the three after it (UDP), and telnet takes the second.
+		// the game port and the three after it (UDP). Telnet is only used from inside
+		// the container, so its port is not opened.
 		MemoryMB: 8 << 10,
 		DiskMB:   20 << 10,
 		Ports:    4,
+		Block:    4,
 	},
 	{
 		ID: "ark-survival-ascended", Name: "ARK: Survival Ascended", Game: "ARK: Survival Ascended",
@@ -246,11 +253,12 @@ var Catalog = []Entry{
 		Repo:   "pelican-eggs/games-steamcmd",
 		Commit: steamCommit,
 		Path:   "valheim/valheim_vanilla/egg-valheim.json",
-		// The game's own minimum is 4 GB. Steam queries the port after the game's, which
-		// the second port is for.
+		// The game's own minimum is 4 GB. Steam queries the port after the game's, and
+		// the egg has no variable for it.
 		MemoryMB: 4 << 10,
 		DiskMB:   5 << 10,
 		Ports:    2,
+		Block:    2,
 	},
 
 	// Generic eggs from pelican-eggs/generic. They start whatever the
