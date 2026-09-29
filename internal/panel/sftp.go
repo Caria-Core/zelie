@@ -23,7 +23,7 @@ import (
 	"github.com/Caria-Core/zelie/internal/store"
 )
 
-// SFTP for game servers. The service itself is a separate process (package
+// SFTP for game servers and files apps. The service itself is a separate process (package
 // sftpd) that holds the connections and knows nothing of accounts: it asks
 // the panel, over a socket only its own user can use, who may log in to
 // which server. A login is either an SSH key of an account that manages
@@ -354,7 +354,7 @@ func mayManageGame(a store.Account) bool { return a.Admin }
 func (s *Server) sftpGrant(ctx context.Context, req sftpd.AuthRequest) (sftpd.Grant, bool, error) {
 	var none sftpd.Grant
 	app, err := s.Store.App(ctx, req.Server)
-	if err == nil && !app.IsGame() {
+	if err == nil && !app.RunsEgg() {
 		err = store.ErrNotFound
 	}
 	var hash string
@@ -486,7 +486,7 @@ func (s *Server) sftpConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 // syncSFTPVolumes tells the core which volumes SFTP may use: the files of
-// game servers, and nothing else. The core keeps the list and holds the
+// game servers and files apps, and nothing else. The core keeps the list and holds the
 // SFTP user to it, so a login can never reach a database's volume.
 func (s *Server) syncSFTPVolumes(ctx context.Context) {
 	games, err := s.Store.GameServers(ctx)

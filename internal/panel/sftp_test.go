@@ -415,3 +415,37 @@ func mustApp(t *testing.T, e *appEnv, id string) store.App {
 	}
 	return a
 }
+
+func TestFilesAppOverSFTP(t *testing.T) {
+	e := newSFTPEnv(t)
+	e.s.Eggs.(*fakeEggs).files["nodejs"] = runtimeEgg
+	ctx := context.Background()
+	e.newFiles(t, "site", nil)
+	game, _ := e.s.Store.Volumes(ctx, "survival")
+	site, _ := e.s.Store.Volumes(ctx, "site")
+	if want := []string{game[0].Name, site[0].Name}; !sameSet(e.core.sftpVols, want) {
+		t.Fatalf("after creating the app: %v, want %v", e.core.sftpVols, want)
+	}
+
+	_, out := e.b.do("POST", "/api/games/site/sftp/password", nil)
+	pw, _ := out["password"].(string)
+	code, out := e.login(t, sftpd.AuthRequest{Server: "site", Password: pw})
+	if code != http.StatusOK || out["volume"] != site[0].Name {
+		t.Fatalf("log in: %d %v", code, out)
+	}
+	// The password of one does not open the other.
+	if code, _ := e.login(t, sftpd.AuthRequest{Server: "survival", Password: pw}); code != http.StatusForbidden {
+		t.Errorf("the app's password on the game server: %d", code)
+	}
+
+	if code, _ := e.b.do("DELETE", "/api/apps/site", nil); code != http.StatusNoContent && code != http.StatusOK {
+		t.Fatalf("delete: %d", code)
+	}
+	if !slices.Equal(e.core.sftpVols, []string{game[0].Name}) {
+		t.Errorf("after deleting the app: %v", e.core.sftpVols)
+	}
+}
+
+func sameSet(a, b []string) bool {
+	return slices.Equal(slices.Sorted(slices.Values(a)), slices.Sorted(slices.Values(b)))
+}

@@ -163,6 +163,7 @@ func (s *Server) createFilesApp(w http.ResponseWriter, r *http.Request) {
 		s.failWith(w, "create volume", err)
 		return
 	}
+	s.syncSFTPVolumes(ctx)
 	s.Log.Info("files app created", "app", a.ID, "runtime", entry.ID, "user", loginFrom(ctx).account.ID)
 	if _, err := s.startInstall(ctx, a, store.CauseInstall, store.InstallFailed); err != nil {
 		s.fail(w, "start install", err)
