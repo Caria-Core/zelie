@@ -122,12 +122,22 @@ jobs:
           # Tighten it once a run here shows the new number.
           MAX_PSS_MB: 90
         run: |
-          sleep 20
-          ps -C zelie -o rss=,args= | awk '{kb+=$1; print} END {printf "zelie total rss: %.1f MB\n", kb/1024}'
           # RSS counts the binary's shared pages once per process; PSS splits them.
-          for p in $(pgrep -x zelie); do
-            sudo awk -v p="$p" '/^(Pss|Private_Dirty|Private_Clean):/ {v[$1]=$2} END {printf "%s pss=%d private=%d kB\n", p, v["Pss:"], v["Private_Dirty:"]+v["Private_Clean:"]}' /proc/$p/smaps_rollup
-          done | awk -v max="$MAX_PSS_MB" '{print} {split($2,a,"="); t+=a[2]} END {
+          measure() {
+            ps -C zelie -o pid=,rss=,args=
+            for p in $(pgrep -x zelie); do
+              sudo awk -v p="$p" '/^(Pss|Private_Dirty|Private_Clean):/ {v[$1]=$2} END {printf "%s pss=%d private=%d kB\n", p, v["Pss:"], v["Private_Dirty:"]+v["Private_Clean:"]}' /proc/$p/smaps_rollup
+            done
+          }
+          # The processes hand free memory back every half minute, so the
+          # first reading may catch start-up work not yet handed back. The
+          # limit applies to the second, a minute after the update.
+          sleep 20
+          echo "== after 20 s"
+          measure | awk '{print} /pss=/ {split($2,a,"="); t+=a[2]} END {printf "zelie total pss: %.1f MB\n", t/1024}'
+          sleep 40
+          echo "== after 60 s"
+          measure | awk -v max="$MAX_PSS_MB" '{print} /pss=/ {split($2,a,"="); t+=a[2]} END {
             printf "zelie total pss: %.1f MB (limit %d MB)\n", t/1024, max
             if (t/1024 > max) { print "zelie uses more memory than its limit"; exit 1 }
           }'
