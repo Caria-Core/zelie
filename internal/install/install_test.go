@@ -343,6 +343,25 @@ func TestInstallBusyPort(t *testing.T) {
 	}
 }
 
+func TestInstallBusyWebPort(t *testing.T) {
+	l, err := net.Listen("tcp", ":0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	old := webPorts
+	webPorts = []int{l.Addr().(*net.TCPAddr).Port}
+	defer func() { webPorts = old }()
+	for _, opts := range []Options{{Mode: ModeDomain, Host: "panel.example.com", Email: "a@example.com"}, {Mode: ModeIP, Host: "203.0.113.9"}} {
+		f := newFakeServer(t)
+		var out bytes.Buffer
+		err := f.installer(t, opts, &out).Run(context.Background())
+		if err == nil || !strings.Contains(err.Error(), "in use") || !strings.Contains(err.Error(), "--mode tunnel") || len(f.commands) != 0 {
+			t.Errorf("%s: err %v, ran %v", opts.Mode, err, f.commands)
+		}
+	}
+}
+
 func TestUFWIsOpenedWhenItIsOn(t *testing.T) {
 	for _, tc := range []struct {
 		name, status string

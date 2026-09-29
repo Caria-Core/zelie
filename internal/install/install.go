@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/Caria-Core/zelie/internal/proxy"
@@ -198,6 +199,8 @@ func (in *Installer) checkServer(ctx context.Context) (bool, string, error) {
 		if err := portFree(in.Opts.Port); err != nil {
 			return false, "", err
 		}
+	} else if err := webPortsFree(); err != nil {
+		return false, "", err
 	}
 	return true, releaseField(string(osRelease), "PRETTY_NAME"), nil
 }
@@ -214,6 +217,31 @@ func portFree(port int) error {
 		return nil
 	}
 	return fmt.Errorf("port %d is already in use; choose another with --port", port)
+}
+
+// webPorts are the ports the proxy takes when it serves the internet itself.
+// Tests replace them.
+var webPorts = []int{80, 443}
+
+// webPortsFree catches another web server, such as the nginx of an older
+// panel, before anything is installed. Only a port that is taken counts: a
+// check that cannot tell, for want of root, lets the install go on. An
+// install run again finds its own proxy there, which is fine.
+func webPortsFree() error {
+	if _, err := os.Stat("/run/zelie-proxy/proxy.sock"); err == nil {
+		return nil
+	}
+	for _, port := range webPorts {
+		l, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+		if err == nil {
+			l.Close()
+			continue
+		}
+		if errors.Is(err, syscall.EADDRINUSE) {
+			return fmt.Errorf("port %d is already in use, most likely by another web server; stop it, or reach the panel through a Cloudflare Tunnel with --mode tunnel", port)
+		}
+	}
+	return nil
 }
 
 func releaseField(osRelease, key string) string {

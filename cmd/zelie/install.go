@@ -89,10 +89,22 @@ func ask(ctx context.Context, in *bufio.Reader, out io.Writer, o *install.Option
 	interactive := o.Mode == ""
 	if interactive {
 		fmt.Fprint(out, `How will people reach the panel?
-  1) A domain that points to this server. Zelie gets HTTPS certificates
-     from Let's Encrypt and needs ports 80 and 443.
-  2) A Cloudflare Tunnel. No port opens; Cloudflare handles HTTPS.
+
+  1) A domain that points to this server.
+     Zelie gets HTTPS certificates from Let's Encrypt. Ports 80 and 443
+     must be free and reachable from the internet. Recommended when
+     nothing else serves websites on this server.
+
+  2) A Cloudflare Tunnel.
+     No port opens to the internet, and Cloudflare handles HTTPS.
+     Recommended when your domain is on Cloudflare, when another web
+     server already uses ports 80 and 443, or when the server is behind
+     NAT.
+
   3) This server's IP address, with a self-signed certificate.
+     Only for trying Zelie out: browsers warn about the certificate, and
+     passkeys need a domain, so you log in with an authenticator app.
+
 `)
 		switch line(in, out, "Choose 1, 2 or 3") {
 		case "1":
@@ -117,7 +129,7 @@ func ask(ctx context.Context, in *bufio.Reader, out io.Writer, o *install.Option
 	}
 	if o.Mode == install.ModeTunnel {
 		if p := ""; interactive {
-			if p = line(in, out, fmt.Sprintf("Local port for the tunnel [%d]", o.Port)); p != "" {
+			if p = line(in, out, fmt.Sprintf("Local port the tunnel sends traffic to (Enter keeps %d)", o.Port)); p != "" {
 				n, err := strconv.Atoi(p)
 				if err != nil {
 					return fmt.Errorf("%q is not a port", p)
