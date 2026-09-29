@@ -8,12 +8,14 @@
 	import { messageOf } from '$lib/errors';
 	import { game, gameState, loadGame, power, saveResources, setAutoUpdate } from '$lib/games.svelte';
 	import { host, loadHost, megabytes } from '$lib/host.svelte';
+	import { editHistory } from '$lib/history.svelte';
 	import { t } from '$lib/i18n';
 	import { sizeSteps } from '$lib/volumes';
 	import Button from '$lib/ui/Button.svelte';
 	import ErrorText from '$lib/ui/ErrorText.svelte';
 	import Field from '$lib/ui/Field.svelte';
 	import Resources from '$lib/ui/Resources.svelte';
+	import SaveBar from '$lib/ui/SaveBar.svelte';
 
 	const g = $derived(game.info!);
 	const phase = $derived(gameState(g));
@@ -37,8 +39,14 @@
 	const diskMB = $derived(host.info ? host.info.disk_bytes / 2 ** 20 : 102400);
 	const resized = $derived(memory !== g.memory_mb || cpus !== g.cpus || disk !== g.disk_mb);
 
+	const history = editHistory(
+		() => ({ memory, cpus, disk }),
+		(v) => ({ memory, cpus, disk } = v)
+	);
+
 	function fill() {
 		[memory, cpus, disk] = [g.memory_mb, g.cpus, g.disk_mb];
+		history.rebase();
 	}
 
 	$effect(() => {
@@ -129,6 +137,14 @@
 			if (resized && !sizing) saveSizes();
 		}}
 	>
+		<SaveBar dirty={resized} busy={sizing} canUndo={history.canUndo} onsave={saveSizes} onundo={history.undo} onreset={history.revert} />
+		<ErrorText message={sizeError} />
+		{#if saved && !resized && up}
+			<div class="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-line px-4 py-3">
+				<p class="text-sm">{t('settings.resourcesRestart')}</p>
+				<Button type="button" kind="secondary" class="!h-8 !px-4" busy={restarting} onclick={restart}><RotateCw size={14} strokeWidth={1.75} />{t('startup.restart')}</Button>
+			</div>
+		{/if}
 		<div>
 			<h2 class="font-medium">{t('settings.resourcesTitle')}</h2>
 			<p class="text-sm text-muted">{t('settings.gameResourcesLead')}</p>
@@ -141,17 +157,6 @@
 					{#each sizeSteps(diskMB, disk) as mb (mb)}<option value={mb}>{megabytes(mb)}</option>{/each}
 				</select>
 				<p class="text-sm text-muted">{t('settings.diskHint')}</p>
-			</div>
-		{/if}
-		<ErrorText message={sizeError} />
-		<div class="flex flex-wrap items-center gap-3">
-			<Button type="submit" busy={sizing} disabled={!resized}>{t('startup.save')}</Button>
-			{#if saved && !resized}<span class="text-sm text-muted" role="status">{t('startup.saved')}</span>{/if}
-		</div>
-		{#if saved && !resized && up}
-			<div class="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-line px-4 py-3">
-				<p class="text-sm">{t('settings.resourcesRestart')}</p>
-				<Button type="button" kind="secondary" class="!h-8 !px-4" busy={restarting} onclick={restart}><RotateCw size={14} strokeWidth={1.75} />{t('startup.restart')}</Button>
 			</div>
 		{/if}
 	</form>

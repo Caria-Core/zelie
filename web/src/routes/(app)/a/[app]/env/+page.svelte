@@ -3,10 +3,12 @@
 	import { api } from '$lib/api';
 	import { current, load } from '$lib/current.svelte';
 	import { messageOf } from '$lib/errors';
+	import { editHistory } from '$lib/history.svelte';
 	import { t } from '$lib/i18n';
 	import Button from '$lib/ui/Button.svelte';
 	import ErrorText from '$lib/ui/ErrorText.svelte';
 	import Links from '$lib/ui/Links.svelte';
+	import SaveBar from '$lib/ui/SaveBar.svelte';
 
 	// keep marks a saved secret whose value the browser never saw.
 	type Row = { name: string; value: string; secret: boolean; keep: boolean };
@@ -14,8 +16,12 @@
 	const app = $derived(current.app!);
 	let rows = $state<Row[]>([]);
 	let error = $state('');
-	let saved = $state(false);
 	let busy = $state(false);
+	let saved = $state(false);
+	const history = editHistory(
+		() => rows,
+		(v) => (rows = v)
+	);
 
 	// Rows are copied once per app, so a refresh while typing loses nothing.
 	let loadedFor = '';
@@ -23,10 +29,10 @@
 		if (app.id === loadedFor) return;
 		loadedFor = app.id;
 		rows = app.env.map((v) => ({ ...v, keep: v.secret }));
+		history.rebase();
 	});
 
-	async function save(e: SubmitEvent) {
-		e.preventDefault();
+	async function save() {
 		busy = true;
 		error = '';
 		saved = false;
@@ -70,7 +76,16 @@
 
 <div class="flex max-w-3xl flex-col gap-10">
 	<Links {app} />
-	<form class="flex flex-col gap-4" onsubmit={save}>
+	<form
+		class="flex flex-col gap-4"
+		onsubmit={(e) => {
+			e.preventDefault();
+			if (history.dirty && !busy) save();
+		}}
+	>
+		<SaveBar dirty={history.dirty} {busy} canUndo={history.canUndo} onsave={save} onundo={history.undo} onreset={history.revert} />
+		<ErrorText message={error} />
+		{#if saved && !history.dirty}<p role="status" class="text-sm text-ok">{t('env.saved')}</p>{/if}
 		<h2 class="font-medium">{t('env.own')}</h2>
 		<p class="text-sm text-muted">{t('env.lead')} {t('env.secretHint')}</p>
 		{#if rows.length === 0}<p class="text-sm text-muted/80">{t('env.empty')}</p>{/if}
@@ -98,9 +113,6 @@
 		</div>
 		<div class="flex flex-wrap items-center gap-3">
 			<Button kind="secondary" type="button" onclick={() => rows.push({ name: '', value: '', secret: false, keep: false })}><Plus size={16} />{t('env.add')}</Button>
-			<Button type="submit" {busy}>{t('env.save')}</Button>
-			{#if saved}<span role="status" class="text-sm text-ok">{t('env.saved')}</span>{/if}
 		</div>
-		<ErrorText message={error} />
 	</form>
 </div>

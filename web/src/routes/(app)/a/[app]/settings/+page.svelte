@@ -8,11 +8,13 @@
 	import { game, gameState, loadGame } from '$lib/games.svelte';
 	import { sensitive } from '$lib/confirm.svelte';
 	import { Cancelled, messageOf } from '$lib/errors';
+	import { editHistory } from '$lib/history.svelte';
 	import { t } from '$lib/i18n';
 	import Button from '$lib/ui/Button.svelte';
 	import ErrorText from '$lib/ui/ErrorText.svelte';
 	import Field from '$lib/ui/Field.svelte';
 	import Resources from '$lib/ui/Resources.svelte';
+	import SaveBar from '$lib/ui/SaveBar.svelte';
 
 	const app = $derived(current.app!);
 	let form = $state({
@@ -36,8 +38,12 @@
 	// Only a database's resources can change; the rest is Zelie's.
 	const database = $derived(!!app.engine);
 	let error = $state('');
-	let saved = $state(false);
 	let busy = $state(false);
+	let saved = $state(false);
+	const history = editHistory(
+		() => form,
+		(v) => (form = v)
+	);
 
 	let loadedFor = '';
 	$effect(() => {
@@ -58,10 +64,10 @@
 			build: app.build_command,
 			start: app.start_command
 		};
+		history.rebase();
 	});
 
-	async function save(e: SubmitEvent) {
-		e.preventDefault();
+	async function save() {
 		busy = true;
 		error = '';
 		saved = false;
@@ -84,6 +90,7 @@
 			}
 			await api('PATCH', `/apps/${app.id}`, body);
 			await Promise.all([load(app.id), reload()]);
+			history.rebase();
 			saved = true;
 		} catch (err) {
 			error = messageOf(err);
@@ -165,7 +172,20 @@
 {/snippet}
 
 <div class="flex max-w-xl flex-col gap-10">
-	<form class="flex flex-col gap-10" onsubmit={save}>
+	<form
+		class="flex flex-col gap-10"
+		onsubmit={(e) => {
+			e.preventDefault();
+			if (history.dirty && !busy) save();
+		}}
+	>
+		<SaveBar dirty={history.dirty} {busy} canUndo={history.canUndo} onsave={save} onundo={history.undo} onreset={history.revert} />
+		{#if error || (saved && !history.dirty)}
+			<div class="-mt-6">
+				<ErrorText message={error} />
+				{#if saved && !history.dirty}<p role="status" class="text-sm text-ok">{t('settings.saved')}</p>{/if}
+			</div>
+		{/if}
 		{#if !database}
 			{#if !files}
 			<section class="flex flex-col gap-4">
@@ -219,12 +239,6 @@
 			{@render heading(t('new.more'), database ? t('db.resourcesLead') : t('settings.resourcesLead'))}
 			<Resources bind:memory={form.memory} bind:cpus={form.cpus} app={app.id} usage={current.usage} />
 		</section>
-
-		<div class="sticky bottom-0 -mx-1 flex items-center gap-3 bg-bg/90 px-1 py-3 backdrop-blur">
-			<Button type="submit" {busy}>{t('settings.save')}</Button>
-			{#if saved}<span role="status" class="text-sm text-ok">{t('settings.saved')}</span>{/if}
-			<ErrorText message={error} />
-		</div>
 	</form>
 
 	{#if files}

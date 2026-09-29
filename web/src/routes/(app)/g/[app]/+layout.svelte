@@ -8,6 +8,7 @@
 	import { address, defaultPort, game, gameState, loadGame, power, updateSteam } from '$lib/games.svelte';
 	import { megabytes, type Usage } from '$lib/host.svelte';
 	import { say, t } from '$lib/i18n';
+	import { loadClass } from '$lib/load';
 	import AppIcon from '$lib/ui/AppIcon.svelte';
 	import Button from '$lib/ui/Button.svelte';
 	import ErrorText from '$lib/ui/ErrorText.svelte';
@@ -128,6 +129,7 @@
 		{ href: `/g/${id}/startup`, label: t('game.tab.startup') },
 		{ href: `/g/${id}/backups`, label: t('game.tab.backups') },
 		{ href: `/g/${id}/schedules`, label: t('game.tab.schedules') },
+		{ href: `/g/${id}/metrics`, label: t('game.tab.metrics') },
 		{ href: `/g/${id}/network`, label: t('game.tab.network') },
 		{ href: `/g/${id}/settings`, label: t('game.tab.settings') }
 	]);
@@ -176,10 +178,10 @@
 					</p>
 					<p class="mt-1.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted tabular-nums" title={usage?.running ? t('app.usageTitle') : t('game.limitsTitle')}>
 						{#if usage?.running && usage.memory_bytes !== undefined}
-							<span class="inline-flex items-center gap-1.5"
+							<span class="inline-flex items-center gap-1.5 {loadClass(usage.memory_bytes / 2 ** 20, g.memory_mb)}"
 								><MemoryStick size={15} strokeWidth={1.75} />{t('app.usageMemory', { used: megabytes(usage.memory_bytes / 2 ** 20), limit: megabytes(g.memory_mb) })}</span
 							>
-							<span class="inline-flex items-center gap-1.5"
+							<span class="inline-flex items-center gap-1.5 {loadClass(usage.cpu, g.cpus)}"
 								><Cpu size={15} strokeWidth={1.75} />{t('app.usageCpu', { used: usage.cpu === undefined || usage.cpu < 0.01 ? '0' : cores(usage.cpu), limit: cores(g.cpus) })}</span
 							>
 						{:else}

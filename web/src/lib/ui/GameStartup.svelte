@@ -5,10 +5,12 @@
 	import { ask } from '$lib/ask.svelte';
 	import { messageOf } from '$lib/errors';
 	import { game, gameState, power, saveSettings } from '$lib/games.svelte';
+	import { editHistory } from '$lib/history.svelte';
 	import { say, t } from '$lib/i18n';
 	import { session } from '$lib/session.svelte';
 	import Button from '$lib/ui/Button.svelte';
 	import ErrorText from '$lib/ui/ErrorText.svelte';
+	import SaveBar from '$lib/ui/SaveBar.svelte';
 
 	const g = $derived(game.info!);
 	const phase = $derived(gameState(g));
@@ -31,12 +33,18 @@
 	let bad = $state<{ env: string; text: string } | null>(null);
 	let saved = $state(false);
 
+	const history = editHistory(
+		() => ({ values, imageChoice, imageOther, startup }),
+		(v) => ({ values, imageChoice, imageOther, startup } = v)
+	);
+
 	function reset() {
 		values = Object.fromEntries(g.variables.filter((v) => v.editable && !v.port).map((v) => [v.env, v.value]));
 		const listed = g.images.some((img) => img.ref === g.image);
 		imageChoice = listed ? g.image : other;
 		imageOther = listed ? '' : g.image;
 		startup = g.startup;
+		history.rebase();
 	}
 
 	$effect(() => {
@@ -104,12 +112,25 @@
 {/snippet}
 
 <form
-	class="flex max-w-2xl flex-col gap-10"
+	class="flex max-w-2xl flex-col gap-8"
 	onsubmit={(e) => {
 		e.preventDefault();
 		if (dirty && !busy) save();
 	}}
 >
+	<SaveBar {dirty} {busy} canUndo={history.canUndo} onsave={save} onundo={history.undo} onreset={history.revert} />
+	{#if error || (saved && !dirty && up)}
+		<div class="-mt-4 flex flex-col gap-3">
+			<ErrorText message={error} />
+			{#if saved && !dirty && up}
+			<div class="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-line px-4 py-3">
+				<p class="text-sm">{t('startup.restartNote')}</p>
+				<Button type="button" kind="secondary" class="!h-8 !px-4" busy={restarting} onclick={restart}><RotateCw size={14} strokeWidth={1.75} />{t('startup.restart')}</Button>
+			</div>
+			{/if}
+		</div>
+	{/if}
+
 	<section class="flex flex-col gap-3">
 		{@render heading(t('startup.command'), admin ? t('startup.commandAdminLead') : t('startup.commandLead'))}
 		{#if admin}
@@ -204,18 +225,4 @@
 			<p class="text-sm text-muted">{t('startup.noVariables')}</p>
 		{/if}
 	</section>
-
-	<div class="flex flex-col gap-3">
-		<ErrorText message={error} />
-		<div class="flex flex-wrap items-center gap-3">
-			<Button type="submit" {busy} disabled={!dirty}>{t('startup.save')}</Button>
-			{#if saved && !dirty}<span class="text-sm text-muted" role="status">{t('startup.saved')}</span>{/if}
-		</div>
-		{#if saved && !dirty && up}
-			<div class="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-line px-4 py-3">
-				<p class="text-sm">{t('startup.restartNote')}</p>
-				<Button type="button" kind="secondary" class="!h-8 !px-4" busy={restarting} onclick={restart}><RotateCw size={14} strokeWidth={1.75} />{t('startup.restart')}</Button>
-			</div>
-		{/if}
-	</div>
 </form>

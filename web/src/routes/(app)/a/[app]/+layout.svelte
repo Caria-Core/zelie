@@ -6,6 +6,7 @@
 	import { engineLabel, isFiles, runtimeLabel, shownState } from '$lib/apps.svelte';
 	import { ask } from '$lib/ask.svelte';
 	import { say, t } from '$lib/i18n';
+	import { loadClass } from '$lib/load';
 	import { busy, current, deploy, load, restart, start, stop, update } from '$lib/current.svelte';
 	import { messageOf } from '$lib/errors';
 	import { game, gameState, loadGame, power } from '$lib/games.svelte';
@@ -240,11 +241,11 @@
 							{#if since}
 								<span class="inline-flex items-center gap-1.5" title={t('app.uptimeTitle')}><Clock size={15} strokeWidth={1.75} />{uptime(since)}</span>
 							{/if}
-							<span class="inline-flex items-center gap-1.5"
+							<span class="inline-flex items-center gap-1.5 {loadClass(u.memory_bytes === undefined ? undefined : u.memory_bytes / 2 ** 20, a.memory_mb)}"
 								><MemoryStick size={15} strokeWidth={1.75} />{a.memory_mb ? t('app.usageMemory', { used: mb, limit: megabytes(a.memory_mb) }) : mb}</span
 							>
 							{#if u.cpu !== undefined}
-								<span class="inline-flex items-center gap-1.5"
+								<span class="inline-flex items-center gap-1.5 {loadClass(u.cpu, a.cpus)}"
 									><Cpu size={15} strokeWidth={1.75} />{u.cpu < 0.01
 										? t('app.usageIdle')
 										: a.cpus

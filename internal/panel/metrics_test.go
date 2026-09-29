@@ -78,3 +78,29 @@ func TestMetrics(t *testing.T) {
 		t.Errorf("kept %d old readings", len(list))
 	}
 }
+
+// A game server's readings are recorded and served like an app's.
+func TestGameMetrics(t *testing.T) {
+	e := newPowerEnv(t)
+	now := time.Unix(1_800_000_000, 0)
+	e.s.Now = func() time.Time { return now }
+	e.newGame(t, "survival", consoleEggURL, nil)
+	if code, out := e.power(t, "survival", "start"); code != 202 {
+		t.Fatalf("start: %d %v", code, out)
+	}
+	e.settle(t, "survival")
+
+	ctx := context.Background()
+	e.s.recordMetrics(ctx)
+	now = now.Add(time.Minute)
+	e.s.recordMetrics(ctx)
+
+	_, out := e.b.do("GET", "/api/apps/survival/metrics", nil)
+	pts, _ := out["points"].([]any)
+	if len(pts) != 1 || out["step"] != 60.0 {
+		t.Fatalf("hour %v", out)
+	}
+	if p := pts[0].(map[string]any); p["memory_bytes"] != float64(84<<20) || p["cpu"].(float64) <= 0 {
+		t.Errorf("point %v", p)
+	}
+}
