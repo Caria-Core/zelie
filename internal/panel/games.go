@@ -284,7 +284,7 @@ func gameVariables(e *egg.Egg, base, given map[string]string, unlock bool) (map[
 				out[v.Env] = value
 				continue
 			}
-			value = v.Default
+			value = initialValue(v)
 		}
 		switch {
 		case strings.ContainsRune(value, 0):

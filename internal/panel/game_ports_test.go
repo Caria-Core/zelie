@@ -179,9 +179,16 @@ func TestCreateRustServer(t *testing.T) {
 		}
 	}
 
-	// The egg leaves the password empty and requires one.
-	if code, out := e.b.do("POST", "/api/games", map[string]any{"name": "nopass", "egg": "rust"}); code != http.StatusBadRequest || out["code"] != "game.bad_variable" {
-		t.Errorf("without a password: %d %v", code, out)
+	// The egg leaves the RCON password empty and requires one, so the server
+	// makes up a password.
+	if err := e.s.Store.AddAllocations(context.Background(), 1, "0.0.0.0", []int{25570, 25571, 25572, 25573}, e.s.now()); err != nil {
+		t.Fatal(err)
+	}
+	if code, out := e.b.do("POST", "/api/games", map[string]any{"name": "nopass", "egg": "rust"}); code != http.StatusCreated {
+		t.Fatalf("without a password: %d %v", code, out)
+	}
+	if g, err := e.s.Store.GameServer(context.Background(), "nopass"); err != nil || len(g.Variables["RCON_PASS"]) != 24 {
+		t.Errorf("RCON_PASS = %q, %v", g.Variables["RCON_PASS"], err)
 	}
 	// The ports it locks cannot be chosen by a customer; the server sets them.
 	if code, out := e.asCustomer(t, e.s.createGame, "POST", "", map[string]any{"name": "locked", "egg": "rust", "variables": map[string]string{"RCON_PASS": "x", "QUERY_PORT": "1"}}); code != http.StatusBadRequest || out["code"] != "game.variable_locked" {
