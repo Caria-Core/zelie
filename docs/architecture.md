@@ -1,7 +1,7 @@
 # Architecture
 
-This document describes how Zelie is put together and why. Parts of it, such as game
-servers, updates and several servers, describe plans the code has not reached yet.
+This document describes how Zelie is put together and why. The parts about several
+servers describe plans the code has not reached yet.
 
 ## One binary, four processes
 
@@ -228,8 +228,8 @@ image and its history. Only a build step that prints a value would show it in th
 log.
 
 The sealed text names its app, so a value cannot be moved to another app. The core's key
-will be part of what the installer asks you to back up, because losing it would mean
-losing the secrets.
+is `/var/lib/zelie/secrets.key`. Losing it means losing the secrets, so keep a copy of it
+somewhere safe.
 
 ## Updates
 
