@@ -235,6 +235,8 @@ type runRequest struct {
 	User    *userJSON `json:"user,omitempty"`
 	WorkDir string    `json:"work_dir,omitempty"`
 	Stdin   bool      `json:"stdin,omitempty"`
+	// OpenFiles is the limit on open files: see engine.Spec.
+	OpenFiles uint64 `json:"open_files,omitempty"`
 }
 
 type userJSON struct {
@@ -267,7 +269,7 @@ func (s *Server) run(w http.ResponseWriter, r *http.Request) {
 		ID: req.ID, App: req.App, Image: req.Image, Args: req.Args, Network: req.Network,
 		Env:         slices.Clone(req.Env),
 		MemoryBytes: req.MemoryBytes, CPUs: req.CPUs, Pids: req.Pids,
-		WorkDir: req.WorkDir, Stdin: req.Stdin,
+		WorkDir: req.WorkDir, Stdin: req.Stdin, OpenFiles: req.OpenFiles,
 	}
 	if req.User != nil {
 		spec.User = &engine.IDs{UID: req.User.UID, GID: req.User.GID}

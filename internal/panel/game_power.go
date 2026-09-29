@@ -265,7 +265,7 @@ func (s *Server) startGame(ctx context.Context, app store.App, d store.Deploymen
 	pinned, err := s.Core.RunApp(ctx, engine.Spec{
 		ID: container, App: app.ID, Image: d.Image, Env: envList(vars), Network: app.ID, Volumes: volumeMounts(vols),
 		MemoryBytes: gameMemory(app.MemoryMB), CPUs: app.CPUs, Pids: defaultPids,
-		User: &engine.IDs{UID: gameUID, GID: gameGID}, WorkDir: gameVolumePath, Stdin: true,
+		User: &engine.IDs{UID: gameUID, GID: gameGID}, WorkDir: gameVolumePath, Stdin: true, OpenFiles: engine.MaxOpenFiles,
 	}, sealed, linked...)
 	if err != nil {
 		undo()

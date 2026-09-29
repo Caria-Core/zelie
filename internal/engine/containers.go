@@ -99,6 +99,10 @@ type Spec struct {
 	User *IDs
 	// WorkDir replaces the image's working directory.
 	WorkDir string
+	// OpenFiles is the limit on open files, soft and hard, up to
+	// MaxOpenFiles. Zero leaves containerd's default of 1024. It is
+	// lowered to what containerd itself may give.
+	OpenFiles uint64
 	// Stdin keeps the container's standard input open for WriteStdin. It
 	// stays open until the container is stopped or removed.
 	Stdin bool
@@ -161,6 +165,9 @@ func (s Spec) Validate() error {
 	}
 	if s.User != nil && !s.User.Valid() {
 		return fmt.Errorf("user %d:%d is outside the container's IDs", s.User.UID, s.User.GID)
+	}
+	if s.OpenFiles > MaxOpenFiles {
+		return fmt.Errorf("the limit on open files is at most %d", MaxOpenFiles)
 	}
 	if s.WorkDir != "" && (!filepath.IsAbs(s.WorkDir) || filepath.Clean(s.WorkDir) != s.WorkDir) {
 		return fmt.Errorf("working directory %q must be an absolute, clean path", s.WorkDir)
@@ -387,6 +394,9 @@ func (e *Engine) Run(ctx context.Context, s Spec) (err error) {
 	}
 	if s.WorkDir != "" {
 		specOpts = append(specOpts, oci.WithProcessCwd(s.WorkDir))
+	}
+	if n := e.openFiles(s.OpenFiles); n > 0 {
+		specOpts = append(specOpts, withOpenFiles(n))
 	}
 
 	container, err := e.client.NewContainer(ctx, s.ID,

@@ -178,7 +178,7 @@ func TestExtractMissingBinary(t *testing.T) {
 
 func TestUnitKeepsContainersOnRestart(t *testing.T) {
 	unit := UnitFile(DefaultPaths)
-	for _, want := range []string{"KillMode=process", "Delegate=yes", "--config /etc/zelie/containerd.toml"} {
+	for _, want := range []string{"KillMode=process", "Delegate=yes", "--config /etc/zelie/containerd.toml", "LimitNOFILE=1048576"} {
 		if !strings.Contains(unit, want) {
 			t.Errorf("unit file lacks %q", want)
 		}

@@ -30,6 +30,8 @@ disabled_plugins = [
 // UnitFile renders the systemd unit. KillMode=process matters most: when
 // containerd stops or restarts, systemd kills only containerd itself and
 // leaves the shims, and therefore every running container, alone.
+// LimitNOFILE is the ceiling for what containers can ask for: see
+// Engine.openFiles.
 func UnitFile(p Paths) string {
 	path := strings.Join([]string{p.Bin, "/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"}, ":")
 	return fmt.Sprintf(`# Managed by Zelie. Changes are overwritten on upgrade.
@@ -47,6 +49,7 @@ Delegate=yes
 KillMode=process
 Restart=always
 RestartSec=5
+LimitNOFILE=%d
 LimitNPROC=infinity
 LimitCORE=infinity
 TasksMax=infinity
@@ -54,5 +57,5 @@ OOMScoreAdjust=-999
 
 [Install]
 WantedBy=multi-user.target
-`, p.Bin+"/containerd", p.Config, path)
+`, p.Bin+"/containerd", p.Config, path, MaxOpenFiles)
 }
