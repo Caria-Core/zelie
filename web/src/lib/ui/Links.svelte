@@ -2,7 +2,7 @@
 	import { ask } from '$lib/ask.svelte';
 	import { Link2, Unlink } from '@lucide/svelte';
 	import { api } from '$lib/api';
-	import { apps, engineLabel, isDatabase, reload, type App, type Link } from '$lib/apps.svelte';
+	import { apps, engineLabel, isDatabase, isGame, reload, type App, type Link } from '$lib/apps.svelte';
 	import { restart } from '$lib/current.svelte';
 	import { messageOf } from '$lib/errors';
 	import { t } from '$lib/i18n';
@@ -37,7 +37,7 @@
 
 	// What can still be linked: databases for an app, apps for a database.
 	const options = $derived(
-		apps.list.filter((a) => isDatabase(a) !== fromDatabase && !links?.some((l) => l.db === a.id))
+		apps.list.filter((a) => !isGame(a) && isDatabase(a) !== fromDatabase && !links?.some((l) => l.db === a.id))
 	);
 	$effect(() => {
 		if (!options.some((o) => o.id === choice)) choice = options[0]?.id ?? '';

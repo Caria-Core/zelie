@@ -9,8 +9,9 @@
 		memory = $bindable(512),
 		cpus = $bindable(1),
 		app = '',
-		usage = null
-	}: { memory?: number; cpus?: number; app?: string; usage?: Usage | null } = $props();
+		usage = null,
+		game = false
+	}: { memory?: number; cpus?: number; app?: string; usage?: Usage | null; game?: boolean } = $props();
 
 	$effect(() => {
 		loadHost();
@@ -26,13 +27,22 @@
 			.reduce((sum, a) => ({ memory: sum.memory + a.memory_mb, cpus: sum.cpus + a.cpus }), { memory: 0, cpus: 0 })
 	);
 
+	// Game servers need a lot more than a typical web app.
 	const presets = $derived(
-		[
-			{ name: t('resources.small'), memory: 256, cpus: 0.5 },
-			{ name: t('resources.medium'), memory: 512, cpus: 1 },
-			{ name: t('resources.large'), memory: 1024, cpus: 2 },
-			{ name: t('resources.xl'), memory: 2048, cpus: 4 }
-		].filter((p) => p.memory <= hostMB && p.cpus <= hostCPUs)
+		(game
+			? [
+					{ name: t('resources.small'), memory: 2048, cpus: 1 },
+					{ name: t('resources.medium'), memory: 4096, cpus: 2 },
+					{ name: t('resources.large'), memory: 8192, cpus: 4 },
+					{ name: t('resources.xl'), memory: 16384, cpus: 6 }
+				]
+			: [
+					{ name: t('resources.small'), memory: 256, cpus: 0.5 },
+					{ name: t('resources.medium'), memory: 512, cpus: 1 },
+					{ name: t('resources.large'), memory: 1024, cpus: 2 },
+					{ name: t('resources.xl'), memory: 2048, cpus: 4 }
+				]
+		).filter((p) => p.memory <= hostMB && p.cpus <= hostCPUs)
 	);
 
 	// Memory moves in steps that grow with the size, so the slider is as
@@ -138,7 +148,7 @@
 		/>
 	</div>
 
-	{#if host.info}
+	{#if host.info && !game}
 		<p class="text-sm text-muted">
 			{t('resources.disk', {
 				free: megabytes(host.info.disk_free_bytes / 2 ** 20),

@@ -3,7 +3,7 @@
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { api } from '$lib/api';
-	import { apps, isDatabase, reload, shownState } from '$lib/apps.svelte';
+	import { apps, gameListState, isDatabase, isGame, reload, shownState } from '$lib/apps.svelte';
 	import { t } from '$lib/i18n';
 	import { loadServer, server } from '$lib/server.svelte';
 	import { refresh, session } from '$lib/session.svelte';
@@ -52,8 +52,9 @@
 
 	const item = 'flex items-center gap-2.5 rounded-lg px-2 py-1.5 transition hover:bg-hover';
 	const groups = $derived([
-		{ title: t('nav.apps'), list: apps.list.filter((a) => !isDatabase(a)), href: '/new', add: t('nav.new') },
-		{ title: t('nav.databases'), list: apps.list.filter(isDatabase), href: '/new/database', add: t('nav.newDatabase') }
+		{ title: t('nav.apps'), list: apps.list.filter((a) => !isDatabase(a) && !isGame(a)), href: '/new', add: t('nav.new'), game: false },
+		{ title: t('nav.databases'), list: apps.list.filter(isDatabase), href: '/new/database', add: t('nav.newDatabase'), game: false },
+		{ title: t('nav.games'), list: apps.list.filter(isGame), href: '/new/game', add: t('nav.newGame'), game: true }
 	]);
 </script>
 
@@ -77,13 +78,13 @@
 						<p class="px-2 pb-1 text-sm text-muted">{g.title}</p>
 						{#each g.list as a (a.id)}
 							<a
-								href="/a/{a.id}"
+								href="/{g.game ? 'g' : 'a'}/{a.id}"
 								class="{item} {page.params.app === a.id ? 'bg-selected' : ''}"
 								aria-current={page.params.app === a.id ? 'page' : undefined}
 							>
-								<AppIcon source={a.source} database={isDatabase(a)} size="sm" />
+								<AppIcon source={a.source} database={isDatabase(a)} game={g.game} size="sm" />
 								<span class="min-w-0 flex-1 truncate">{a.id}</span>
-								<StateDot state={shownState(a)} />
+								<StateDot state={g.game ? gameListState(a) : shownState(a)} />
 							</a>
 						{:else}
 							{#if apps.loaded}<p class="px-2 text-sm text-muted/70">{t('nav.empty')}</p>{/if}

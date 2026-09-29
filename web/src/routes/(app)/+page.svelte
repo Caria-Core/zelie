@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { ArrowUpRight } from '@lucide/svelte';
-	import { apps, engineLabel, isDatabase, shortVersion, shownState } from '$lib/apps.svelte';
+	import { apps, engineLabel, gameListState, isDatabase, isGame, shortVersion, shownState } from '$lib/apps.svelte';
 	import { ago } from '$lib/format';
 	import { t } from '$lib/i18n';
 	import AppIcon from '$lib/ui/AppIcon.svelte';
@@ -12,8 +12,9 @@
 	const live = $derived(apps.list.filter((a) => a.state === 'running').length);
 	const groups = $derived(
 		[
-			{ title: t('nav.apps'), list: apps.list.filter((a) => !isDatabase(a)) },
-			{ title: t('nav.databases'), list: apps.list.filter(isDatabase) }
+			{ title: t('nav.apps'), list: apps.list.filter((a) => !isDatabase(a) && !isGame(a)), game: false },
+			{ title: t('nav.databases'), list: apps.list.filter(isDatabase), game: false },
+			{ title: t('nav.games'), list: apps.list.filter(isGame), game: true }
 		].filter((g) => g.list.length > 0)
 	);
 </script>
@@ -34,14 +35,14 @@
 						{#each g.list as a (a.id)}
 							<li class="relative flex flex-col gap-4 rounded-2xl border border-line p-4 transition hover:bg-hover">
 								<div class="flex items-center gap-3">
-									<AppIcon source={a.source} database={isDatabase(a)} />
+									<AppIcon source={a.source} database={isDatabase(a)} game={g.game} />
 									<div class="min-w-0 flex-1">
-										<a href="/a/{a.id}" class="block truncate font-medium after:absolute after:inset-0">{a.id}</a>
+										<a href="/{g.game ? 'g' : 'a'}/{a.id}" class="block truncate font-medium after:absolute after:inset-0">{a.id}</a>
 										<p class="truncate text-sm text-muted">
-											{a.engine ? `${engineLabel[a.engine]} ${a.engine_version}` : a.source === 'github' ? a.repo : a.image}
+											{a.engine ? `${engineLabel[a.engine]} ${a.engine_version}` : g.game ? t('game.kind') : a.source === 'github' ? a.repo : a.image}
 										</p>
 									</div>
-									<StateDot state={shownState(a)} />
+									<StateDot state={g.game ? gameListState(a) : shownState(a)} />
 								</div>
 								<div class="flex items-center justify-between gap-2 text-sm text-muted">
 									{#if a.domain}
@@ -53,14 +54,14 @@
 											><span class="truncate">{a.domain}</span><ArrowUpRight size={14} class="shrink-0" /></a
 										>
 									{:else}<span></span>{/if}
-									{#if a.latest}
+									{#if a.latest && !g.game}
 										<span class="flex shrink-0 items-center gap-2">
 											<span class="font-mono text-xs">{shortVersion(a.latest.version)}</span>
 											<DeployState state={a.latest.state} />
 										</span>
 									{/if}
 								</div>
-								{#if a.latest}<p class="-mt-2 text-xs text-muted/80">{ago(a.latest.created_at)}</p>{/if}
+								{#if a.latest && !g.game}<p class="-mt-2 text-xs text-muted/80">{ago(a.latest.created_at)}</p>{/if}
 							</li>
 						{/each}
 					</ul>

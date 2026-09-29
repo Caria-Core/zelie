@@ -461,17 +461,61 @@ func (s *Server) gameOut(ctx context.Context, a store.App) (gameJSON, error) {
 	for _, p := range ports {
 		out.Ports = append(out.Ports, gamePortJSON{ID: p.ID, IP: p.IP, Port: p.Port, Default: p.Port == a.Port})
 	}
+	out.Variables = variablesOut(e, g.Variables)
+	return out, nil
+}
+
+// variablesOut lists the egg's variables with the values a server has, or
+// the defaults when values is nil.
+func variablesOut(e *egg.Egg, values map[string]string) []gameVariableJSON {
+	out := make([]gameVariableJSON, 0, len(e.Variables))
 	for _, v := range e.Variables {
 		name := v.Name
 		if name == "" {
 			name = v.Env
 		}
-		out.Variables = append(out.Variables, gameVariableJSON{
-			Env: v.Env, Name: name, Description: v.Description, Value: g.Variables[v.Env], Default: v.Default,
+		value, ok := values[v.Env]
+		if !ok {
+			value = v.Default
+		}
+		out = append(out, gameVariableJSON{
+			Env: v.Env, Name: name, Description: v.Description, Value: value, Default: v.Default,
 			Editable: v.UserEditable, Rules: v.Rules,
 		})
 	}
-	return out, nil
+	return out
+}
+
+type eggPreviewRequest struct {
+	Egg    string `json:"egg"`
+	EggURL string `json:"egg_url"`
+}
+
+type eggPreviewJSON struct {
+	Name        string             `json:"name"`
+	Description string             `json:"description,omitempty"`
+	Images      []gameImageJSON    `json:"images"`
+	Startup     string             `json:"startup"`
+	Variables   []gameVariableJSON `json:"variables"`
+}
+
+// eggPreview reads an egg without making a server, so the interface can ask
+// for its image and settings before creating one.
+func (s *Server) eggPreview(w http.ResponseWriter, r *http.Request) {
+	var req eggPreviewRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	e, _, _, err := s.loadEgg(r.Context(), gameRequest{Egg: req.Egg, EggURL: req.EggURL})
+	if err != nil {
+		s.failWith(w, "load egg", err)
+		return
+	}
+	out := eggPreviewJSON{Name: e.Name, Description: e.Description, Startup: e.Startup, Images: []gameImageJSON{}, Variables: variablesOut(e, nil)}
+	for _, img := range e.Images {
+		out.Images = append(out.Images, gameImageJSON{Label: img.Label, Ref: img.Ref})
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // gameFrom loads the game server in the path.

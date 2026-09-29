@@ -5,9 +5,9 @@ export type Deployment = {
 	id: number;
 	version: string;
 	image?: string;
-	state: 'queued' | 'building' | 'testing' | 'starting' | 'live' | 'failed' | 'replaced' | 'skipped';
+	state: 'queued' | 'building' | 'testing' | 'starting' | 'installing' | 'installed' | 'live' | 'failed' | 'replaced' | 'skipped';
 	error?: Msg;
-	cause: 'manual' | 'push' | 'restart' | 'rollback' | 'recover' | 'restore' | 'backup' | 'update' | 'upgrade';
+	cause: 'manual' | 'push' | 'restart' | 'rollback' | 'recover' | 'restore' | 'backup' | 'update' | 'upgrade' | 'install' | 'reinstall';
 	// The image still exists, so it can be rolled back to.
 	kept: boolean;
 	// The first line of the pushed commit's message.
@@ -18,6 +18,7 @@ export type Deployment = {
 
 export type App = {
 	id: string;
+	kind: 'app' | 'game';
 	source: 'github' | 'image';
 	image?: string;
 	repo?: string;
@@ -58,6 +59,15 @@ export type Engine = 'postgres' | 'mariadb' | 'redis';
 export const engineLabel: Record<Engine, string> = { postgres: 'PostgreSQL', mariadb: 'MariaDB', redis: 'Redis' };
 
 export const isDatabase = (a: App): boolean => !!a.engine;
+export const isGame = (a: App): boolean => a.kind === 'game';
+
+// A game server's state for the lists: its install counts, and a server that
+// was never started is stopped, not "not deployed".
+export function gameListState(a: App): string {
+	const d = a.latest;
+	if (d && (d.cause === 'install' || d.cause === 'reinstall') && (d.state === 'queued' || d.state === 'installing')) return 'installing';
+	return a.state === 'none' ? 'stopped' : shownState(a);
+}
 
 // A link between an app and a database. On an app's page db is the
 // database; on a database's page it is the app.

@@ -28,3 +28,7 @@
 	{t('source.needDatabase')}
 	<a href="/new/database" class="text-fg underline decoration-line underline-offset-4 hover:decoration-fg">{t('source.createDatabase')}</a>
 </p>
+<p class="-mt-4 text-sm text-muted">
+	{t('source.needGame')}
+	<a href="/new/game" class="text-fg underline decoration-line underline-offset-4 hover:decoration-fg">{t('source.createGame')}</a>
+</p>

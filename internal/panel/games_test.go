@@ -466,6 +466,20 @@ func TestEggCatalogAndLogin(t *testing.T) {
 	}
 }
 
+func TestEggPreview(t *testing.T) {
+	e, _ := newGameEnv(t)
+	code, out := e.b.do("POST", "/api/eggs/preview", map[string]any{"egg": "minecraft-paper"})
+	if code != http.StatusOK || out["name"] != "Test Game" || len(out["images"].([]any)) != 2 || len(out["variables"].([]any)) != 3 {
+		t.Errorf("preview: %d %v", code, out)
+	}
+	if code, out := e.b.do("POST", "/api/eggs/preview", map[string]any{}); code != http.StatusBadRequest || out["code"] != "game.egg_choice" {
+		t.Errorf("preview without an egg: %d %v", code, out)
+	}
+	if apps, _ := e.s.Store.Apps(context.Background()); len(apps) != 0 {
+		t.Errorf("preview made apps: %+v", apps)
+	}
+}
+
 func engineStatus(id, app, state string) engine.Status {
 	return engine.Status{ID: id, App: app, State: state}
 }

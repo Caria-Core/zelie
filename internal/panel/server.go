@@ -212,6 +212,7 @@ func (s *Server) Handler() http.Handler {
 	web.HandleFunc("POST /api/nodes/{node}/allocations", s.adminOnly(s.addAllocations))
 	web.HandleFunc("DELETE /api/nodes/{node}/allocations/{id}", s.adminOnly(s.deleteAllocation))
 	web.HandleFunc("GET /api/eggs/catalog", s.adminOnly(s.eggCatalog))
+	web.HandleFunc("POST /api/eggs/preview", s.adminOnly(s.eggPreview))
 	web.HandleFunc("POST /api/games", s.adminOnly(s.createGame))
 	web.HandleFunc("GET /api/games/{app}", s.adminOnly(s.getGame))
 	web.HandleFunc("POST /api/games/{app}/reinstall", s.adminOnly(s.reinstallGame))
