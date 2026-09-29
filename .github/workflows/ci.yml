@@ -50,12 +50,18 @@ jobs:
           path: internal/webui/build/ui
           if-no-files-found: error
 
-  # Installs the last release, gives it something to keep, and updates it to
-  # this commit the way the panel does. A release that would lose data or
-  # not come up on an existing server stops here.
+  # Installs a release, gives it something to keep, and updates it to this
+  # commit the way the panel does. A release that would lose data or not
+  # come up on an existing server stops here. From the last release, the
+  # usual step, and from the first that can update itself, the longest.
   upgrade:
     needs: [test, web]
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        from: [latest, v0.2.0]
+    name: upgrade from ${{ matrix.from }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -65,22 +71,31 @@ jobs:
         with:
           name: web
           path: internal/webui/build/ui
-      - name: Install the last release
+      - name: Install the release
+        env:
+          FROM: ${{ matrix.from }}
         run: |
           # Behind a tunnel the installer wants a connector running; a
           # stand-in does, since nothing here comes from outside.
           printf '[Service]\nExecStart=/bin/sleep infinity\n' | sudo tee /etc/systemd/system/cloudflared.service
           sudo systemctl daemon-reload
           sudo systemctl start cloudflared
-          curl -fsSL "https://github.com/$GITHUB_REPOSITORY/releases/latest/download/install.sh" |
-            sudo sh -s -- --mode tunnel --host panel.upgrade.test
+          if [ "$FROM" = latest ]; then
+            curl -fsSL "https://github.com/$GITHUB_REPOSITORY/releases/latest/download/install.sh" |
+              sudo sh -s -- --mode tunnel --host panel.upgrade.test
+          else
+            curl -fsSL "https://github.com/$GITHUB_REPOSITORY/releases/download/$FROM/install.sh" |
+              sudo ZELIE_VERSION="$FROM" sh -s -- --mode tunnel --host panel.upgrade.test
+          fi
       - name: Build this commit
         env:
           VERSION: ${{ inputs.version }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           old=$(zelie version | awk '{print $2}')
-          # Outside a release, the version after the installed one.
-          new=${VERSION:-${old%.*}.$((${old##*.} + 1))}
+          # Outside a release, a version after the latest one.
+          latest=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName -q .tagName)
+          new=${VERSION:-${latest%.*}.$((${latest##*.} + 1))}
           echo "OLD=$old" >> "$GITHUB_ENV"
           echo "NEW=$new" >> "$GITHUB_ENV"
           CGO_ENABLED=0 go build -trimpath -ldflags "-X github.com/Caria-Core/zelie/internal/version.Version=$new" -o zelie-new ./cmd/zelie
