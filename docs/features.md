@@ -94,10 +94,12 @@ supports run here too.
   repositories at a commit each Zelie release names. Any other egg can be imported by its
   link, in either the Pterodactyl or the Pelican format.
 - **Creating one.** Pick the game, then memory, CPU, disk and the image, such as the Java
-  version, then ports. The egg's install script runs once in its own container. For
+  version, then ports. Memory, CPU and disk can be changed later on the Settings tab. The egg's install script runs once in its own container. For
   Minecraft, the panel asks you to accept Mojang's EULA first.
 - **Ports.** Game servers take their ports from a pool you set up once, on one IP or
-  several. Zelie forwards them to the container with nftables, allows them in ufw when it
+  several. Each port has its use, such as the game, query, RCON or Rust+ port, and you
+  choose which port of the pool each one gets, when you create the server and later on
+  the Network tab. Zelie forwards them to the container with nftables, allows them in ufw when it
   is on, and closes them when the server is deleted. Players connect straight to the
   server; game traffic never goes through a tunnel.
 - **Console.** Live output with colours, the last 500 lines on opening, and a command
@@ -106,8 +108,9 @@ supports run here too.
 - **Files.** A file manager with an editor, upload by dragging, download, rename and
   move. It packs files into a `.tar.gz` and unpacks `.zip` and `.tar` archives. The same
   files are reachable over SFTP.
-- **Startup.** The egg's variables and the image, checked against the egg's rules, used
-  on the next start.
+- **Startup.** The startup command, the image and the egg's variables, checked against
+  the egg's rules and used on the next start. Some eggs lock variables; the lock holds
+  for users who are not administrators.
 - **Schedules.** Cron times, or ready-made ones, each running a list of tasks in order: a
   console command, a power action or a backup, with a wait before each. A schedule can
   skip its run when the server is stopped.
@@ -116,7 +119,8 @@ supports run here too.
 - **Steam updates.** For Steam games, Zelie asks Steam once an hour which build is the
   latest and shows when the server is behind. It can update by itself when nobody is
   playing. A reinstall or an update takes a backup first.
-- **Crashes** are handled as for apps.
+- **Crashes** are handled as for apps. The header shows the server's limits, and its
+  memory and CPU use while it runs.
 
 Minecraft runs end to end in Zelie's tests on every change, including a console command
 and a player's ping. Rust and the Steam update check have run against stand-ins only.
