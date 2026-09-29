@@ -31,13 +31,13 @@ var Catalog = []Entry{
 		ID: "minecraft-paper", Name: "Paper", Game: "Minecraft",
 		Repo:   "pelican-eggs/minecraft",
 		Commit: "75bf05db3c6c305e0fa6eef1d38c7e7176121de9",
-		Path:   "java/paper/pterodactyl-egg-paper.json",
+		Path:   "java/paper/egg-paper.yaml",
 	},
 	{
 		ID: "rust", Name: "Rust", Game: "Rust",
 		Repo:   "pelican-eggs/games-steamcmd",
 		Commit: "e17e2c3db36aaf1ddecbc227803dd6cdbb0e6b1f",
-		Path:   "rust/vanilla/egg-pterodactyl-rust.json",
+		Path:   "rust/vanilla/egg-rust.yaml",
 	},
 	{
 		ID: "palworld", Name: "Palworld", Game: "Palworld",
