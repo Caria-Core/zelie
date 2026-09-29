@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"os"
 	"os/user"
@@ -112,5 +113,41 @@ func TestSFTPUserMayNotUseTheSocketRoutes(t *testing.T) {
 	}
 	if _, err := os.Stat(sock.DropIn); err == nil || len(*ran) != 0 {
 		t.Errorf("a refused request changed something: %v", *ran)
+	}
+}
+
+func TestSFTPPortGoesBackWhenTheNewOneWillNotOpen(t *testing.T) {
+	s, sock, ran := newSFTPSocket(t)
+	panel := &peer.Peer{UID: 999}
+	if code := request(t, s, panel, "PUT", "/v1/sftp/port", `{"port":2300}`).Code; code != http.StatusNoContent {
+		t.Fatalf("set: %d", code)
+	}
+	// systemd cannot bind 2400, as when another program has it.
+	run := sock.Run
+	sock.Run = func(ctx context.Context, name string, args ...string) (string, error) {
+		if b, _ := os.ReadFile(sock.DropIn); len(args) > 0 && args[0] == "restart" && strings.Contains(string(b), "2400") {
+			*ran = append(*ran, "systemctl restart (fails)")
+			return "Job failed", errors.New("exit status 1")
+		}
+		return run(ctx, name, args...)
+	}
+	*ran = nil
+	if code := request(t, s, panel, "PUT", "/v1/sftp/port", `{"port":2400}`).Code; code != http.StatusInternalServerError {
+		t.Errorf("a port that will not open: %d", code)
+	}
+	if b, _ := os.ReadFile(sock.DropIn); string(b) != "[Socket]\nListenStream=\nListenStream=2300\n" {
+		t.Errorf("the drop-in after going back:\n%s", b)
+	}
+	if last := (*ran)[len(*ran)-1]; last != "systemctl restart zelie-sftp.socket" {
+		t.Errorf("the socket was not started on the old port: %v", *ran)
+	}
+
+	// With no drop-in before, going back removes it.
+	os.Remove(sock.DropIn)
+	if code := request(t, s, panel, "PUT", "/v1/sftp/port", `{"port":2400}`).Code; code != http.StatusInternalServerError {
+		t.Errorf("a port that will not open, from the default: %d", code)
+	}
+	if _, err := os.Stat(sock.DropIn); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the drop-in is still there: %v", err)
 	}
 }

@@ -265,7 +265,7 @@ export default {
 	'msg.sftp.bad_port': 'Give a port from 1024 to 65535.',
 	'msg.sftp.bad_volumes': 'That is not a list of volume names.',
 	'msg.sftp.denied': 'The login was refused.',
-	'msg.sftp.port_failed': 'The SFTP port could not be changed. Look at the core\'s log.',
+	'msg.sftp.port_failed': 'Port {port} could not be opened; another program may be using it. SFTP stays on port {old}.',
 	'msg.sftp.port_taken': 'Port {port} is in the pool of game server ports. Choose another.',
 	'msg.sftp.wait': 'Too many wrong passwords. Try again later.',
 	'msg.sshkey.exists': 'That key is already added.',

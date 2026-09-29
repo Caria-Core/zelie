@@ -52,7 +52,7 @@ var (
 	errSFTPPort      = msg.Define(http.StatusBadRequest, "sftp.bad_port", "Give a port from 1024 to 65535.")
 	errSFTPPortTaken = msg.Define(http.StatusConflict, "sftp.port_taken", "Port {port} is in the pool of game server ports. Choose another.")
 	errSFTPDenied    = msg.Define(http.StatusForbidden, "sftp.denied", "The login was refused.")
-	errSFTPPortFail  = msg.Define(http.StatusBadGateway, "sftp.port_failed", "The SFTP port could not be changed. Look at the core's log.")
+	errSFTPPortFail  = msg.Define(http.StatusBadGateway, "sftp.port_failed", "Port {port} could not be opened; another program may be using it. SFTP stays on port {old}.")
 	errSFTPWait      = msg.Define(http.StatusTooManyRequests, "sftp.wait", "Too many wrong passwords. Try again later.")
 )
 
@@ -254,13 +254,20 @@ func (s *Server) setSFTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if err := s.Store.SetSFTPPort(ctx, store.ThisNode, req.Port); err != nil {
-		s.fail(w, "set sftp port", err)
+	old, err := s.Store.SFTPPort(ctx, store.ThisNode)
+	if err != nil {
+		s.fail(w, "read sftp port", err)
 		return
 	}
+	// The core goes back to the old port when the new one will not open, so
+	// the stored port follows it.
 	if err := s.Core.SetSFTPPort(ctx, req.Port); err != nil {
 		s.Log.Error("set the sftp port in the core", "port", req.Port, "err", err)
-		writeError(w, errSFTPPortFail.Err())
+		writeError(w, errSFTPPortFail.Err("port", req.Port, "old", old))
+		return
+	}
+	if err := s.Store.SetSFTPPort(ctx, store.ThisNode, req.Port); err != nil {
+		s.fail(w, "set sftp port", err)
 		return
 	}
 	s.Log.Info("sftp port set", "port", req.Port, "user", loginFrom(ctx).account.ID)

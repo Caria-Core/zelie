@@ -54,22 +54,45 @@ type sftpPortRequest struct {
 // SetPort makes the socket listen on port. The drop-in first clears the
 // port the unit names, or systemd would listen on both. Nothing happens if
 // the file already says so, so a panel that repeats itself at every start
-// does not drop a connection.
+// does not drop a connection. If the socket will not start on the new port,
+// most likely because another program has it, the old port is put back so
+// SFTP keeps working where it was.
 func (c *SFTPSocket) SetPort(ctx context.Context, port int) error {
 	want := fmt.Sprintf("[Socket]\nListenStream=\nListenStream=%d\n", port)
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if have, err := os.ReadFile(c.DropIn); err == nil && string(have) == want {
+	old, err := os.ReadFile(c.DropIn)
+	switch {
+	case err == nil && string(old) == want:
 		return nil
-	}
-	if err := os.MkdirAll(filepath.Dir(c.DropIn), 0o755); err != nil {
+	case err != nil && !errors.Is(err, os.ErrNotExist):
 		return err
 	}
-	tmp := c.DropIn + ".tmp"
-	if err := os.WriteFile(tmp, []byte(want), 0o644); err != nil {
+	had := err == nil
+	if err := c.apply(ctx, []byte(want), true); err != nil {
+		if rerr := c.apply(context.WithoutCancel(ctx), old, had); rerr != nil {
+			return fmt.Errorf("%w; putting the old port back: %v", err, rerr)
+		}
 		return err
 	}
-	if err := os.Rename(tmp, c.DropIn); err != nil {
+	return nil
+}
+
+// apply writes the drop-in, or removes it when there should be none, and
+// restarts the socket on it.
+func (c *SFTPSocket) apply(ctx context.Context, content []byte, keep bool) error {
+	if keep {
+		if err := os.MkdirAll(filepath.Dir(c.DropIn), 0o755); err != nil {
+			return err
+		}
+		tmp := c.DropIn + ".tmp"
+		if err := os.WriteFile(tmp, content, 0o644); err != nil {
+			return err
+		}
+		if err := os.Rename(tmp, c.DropIn); err != nil {
+			return err
+		}
+	} else if err := os.Remove(c.DropIn); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
 	if out, err := c.Run(ctx, "systemctl", "daemon-reload"); err != nil {

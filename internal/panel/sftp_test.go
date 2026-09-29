@@ -362,11 +362,15 @@ func TestSFTPPortAndHostKey(t *testing.T) {
 	if code, out := e.b.do("PUT", "/api/sftp", map[string]int{"port": 2301}); code != http.StatusBadGateway || out["code"] != "sftp.port_failed" {
 		t.Errorf("when the core cannot change the port: %d %v", code, out)
 	}
+	// The core stayed on the old port, and so does the database.
+	if _, out := e.b.do("GET", "/api/sftp", nil); out["port"] != 2300.0 {
+		t.Errorf("after a failed change the port is %v", out["port"])
+	}
 	e.core.sftpPortErr = nil
 	e.core.sftpPort = 0
 	e.s.syncSFTPPort(context.Background())
-	if e.core.sftpPort != 2301 {
-		t.Errorf("after a sync the core has port %d, the database holds 2301", e.core.sftpPort)
+	if e.core.sftpPort != 2300 {
+		t.Errorf("after a sync the core has port %d, the database holds 2300", e.core.sftpPort)
 	}
 }
 
