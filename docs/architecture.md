@@ -144,6 +144,17 @@ Zelie reads Pterodactyl and Pelican eggs, so existing game definitions work. The
 streams over a WebSocket authorised with a short-lived signed token. Files are available
 over SFTP and in the panel, locked to the server's own volume.
 
+The panel's file manager does its work in the core, which opens the server's volume as an
+`os.Root`. Every path goes through it, so `..`, an absolute path or a symbolic link that a
+player or an installer left in the volume cannot lead out of it, even if the link is swapped
+while a request runs. The panel is unprivileged and sends only typed requests: list, read or
+save a text file, make a folder, rename, delete, upload, download, compress and extract.
+Files are replaced whole through a temporary file, so a running game never reads half a
+file, and every file written belongs to the user the game runs as. Archives are unpacked
+into one folder and stopped at the first entry that would leave it, a link that points out
+of it, a device file, or a size or entry count over the limit. Unlike preparing the files
+for a start, this works while the server runs.
+
 Players connect straight to the game server, not through the proxy. The administrator
 gives Zelie a pool of ports, as in Pterodactyl and Pelican, and each server takes some of
 them. Zelie suggests a range that leaves out ports other software on the machine already

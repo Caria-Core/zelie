@@ -21,6 +21,8 @@ export type Game = {
 	image: string;
 	images: { label: string; ref: string }[];
 	startup: string;
+	// The startup command with the saved values filled in.
+	startup_preview: string;
 	memory_mb: number;
 	cpus: number;
 	disk_mb: number;
@@ -72,6 +74,14 @@ export const eulaLink = 'https://aka.ms/MinecraftEULA';
 // Records the acceptance of the game's EULA, which is what lets it start.
 export async function acceptEula(id: string): Promise<void> {
 	await api('POST', `/games/${encodeURIComponent(id)}/eula`);
+}
+
+// Saves the image and the editable variables the server starts with next.
+// Only the variables given change.
+export async function saveSettings(id: string, settings: { image?: string; variables: Record<string, string> }): Promise<Game> {
+	const out = await api<Game>('PUT', `/games/${encodeURIComponent(id)}/variables`, settings);
+	game.info = out;
+	return out;
 }
 
 export async function power(id: string, action: 'start' | 'stop' | 'restart' | 'kill'): Promise<void> {

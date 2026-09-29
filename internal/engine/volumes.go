@@ -225,9 +225,10 @@ func (e *Engine) OpenVolume(ctx context.Context, name string) (*os.Root, error) 
 	return root, err
 }
 
-// ReadVolume opens a volume to copy its files while its containers may
-// still run, for a backup that does not stop the app. The core only reads
-// through it.
+// ReadVolume opens a volume while its containers may still run, for a backup
+// that does not stop the app and for the file manager. Unlike OpenVolume it
+// does not look at the containers, so whoever uses it must be fine with files
+// that change underneath.
 func (e *Engine) ReadVolume(name string) (*os.Root, error) {
 	if !validID.MatchString(name) {
 		return nil, fmt.Errorf("invalid volume name %q", name)

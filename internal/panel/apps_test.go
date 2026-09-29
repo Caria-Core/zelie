@@ -88,6 +88,7 @@ type appCore struct {
 	overlapping bool                            // two containers had the same volume running
 
 	bk  coreBackups
+	fs  coreFiles
 	off coreOffsite
 	// Containers another request removes first: removing them again finds
 	// nothing.

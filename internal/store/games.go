@@ -136,6 +136,17 @@ func (s *Store) AcceptEULA(ctx context.Context, appID string, at time.Time) erro
 	return oneRow(res, err)
 }
 
+// SetGameSettings records the image and the variable values a game server
+// starts with from now on.
+func (s *Store) SetGameSettings(ctx context.Context, appID, image string, variables map[string]string) error {
+	vars, err := json.Marshal(variables)
+	if err != nil {
+		return err
+	}
+	res, err := s.db.ExecContext(ctx, "UPDATE game_servers SET image = ?, variables = ? WHERE app_id = ?", image, string(vars), appID)
+	return oneRow(res, err)
+}
+
 // GameServer returns the game server data of an app, or ErrNotFound.
 func (s *Store) GameServer(ctx context.Context, appID string) (GameServer, error) {
 	return scanGame(s.db.QueryRowContext(ctx, "SELECT "+gameColumns+" FROM game_servers WHERE app_id = ?", appID))

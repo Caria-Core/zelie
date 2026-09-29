@@ -167,10 +167,15 @@ func pickImage(e *egg.Egg, want string) (string, *msg.Error) {
 	return "", errEggImage.Err("image", truncate(want, 128))
 }
 
-// gameVariables merges the request's values into the egg's defaults and
-// checks every one against its rules. Only variables the egg lets users
-// edit may be set. Its error is a *msg.Error.
-func gameVariables(e *egg.Egg, given map[string]string) (map[string]string, *msg.Error) {
+// maxVariableBytes keeps a variable's value to something a container's
+// environment takes.
+const maxVariableBytes = 8 << 10
+
+// gameVariables merges the request's values into the server's current ones,
+// or into the egg's defaults where base has none, and checks each value that
+// is new against its rules. Only variables the egg lets users edit may be
+// set. Its error is a *msg.Error.
+func gameVariables(e *egg.Egg, base, given map[string]string) (map[string]string, *msg.Error) {
 	known := make(map[string]egg.Variable, len(e.Variables))
 	for _, v := range e.Variables {
 		known[v.Env] = v
@@ -186,9 +191,20 @@ func gameVariables(e *egg.Egg, given map[string]string) (map[string]string, *msg
 	}
 	out := make(map[string]string, len(e.Variables))
 	for _, v := range e.Variables {
-		value, ok := given[v.Env]
-		if !ok {
+		value, isNew := given[v.Env]
+		if !isNew {
+			var ok bool
+			if value, ok = base[v.Env]; ok {
+				out[v.Env] = value
+				continue
+			}
 			value = v.Default
+		}
+		switch {
+		case strings.ContainsRune(value, 0):
+			return nil, errBadVariable.Err("name", v.Env, "detail", v.Env+" must not hold a null character.")
+		case len(value) > maxVariableBytes:
+			return nil, errBadVariable.Err("name", v.Env, "detail", fmt.Sprintf("%s must be at most %d KiB.", v.Env, maxVariableBytes>>10))
 		}
 		if err := v.Check(value); err != nil {
 			return nil, errBadVariable.Err("name", v.Env, "detail", err.Error())
@@ -254,7 +270,7 @@ func (s *Server) createGame(w http.ResponseWriter, r *http.Request) {
 		writeError(w, bad)
 		return
 	}
-	vars, bad := gameVariables(e, req.Variables)
+	vars, bad := gameVariables(e, nil, req.Variables)
 	if bad != nil {
 		writeError(w, bad)
 		return
@@ -412,18 +428,21 @@ type gameImageJSON struct {
 }
 
 type gameJSON struct {
-	ID          string             `json:"id"`
-	Egg         string             `json:"egg"`
-	Description string             `json:"description,omitempty"`
-	Image       string             `json:"image"`
-	Images      []gameImageJSON    `json:"images"`
-	Startup     string             `json:"startup"`
-	MemoryMB    int64              `json:"memory_mb"`
-	CPUs        float64            `json:"cpus"`
-	DiskMB      int64              `json:"disk_mb"`
-	Ports       []gamePortJSON     `json:"ports"`
-	Variables   []gameVariableJSON `json:"variables"`
-	Features    []string           `json:"features"`
+	ID          string          `json:"id"`
+	Egg         string          `json:"egg"`
+	Description string          `json:"description,omitempty"`
+	Image       string          `json:"image"`
+	Images      []gameImageJSON `json:"images"`
+	Startup     string          `json:"startup"`
+	// StartupPreview is the startup command with the saved values filled in,
+	// as the next start will run it.
+	StartupPreview string             `json:"startup_preview"`
+	MemoryMB       int64              `json:"memory_mb"`
+	CPUs           float64            `json:"cpus"`
+	DiskMB         int64              `json:"disk_mb"`
+	Ports          []gamePortJSON     `json:"ports"`
+	Variables      []gameVariableJSON `json:"variables"`
+	Features       []string           `json:"features"`
 	// EULANeeded is set when the egg asks for a EULA that has not been
 	// accepted, so the server will not start.
 	EULANeeded bool            `json:"eula_needed,omitempty"`
@@ -494,6 +513,9 @@ func (s *Server) gameOut(ctx context.Context, a store.App) (gameJSON, error) {
 		out.Ports = append(out.Ports, gamePortJSON{ID: p.ID, IP: p.IP, Port: p.Port, Address: host, Default: p.Port == a.Port})
 	}
 	out.Variables = variablesOut(e, g.Variables)
+	// Without the node, only the placeholder for its name stays as written.
+	this, _ := s.Store.Node(ctx, store.ThisNode)
+	out.StartupPreview = egg.Expand(g.Startup, gameVars(a, g, this), a.Port)
 	return out, nil
 }
 
@@ -582,6 +604,83 @@ func (s *Server) getGame(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out, err := s.gameOut(r.Context(), a)
+	if err != nil {
+		s.fail(w, "describe game server", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// managesGame guards what changes a game server's files and startup
+// settings. For now that is an administrator's work; once servers have their
+// own users, this is where their permissions are checked.
+func (s *Server) managesGame(next http.HandlerFunc) http.HandlerFunc {
+	return s.adminOnly(next)
+}
+
+type gameSettingsRequest struct {
+	// Variables holds the values to change; the others stay as they are.
+	Variables map[string]string `json:"variables"`
+	// Image is one of the egg's images; empty keeps the current one.
+	Image string `json:"image"`
+}
+
+// updateGameSettings changes the image and the editable variables a server
+// starts with. A running server keeps what it started with until it is
+// started again.
+func (s *Server) updateGameSettings(w http.ResponseWriter, r *http.Request) {
+	a, g, ok := s.gameFrom(w, r)
+	if !ok {
+		return
+	}
+	var req gameSettingsRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	ctx := r.Context()
+	if g.InstallState == store.InstallRunning {
+		writeError(w, errInstalling.Err())
+		return
+	}
+	_, e, _, err := s.gameParts(ctx, a.ID)
+	if err != nil {
+		s.fail(w, "load egg", err)
+		return
+	}
+	image := g.Image
+	if req.Image != "" {
+		var bad *msg.Error
+		if image, bad = pickImage(e, req.Image); bad != nil {
+			writeError(w, bad)
+			return
+		}
+	}
+	vars, bad := gameVariables(e, g.Variables, req.Variables)
+	if bad != nil {
+		writeError(w, bad)
+		return
+	}
+	if err := s.Store.SetGameSettings(ctx, a.ID, image, vars); err != nil {
+		s.fail(w, "save game settings", err)
+		return
+	}
+	// The server starts from the app's image, which is pinned to a build
+	// once it has run. A new choice starts over from the tag.
+	if image != g.Image {
+		a.Image = image
+		if err := s.Store.UpdateApp(ctx, a); err != nil {
+			s.fail(w, "save game image", err)
+			return
+		}
+	}
+	var changed []string
+	for _, name := range slices.Sorted(maps.Keys(req.Variables)) {
+		if vars[name] != g.Variables[name] {
+			changed = append(changed, name)
+		}
+	}
+	s.Log.Info("game settings changed", "server", a.ID, "user", loginFrom(ctx).account.ID, "image", image, "variables", changed)
+	out, err := s.gameOut(ctx, a)
 	if err != nil {
 		s.fail(w, "describe game server", err)
 		return

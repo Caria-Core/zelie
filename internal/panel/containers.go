@@ -26,6 +26,16 @@ type Core interface {
 	RunApp(ctx context.Context, s engine.Spec, sealedEnv []string, linked ...core.LinkedVar) (string, error)
 	RunInstall(ctx context.Context, req core.InstallRequest) (string, error)
 	PrepareVolume(ctx context.Context, name string, req core.PrepareRequest) (core.PrepareResponse, error)
+	ListFiles(ctx context.Context, ref core.FileRef, dir string) (core.FileList, error)
+	ReadFile(ctx context.Context, ref core.FileRef, path string) ([]byte, error)
+	WriteFile(ctx context.Context, ref core.FileRef, path string, content []byte, create bool) error
+	MakeFolder(ctx context.Context, ref core.FileRef, path string) error
+	RenameFile(ctx context.Context, ref core.FileRef, from, to string) error
+	DeleteFiles(ctx context.Context, ref core.FileRef, paths []string) error
+	UploadFile(ctx context.Context, ref core.FileRef, path string, size int64, body io.Reader) error
+	DownloadFile(ctx context.Context, ref core.FileRef, path string) (io.ReadCloser, int64, error)
+	CompressFiles(ctx context.Context, ref core.FileRef, dir string, paths []string, name string) (string, error)
+	ExtractFile(ctx context.Context, ref core.FileRef, path, dir string) (core.ExtractResult, error)
 	WriteStdin(ctx context.Context, id string, data []byte) error
 	Signal(ctx context.Context, id, signal string) error
 	Pin(ctx context.Context, image string) (string, error)

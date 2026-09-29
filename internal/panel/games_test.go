@@ -3,7 +3,9 @@ package panel
 import (
 	"context"
 	"errors"
+	"maps"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -487,4 +489,121 @@ func TestEggPreview(t *testing.T) {
 
 func engineStatus(id, app, state string) engine.Status {
 	return engine.Status{ID: id, App: app, State: state}
+}
+
+func TestUpdateGameSettings(t *testing.T) {
+	e, _ := newGameEnv(t)
+	if code, out := e.b.do("POST", "/api/games", map[string]any{"name": "survival", "egg": "minecraft-paper", "variables": map[string]string{"VERSION": "1.20.4"}}); code != http.StatusCreated {
+		t.Fatalf("create: %d %v", code, out)
+	}
+	e.install(t, "survival")
+	byEnv := func(out map[string]any) map[string]string {
+		m := map[string]string{}
+		for _, v := range out["variables"].([]any) {
+			v := v.(map[string]any)
+			m[v["env"].(string)] = v["value"].(string)
+		}
+		return m
+	}
+
+	code, out := e.b.do("GET", "/api/games/survival", nil)
+	if code != http.StatusOK || out["startup_preview"] != "java -Xmx1024M -jar server.jar --port 25565" {
+		t.Fatalf("game: %d %v", code, out)
+	}
+
+	// Only what is sent changes.
+	code, out = e.b.do("PUT", "/api/games/survival/variables", map[string]any{"variables": map[string]string{"SLOTS": "40"}})
+	if code != http.StatusOK {
+		t.Fatalf("update: %d %v", code, out)
+	}
+	if got := byEnv(out); got["SLOTS"] != "40" || got["VERSION"] != "1.20.4" || got["BUILD"] != "stable" {
+		t.Errorf("variables %v", got)
+	}
+	g, _ := e.s.Store.GameServer(context.Background(), "survival")
+	if g.Variables["SLOTS"] != "40" || g.Variables["VERSION"] != "1.20.4" {
+		t.Errorf("stored %v", g.Variables)
+	}
+
+	// A change of the image is the egg's other one, and starts over from
+	// its tag.
+	a, _ := e.s.Store.App(context.Background(), "survival")
+	a.Image = "ghcr.io/example/java:21@sha256:" + strings.Repeat("a", 64)
+	e.s.Store.UpdateApp(context.Background(), a)
+	code, out = e.b.do("PUT", "/api/games/survival/variables", map[string]any{"image": "Java 17"})
+	if code != http.StatusOK || out["image"] != "ghcr.io/example/java:17" {
+		t.Fatalf("image: %d %v", code, out)
+	}
+	a, _ = e.s.Store.App(context.Background(), "survival")
+	if a.Image != "ghcr.io/example/java:17" {
+		t.Errorf("the app runs %q", a.Image)
+	}
+	// The same image again keeps what the server is pinned to.
+	a.Image = "ghcr.io/example/java:17@sha256:" + strings.Repeat("b", 64)
+	e.s.Store.UpdateApp(context.Background(), a)
+	if code, _ = e.b.do("PUT", "/api/games/survival/variables", map[string]any{"image": "ghcr.io/example/java:17", "variables": map[string]string{"SLOTS": "41"}}); code != http.StatusOK {
+		t.Fatal("same image")
+	}
+	if a2, _ := e.s.Store.App(context.Background(), "survival"); a2.Image != a.Image {
+		t.Errorf("the pin was dropped: %q", a2.Image)
+	}
+
+	for name, c := range map[string]struct {
+		body map[string]any
+		code string
+	}{
+		"locked":            {map[string]any{"variables": map[string]string{"BUILD": "nightly"}}, "game.variable_locked"},
+		"unknown":           {map[string]any{"variables": map[string]string{"NOPE": "1"}}, "game.unknown_variable"},
+		"not a number":      {map[string]any{"variables": map[string]string{"SLOTS": "many"}}, "game.bad_variable"},
+		"required is empty": {map[string]any{"variables": map[string]string{"VERSION": ""}}, "game.bad_variable"},
+		"too long":          {map[string]any{"variables": map[string]string{"VERSION": strings.Repeat("1", 21)}}, "game.bad_variable"},
+		"null byte":         {map[string]any{"variables": map[string]string{"VERSION": "1\x00"}}, "game.bad_variable"},
+		"huge":              {map[string]any{"variables": map[string]string{"VERSION": strings.Repeat("1", 9<<10)}}, "game.bad_variable"},
+		"other image":       {map[string]any{"image": "alpine"}, "game.bad_image"},
+		"unknown field":     {map[string]any{"startup": "rm -rf /"}, "server.bad_request"},
+	} {
+		before, _ := e.s.Store.GameServer(context.Background(), "survival")
+		if code, out := e.b.do("PUT", "/api/games/survival/variables", c.body); code != http.StatusBadRequest || out["code"] != c.code {
+			t.Errorf("%s: %d %v", name, code, out)
+		}
+		if after, _ := e.s.Store.GameServer(context.Background(), "survival"); !maps.Equal(before.Variables, after.Variables) || before.Image != after.Image {
+			t.Errorf("%s changed the server: %+v", name, after)
+		}
+	}
+	// One bad value keeps the good ones from being saved.
+	before, _ := e.s.Store.GameServer(context.Background(), "survival")
+	e.b.do("PUT", "/api/games/survival/variables", map[string]any{"variables": map[string]string{"VERSION": "1.19", "SLOTS": "many"}})
+	if after, _ := e.s.Store.GameServer(context.Background(), "survival"); after.Variables["VERSION"] != before.Variables["VERSION"] {
+		t.Errorf("a partial change was saved: %v", after.Variables)
+	}
+
+	if code, out := e.b.do("PUT", "/api/games/nothing/variables", map[string]any{}); code != http.StatusNotFound || out["code"] != "game.not_found" {
+		t.Errorf("no server: %d %v", code, out)
+	}
+	// Not while the installer runs.
+	e.s.Store.SetInstall(context.Background(), "survival", store.InstallRunning, 0, e.s.now())
+	if code, out := e.b.do("PUT", "/api/games/survival/variables", map[string]any{"variables": map[string]string{"SLOTS": "10"}}); code != http.StatusConflict || out["code"] != "game.installing" {
+		t.Errorf("while installing: %d %v", code, out)
+	}
+}
+
+// A change takes effect on the next start, and shows in the command that
+// start runs.
+func TestChangedVariablesReachTheNextStart(t *testing.T) {
+	e, _ := newGameEnv(t)
+	e.b.do("POST", "/api/games", map[string]any{"name": "survival", "egg": "minecraft-paper"})
+	e.install(t, "survival")
+	if code, out := e.b.do("PUT", "/api/games/survival/variables", map[string]any{"variables": map[string]string{"SLOTS": "64", "VERSION": "1.19"}}); code != http.StatusOK {
+		t.Fatalf("update: %d %v", code, out)
+	}
+	if code, out := e.b.do("POST", "/api/games/survival/power", map[string]any{"action": "start"}); code != http.StatusAccepted {
+		t.Fatalf("start: %d %v", code, out)
+	}
+	e.settle(t, "survival")
+	var env []string
+	for _, spec := range e.core.games {
+		env = spec.Env
+	}
+	if !slices.Contains(env, "SLOTS=64") || !slices.Contains(env, "VERSION=1.19") {
+		t.Errorf("env %v", env)
+	}
 }
