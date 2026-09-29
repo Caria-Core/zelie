@@ -1,7 +1,8 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
-	import { api, type Me } from '$lib/api';
+	import { api, ApiError, type Me } from '$lib/api';
+	import { solvePow } from '$lib/pow';
 	import { messageOf } from '$lib/errors';
 	import { t } from '$lib/i18n';
 	import { passkeysAvailable, usePasskey } from '$lib/passkey';
@@ -18,6 +19,8 @@
 	let code = $state('');
 	let error = $state('');
 	let busy = $state(false);
+	// Set while the browser works on the panel's puzzle.
+	let checking = $state(false);
 	const showPasskey = $derived(!!me?.methods?.includes('passkey') && passkeysAvailable());
 
 	onMount(async () => {
@@ -48,7 +51,23 @@
 
 	const submitPassword = (e: SubmitEvent) => {
 		e.preventDefault();
-		run(async () => route(await api<Me>('POST', '/login', { email, password })));
+		run(async () => {
+			try {
+				route(await api<Me>('POST', '/login', { email, password }));
+			} catch (err) {
+				// After a few wrong passwords the panel wants a puzzle solved,
+				// then the same request again.
+				if (!(err instanceof ApiError && err.msg.code === 'login.pow')) throw err;
+				checking = true;
+				try {
+					const p = err.msg.params ?? {};
+					const pow = await solvePow(String(p.challenge), Number(p.bits));
+					route(await api<Me>('POST', '/login', { email, password, pow }));
+				} finally {
+					checking = false;
+				}
+			}
+		});
 	};
 
 	const submitCode = (e: SubmitEvent) => {
@@ -78,6 +97,7 @@
 		<Field label={t('common.email')} type="email" autocomplete="username" required bind:value={email} />
 		<Field label={t('common.password')} type="password" autocomplete="current-password" required bind:value={password} />
 		<ErrorText message={error} />
+		{#if checking}<p role="status" class="text-sm text-muted">{t('login.checking')}</p>{/if}
 		<Button type="submit" {busy} class="mt-2 self-start">{t('login.submit')}</Button>
 	</form>
 {:else if step === 'second' || step === 'recovery'}

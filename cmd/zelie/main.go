@@ -23,6 +23,7 @@ Commands:
   proxy            Run the web proxy (must not run as root)
   panel            Run the web panel (must not run as root)
   setup-link       Print a one-time link to create the first administrator
+  reset-login      Print a one-time link to set a new password when locked out
   engine install   Install or update Zelie's containerd and runc (needs root)
   debug            Send requests to the core by hand while developing
   version          Print the version and exit
@@ -61,6 +62,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runPanel(stderr)
 	case "setup-link":
 		return setupLink(stdout, stderr)
+	case "reset-login":
+		return resetLogin(args[1:], stdout, stderr)
 	case "debug":
 		return debug(args[1:], stdout, stderr)
 	case "help", "--help", "-h":

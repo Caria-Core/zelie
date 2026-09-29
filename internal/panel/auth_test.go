@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/hmac"
 	"crypto/sha1"
+	"crypto/sha256"
 	"encoding/base32"
 	"encoding/binary"
 	"encoding/json"
@@ -11,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -182,18 +184,25 @@ func TestSetupAndLogin(t *testing.T) {
 }
 
 func TestLoginLimits(t *testing.T) {
-	_, h, now := newAuthServer(t)
+	s, h, now := newAuthServer(t)
 	b := &browser{t: t, h: h, ip: "198.51.100.7"}
 	b.do("POST", "/api/setup", map[string]string{"token": setupToken(t, h), "email": "a@example.com", "password": "long enough pw"})
 	b.do("POST", "/api/logout", nil)
 
-	for range 10 {
+	// From many addresses, as a spread-out guesser would, so the puzzle
+	// one address gets after a few failures does not come first.
+	for i := range 10 {
+		b.ip = fmt.Sprintf("198.51.100.%d", 10+i)
 		b.do("POST", "/api/login", map[string]string{"email": "a@example.com", "password": "wrong password"})
+		*now = now.Add(time.Second)
 	}
-	// Blocked even with the right password, from any address.
+	// Blocked even with the right password, from any address, and after
+	// the panel restarts.
+	b.h = s.Handler()
 	b.ip = "203.0.113.5"
-	if code, _ := b.do("POST", "/api/login", map[string]string{"email": "a@example.com", "password": "long enough pw"}); code != http.StatusTooManyRequests {
-		t.Fatalf("after 10 failures: %d", code)
+	code, out := b.do("POST", "/api/login", map[string]string{"email": "a@example.com", "password": "long enough pw"})
+	if code != http.StatusTooManyRequests || out["code"] != "login.too_many" || out["params"].(map[string]any)["minutes"] != 15.0 {
+		t.Fatalf("after 10 failures: %d %v", code, out)
 	}
 	*now = now.Add(15 * time.Minute)
 	if code, _ := b.do("POST", "/api/login", map[string]string{"email": "a@example.com", "password": "long enough pw"}); code != http.StatusOK {
@@ -216,5 +225,63 @@ func TestSessionCookie(t *testing.T) {
 	c := b.cookie
 	if c == nil || !c.Secure || !c.HttpOnly || c.SameSite != http.SameSiteLaxMode || c.Path != "/" || c.Domain != "" {
 		t.Fatalf("cookie %+v", c)
+	}
+}
+
+// solvePow finds a nonce for a puzzle the way the browser does.
+func solvePow(t *testing.T, out map[string]any) map[string]string {
+	t.Helper()
+	p, _ := out["params"].(map[string]any)
+	challenge, _ := p["challenge"].(string)
+	bits, _ := p["bits"].(float64)
+	if challenge == "" || bits < powMinBits {
+		t.Fatalf("no puzzle in %v", out)
+	}
+	for n := 0; ; n++ {
+		nonce := strconv.Itoa(n)
+		if zeroBits(sha256.Sum256([]byte(challenge+":"+nonce))) >= int(bits) {
+			return map[string]string{"challenge": challenge, "nonce": nonce}
+		}
+	}
+}
+
+func TestLoginPuzzle(t *testing.T) {
+	_, h, _ := newAuthServer(t)
+	b := &browser{t: t, h: h, ip: "198.51.100.7"}
+	b.do("POST", "/api/setup", map[string]string{"token": setupToken(t, h), "email": "a@example.com", "password": "long enough pw"})
+	b.do("POST", "/api/logout", nil)
+	login := func(password string, pow any) (int, map[string]any) {
+		return b.do("POST", "/api/login", map[string]any{"email": "a@example.com", "password": password, "pow": pow})
+	}
+	for range powAfter {
+		if code, _ := login("wrong password", nil); code != http.StatusUnauthorized {
+			t.Fatalf("wrong password: %d", code)
+		}
+	}
+	// Now even the right password needs the puzzle solved first.
+	code, out := login("long enough pw", nil)
+	if code != http.StatusForbidden || out["code"] != "login.pow" {
+		t.Fatalf("without the puzzle: %d %v", code, out)
+	}
+	answer := solvePow(t, out)
+	if code, _ := login("long enough pw", map[string]string{"challenge": answer["challenge"], "nonce": answer["nonce"] + "1"}); code != http.StatusForbidden {
+		t.Errorf("a wrong answer: %d", code)
+	}
+	if code, out := login("long enough pw", answer); code != http.StatusOK {
+		t.Fatalf("with the puzzle: %d %v", code, out)
+	}
+	b.do("POST", "/api/logout", nil)
+	if code, _ := login("long enough pw", answer); code != http.StatusForbidden {
+		t.Errorf("the same answer twice: %d", code)
+	}
+	// A puzzle is for the address it was given to.
+	_, out = login("long enough pw", nil)
+	answer = solvePow(t, out)
+	b.ip = "203.0.113.5"
+	for range powAfter {
+		login("wrong password", nil)
+	}
+	if code, _ := login("long enough pw", answer); code != http.StatusForbidden {
+		t.Errorf("another address's answer: %d", code)
 	}
 }

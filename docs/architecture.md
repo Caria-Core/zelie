@@ -41,6 +41,14 @@ panel asks again, so a browser left open or a stolen cookie is not enough to tak
 account over. A password alone does not count, and the last second step on an account
 cannot be removed. Changing the password logs out every other browser.
 
+Wrong passwords and codes are counted in the database, per address and per account, so
+restarting the panel does not reset them. After a few failures from one address, each
+further try must come with a small proof of work the browser solves, about a second on a
+phone, which grows as the failures do; nothing is sent to a third party. An owner locked
+out for good runs `zelie reset-login` on the server: root can read everything anyway, so
+the link it prints may set a new password. It works once, for an hour, and removes the
+account's second steps, which it must set up again before doing anything else.
+
 ## Containers
 
 Every app and game server runs in its own container. Zelie talks to containerd directly

@@ -283,5 +283,24 @@ CREATE TABLE metrics (
 	server_errors INTEGER NOT NULL,
 	PRIMARY KEY (app_id, at)
 ) STRICT, WITHOUT ROWID;
+`, `
+-- Failed attempts at logging in, so the limits hold across restarts. kind
+-- is what is limited (an address, an account, second steps); key is a hash
+-- of which one, so addresses and mistyped emails are not kept as such.
+CREATE TABLE login_failures (
+	kind TEXT NOT NULL,
+	key  BLOB NOT NULL,
+	at   INTEGER NOT NULL
+) STRICT;
+CREATE INDEX login_failures_key ON login_failures (kind, key, at);
+`, `
+-- A link made on the server with zelie reset-login, for an owner locked out
+-- of the panel. Like the setup token, only its hash is kept.
+CREATE TABLE reset_token (
+	one        INTEGER PRIMARY KEY CHECK (one = 1),
+	user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+	hash       BLOB NOT NULL,
+	expires_at INTEGER NOT NULL
+) STRICT;
 `,
 }

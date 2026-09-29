@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/mail"
 	"strings"
@@ -21,7 +22,7 @@ import (
 const sealTOTP = "totp secret"
 
 var (
-	errTooMany     = msg.Define(http.StatusTooManyRequests, "login.too_many", "Too many attempts. Wait a few minutes and try again.")
+	errTooMany     = msg.Define(http.StatusTooManyRequests, "login.too_many", "Too many attempts. Try again in {minutes, plural, one {# minute} other {# minutes}}.")
 	errBadLogin    = msg.Define(http.StatusUnauthorized, "login.wrong", "Wrong email or password.")
 	errBadCode     = msg.Define(http.StatusUnauthorized, "login.bad_code", "That code did not work.")
 	errNoCeremony  = msg.Define(http.StatusBadRequest, "login.expired", "This step has expired. Start again.")
@@ -32,8 +33,9 @@ var (
 	errBadToken    = msg.Define(http.StatusForbidden, "setup.bad_token", "This setup link is not valid. Run zelie setup-link on the server for a new one.")
 )
 
-// guards holds the in-memory state of logging in. None of it needs to
-// survive a restart: at worst a half-finished login starts over.
+// guards holds the state of logging in. The limits are kept in the
+// database; what is pending is not, since at worst a half-finished login
+// starts over.
 type guards struct {
 	byIP      *failures
 	byAccount *failures
@@ -41,11 +43,11 @@ type guards struct {
 	pending   pending
 }
 
-func newGuards() *guards {
+func newGuards(st *store.Store, log *slog.Logger) *guards {
 	return &guards{
-		byIP:      newFailures(30, 15*time.Minute),
-		byAccount: newFailures(10, 15*time.Minute),
-		second:    newFailures(10, 15*time.Minute),
+		byIP:      newFailures(st, log, "ip", 30, 15*time.Minute),
+		byAccount: newFailures(st, log, "account", 10, 15*time.Minute),
+		second:    newFailures(st, log, "second", 10, 15*time.Minute),
 		pending:   pending{m: map[string]pendingItem{}},
 	}
 }
@@ -85,6 +87,11 @@ func (p *pending) take(session []byte, kind string, now time.Time) (any, bool) {
 	return it.value, true
 }
 
+// tooMany tells how long to wait, in whole minutes rounded up.
+func tooMany(wait time.Duration) *msg.Error {
+	return errTooMany.Err("minutes", int((wait+time.Minute-1)/time.Minute))
+}
+
 type credentials struct {
 	Email    string `json:"email"`
 	Password string `json:"password"`
@@ -99,8 +106,8 @@ func (s *Server) setup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now, ip := s.now(), clientIP(r)
-	if s.guards.byIP.Blocked(ip, now) {
-		writeError(w, errTooMany.Err())
+	if wait := s.guards.byIP.Wait(ip, now); wait > 0 {
+		writeError(w, tooMany(wait))
 		return
 	}
 	email, bad := checkEmail(req.Email)
@@ -136,14 +143,21 @@ func (s *Server) setup(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
-	var req credentials
+	var req struct {
+		credentials
+		Pow *powAnswer `json:"pow"`
+	}
 	if !decode(w, r, &req) {
 		return
 	}
 	now, ip := s.now(), clientIP(r)
 	account := strings.ToLower(req.Email)
-	if s.guards.byIP.Blocked(ip, now) || s.guards.byAccount.Blocked(account, now) {
-		writeError(w, errTooMany.Err())
+	if wait := max(s.guards.byIP.Wait(ip, now), s.guards.byAccount.Wait(account, now)); wait > 0 {
+		writeError(w, tooMany(wait))
+		return
+	}
+	if fails := s.guards.byIP.Count(ip, now); fails >= powAfter && !s.powSolved(req.Pow, ip, powBits(fails), now) {
+		writeError(w, s.newPow(ip, powBits(fails), now))
 		return
 	}
 	a, err := s.Store.AccountByEmail(r.Context(), req.Email)
@@ -233,9 +247,8 @@ func (s *Server) halfLogin(w http.ResponseWriter, r *http.Request) (login, bool)
 		writeError(w, errAlreadyDone.Err())
 		return l, false
 	}
-	key := fmt.Sprint(l.account.ID)
-	if s.guards.second.Blocked(key, s.now()) {
-		writeError(w, errTooMany.Err())
+	if wait := s.guards.second.Wait(fmt.Sprint(l.account.ID), s.now()); wait > 0 {
+		writeError(w, tooMany(wait))
 		return l, false
 	}
 	return l, true

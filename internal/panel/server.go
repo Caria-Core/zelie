@@ -64,6 +64,7 @@ type Server struct {
 	crashes crashes
 	samples samples
 	meter   meter
+	powUsed powUsed
 	sizes   volumeSizes
 	// Releases returns the latest release; tests replace GitHub.
 	Releases func(ctx context.Context) (Release, error)
@@ -106,15 +107,17 @@ func (s *Server) now() time.Time {
 func (s *Server) Handler() http.Handler {
 	local := http.NewServeMux()
 	local.HandleFunc("POST /local/setup-link", s.setupLink)
+	local.HandleFunc("POST /local/reset-link", s.resetLink)
 	local.HandleFunc("GET /local/version", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"version": version.Get().Version})
 	})
 
-	s.guards = newGuards()
+	s.guards = newGuards(s.Store, s.Log)
 	web := http.NewServeMux()
 	web.HandleFunc("GET /api/setup", s.setupStatus)
 	web.HandleFunc("POST /api/setup", s.setup)
 	web.HandleFunc("POST /api/login", s.login)
+	web.HandleFunc("POST /api/reset", s.resetLogin)
 	web.HandleFunc("POST /api/login/totp", s.loginTOTP)
 	web.HandleFunc("POST /api/login/recovery", s.loginRecovery)
 	web.HandleFunc("POST /api/login/passkey/options", s.loginPasskeyOptions)

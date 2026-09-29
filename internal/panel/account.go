@@ -131,8 +131,8 @@ var (
 
 // secondStepAllowed applies the same limit on wrong codes as logging in.
 func (s *Server) secondStepAllowed(w http.ResponseWriter, l login) bool {
-	if s.guards.second.Blocked(fmt.Sprint(l.account.ID), s.now()) {
-		writeError(w, errTooMany.Err())
+	if wait := s.guards.second.Wait(fmt.Sprint(l.account.ID), s.now()); wait > 0 {
+		writeError(w, tooMany(wait))
 		return false
 	}
 	return true
