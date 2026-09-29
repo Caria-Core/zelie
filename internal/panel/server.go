@@ -63,6 +63,7 @@ type Server struct {
 	gh      ghCache
 	crashes crashes
 	samples samples
+	meter   meter
 	sizes   volumeSizes
 	// Releases returns the latest release; tests replace GitHub.
 	Releases func(ctx context.Context) (Release, error)
@@ -143,6 +144,7 @@ func (s *Server) Handler() http.Handler {
 	web.HandleFunc("POST /api/apps/{app}/deployments", s.signedIn(s.newDeployment))
 	web.HandleFunc("POST /api/apps/{app}/restart", s.signedIn(s.restartApp))
 	web.HandleFunc("POST /api/apps/{app}/update", s.signedIn(s.updateImage))
+	web.HandleFunc("GET /api/apps/{app}/metrics", s.signedIn(s.appMetrics))
 	web.HandleFunc("POST /api/apps/{app}/upgrade", s.confirmed(s.upgradeDatabase))
 	web.HandleFunc("GET /api/apps/{app}/kept-volumes", s.signedIn(s.listKeptVolumes))
 	web.HandleFunc("DELETE /api/apps/{app}/kept-volumes/{id}", s.confirmed(s.deleteKeptVolume))
@@ -265,6 +267,7 @@ func (s *Server) Serve(ctx context.Context, socket string) error {
 		s.syncExternal(ctx)
 		go s.runReleaseCheck(ctx)
 		go s.runImageCheck(ctx)
+		go s.runMetrics(ctx)
 		s.runImageSweep(ctx)
 	}()
 	l, err := net.Listen("unix", socket)

@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { ArrowUpRight, CircleArrowUp, Clock, Cpu, Ellipsis, MemoryStick, Play, RotateCw, Rocket, Square } from '@lucide/svelte';
+	import { Activity, ArrowUpRight, CircleArrowUp, Clock, Cpu, Ellipsis, MemoryStick, Play, RotateCw, Rocket, Square, TriangleAlert } from '@lucide/svelte';
 	import { untrack } from 'svelte';
 	import { page } from '$app/state';
 	import { api } from '$lib/api';
@@ -67,6 +67,8 @@
 		const [d, h, m] = [Math.floor(s / 86400), Math.floor((s % 86400) / 3600), Math.floor((s % 3600) / 60)];
 		return t('app.uptime', { time: d ? `${d}d ${h}h` : h ? `${h}h ${m}m` : m ? `${m}m` : `${s}s` });
 	}
+	const reqs = (n: number) => (n >= 10 ? String(Math.round(n)) : String(Math.round(n * 10) / 10));
+	const rate = (x: number) => `${(x * 100).toFixed(x < 0.01 ? 2 : 1)}%`;
 	const cores = (c: number) => (Number.isInteger(c) ? String(c) : c.toFixed(2).replace(/0$/, ''));
 
 	// With pushes deploying on their own, deploying by hand is rare and goes
@@ -122,6 +124,7 @@
 					{ href: `/a/${id}`, label: t('db.tab.overview') },
 					{ href: `/a/${id}/data`, label: t('viewer.tab') },
 					{ href: `/a/${id}/logs`, label: t('app.tab.logs') },
+					{ href: `/a/${id}/metrics`, label: t('app.tab.metrics') },
 					{ href: `/a/${id}/backups`, label: t('backups.tab') },
 					{ href: `/a/${id}/storage`, label: t('app.tab.storage') },
 					{ href: `/a/${id}/settings`, label: t('app.tab.settings') }
@@ -129,6 +132,7 @@
 			: [
 					{ href: `/a/${id}`, label: t('app.tab.deployments') },
 					{ href: `/a/${id}/logs`, label: t('app.tab.logs') },
+					{ href: `/a/${id}/metrics`, label: t('app.tab.metrics') },
 					{ href: `/a/${id}/env`, label: t('app.tab.env') },
 					{ href: `/a/${id}/storage`, label: t('app.tab.storage') },
 					{ href: `/a/${id}/backups`, label: t('backups.tab') },
@@ -194,6 +198,18 @@
 										: a.cpus
 											? t('app.usageCpu', { used: cores(u.cpu), limit: cores(a.cpus) })
 											: t('app.usageCpuOnly', { used: cores(u.cpu) })}</span
+								>
+							{/if}
+							{#if u.requests_per_min !== undefined}
+								<a href="/a/{a.id}/metrics" class="inline-flex items-center gap-1.5 hover:text-fg" title={t('app.summaryTitle')}
+									><Activity size={15} strokeWidth={1.75} />{t('app.summaryRequests', { count: reqs(u.requests_per_min) })}{#if u.error_rate}<span
+											class="text-danger">&nbsp;· {t('app.summaryErrors', { rate: rate(u.error_rate) })}</span
+										>{/if}</a
+								>
+							{/if}
+							{#if u.crashes}
+								<a href="/a/{a.id}/metrics" class="inline-flex items-center gap-1.5 text-warn"
+									><TriangleAlert size={15} strokeWidth={1.75} />{t('app.summaryCrashes', { count: u.crashes })}</a
 								>
 							{/if}
 						</p>

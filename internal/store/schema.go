@@ -268,5 +268,20 @@ CREATE TABLE kept_volumes (
 	version    TEXT NOT NULL,
 	kept_at    INTEGER NOT NULL
 ) STRICT;
+`, `
+-- What each app used, a row a minute, for the last day. cpu is in CPUs on
+-- average over the minute; the byte and request columns count that minute.
+CREATE TABLE metrics (
+	app_id        TEXT NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
+	at            INTEGER NOT NULL,
+	memory_bytes  INTEGER NOT NULL,
+	cpu           REAL NOT NULL,
+	rx_bytes      INTEGER NOT NULL,
+	tx_bytes      INTEGER NOT NULL,
+	requests      INTEGER NOT NULL,
+	client_errors INTEGER NOT NULL,
+	server_errors INTEGER NOT NULL,
+	PRIMARY KEY (app_id, at)
+) STRICT, WITHOUT ROWID;
 `,
 }

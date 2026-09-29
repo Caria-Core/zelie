@@ -293,6 +293,8 @@ func (s *Server) stop(w http.ResponseWriter, r *http.Request) {
 type usageJSON struct {
 	MemoryBytes int64 `json:"memory_bytes"`
 	CPUUsec     int64 `json:"cpu_usec"`
+	RxBytes     int64 `json:"rx_bytes"`
+	TxBytes     int64 `json:"tx_bytes"`
 }
 
 // usage reports what a running container uses. A container that is not
@@ -308,7 +310,7 @@ func (s *Server) usage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, errors.New("the container is not running"))
 		return
 	}
-	writeJSON(w, http.StatusOK, usageJSON{MemoryBytes: u.MemoryBytes, CPUUsec: u.CPUUsec})
+	writeJSON(w, http.StatusOK, usageJSON{MemoryBytes: u.MemoryBytes, CPUUsec: u.CPUUsec, RxBytes: u.RxBytes, TxBytes: u.TxBytes})
 }
 
 type hostJSON struct {

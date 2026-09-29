@@ -40,7 +40,9 @@ type Proxy struct {
 	cfg     Config
 	panelRT *http.Transport
 	routes  atomic.Pointer[map[string]http.Handler]
-	tls     atomic.Pointer[certSource]
+	// counters count each app's requests; the panel's are not counted.
+	counters counters
+	tls      atomic.Pointer[certSource]
 }
 
 // certSource answers TLS handshakes for one TLS mode.
@@ -103,7 +105,7 @@ func (p *Proxy) Apply(ctx context.Context, cfg Config) error {
 	routes := make(map[string]http.Handler, len(cfg.Routes)+1)
 	hosts := make(map[string]bool, len(cfg.Routes)+1)
 	for _, r := range cfg.Routes {
-		routes[r.Host] = newReverseProxy(&url.URL{Scheme: "http", Host: r.Upstream}, transport, p.Log)
+		routes[r.Host] = newReverseProxy(&url.URL{Scheme: "http", Host: r.Upstream}, transport, p.Log, p.counters.get(r.Host))
 		hosts[r.Host] = true
 	}
 	if cfg.Panel != "" {
@@ -113,7 +115,7 @@ func (p *Proxy) Apply(ctx context.Context, cfg Config) error {
 		if p.panelRT == nil {
 			p.panelRT = unixTransport(p.PanelSocket)
 		}
-		routes[cfg.Panel] = newReverseProxy(&url.URL{Scheme: "http", Host: "panel"}, p.panelRT, p.Log)
+		routes[cfg.Panel] = newReverseProxy(&url.URL{Scheme: "http", Host: "panel"}, p.panelRT, p.Log, nil)
 		hosts[cfg.Panel] = true
 	}
 
@@ -224,7 +226,7 @@ func unixTransport(socket string) *http.Transport {
 	}
 }
 
-func newReverseProxy(target *url.URL, rt http.RoundTripper, log *slog.Logger) http.Handler {
+func newReverseProxy(target *url.URL, rt http.RoundTripper, log *slog.Logger, c *counter) http.Handler {
 	return &httputil.ReverseProxy{
 		Rewrite: func(r *httputil.ProxyRequest) {
 			r.SetURL(target)
@@ -241,7 +243,14 @@ func newReverseProxy(target *url.URL, rt http.RoundTripper, log *slog.Logger) ht
 		},
 		Transport:     rt,
 		FlushInterval: -1, // pass streamed responses through as they arrive
+		ModifyResponse: func(resp *http.Response) error {
+			c.count(resp.StatusCode)
+			return nil
+		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			if counted(r) {
+				c.count(http.StatusBadGateway)
+			}
 			log.Warn("upstream unreachable", "host", r.Host, "upstream", target.Host, "err", err)
 			http.Error(w, "The app behind this address is not responding.", http.StatusBadGateway)
 		},

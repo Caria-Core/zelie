@@ -352,8 +352,15 @@ func (c *appCore) VolumeSizes(context.Context) (map[string]int64, error) {
 func (c *appCore) SecretKey(context.Context) (secret.PublicKey, error) { return c.keys.Public(), nil }
 
 type fakeProxy struct {
-	mu  sync.Mutex
-	cfg proxy.Config
+	mu    sync.Mutex
+	cfg   proxy.Config
+	stats proxy.Stats
+}
+
+func (p *fakeProxy) Stats(context.Context) (proxy.Stats, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.stats, nil
 }
 
 func (p *fakeProxy) Config(context.Context) (proxy.Config, error) {

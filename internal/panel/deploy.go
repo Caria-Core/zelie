@@ -28,6 +28,7 @@ import (
 type Proxy interface {
 	Config(ctx context.Context) (proxy.Config, error)
 	Apply(ctx context.Context, cfg proxy.Config) error
+	Stats(ctx context.Context) (proxy.Stats, error)
 }
 
 // A deployment's log is cut off here, so a runaway build cannot fill the

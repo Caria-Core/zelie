@@ -28,6 +28,7 @@ type Addrs struct {
 // Serve loads the saved configuration and serves until ctx is done. On
 // shutdown open requests get up to half a minute to finish.
 func (p *Proxy) Serve(ctx context.Context, a Addrs, allowed peer.Policy) error {
+	p.counters.since = time.Now()
 	if err := p.Load(ctx); err != nil {
 		return err
 	}
@@ -53,6 +54,9 @@ func (p *Proxy) Serve(ctx context.Context, a Addrs, allowed peer.Policy) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/version", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"version": version.Get().Version})
+	})
+	mux.HandleFunc("GET /v1/stats", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, p.Stats())
 	})
 	mux.HandleFunc("GET /v1/config", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, p.Config())
@@ -176,6 +180,25 @@ func getVersion(ctx context.Context, client *http.Client, url string) (string, e
 	}
 	err = json.NewDecoder(io.LimitReader(resp.Body, 4<<10)).Decode(&out)
 	return out.Version, err
+}
+
+// Stats returns the requests the proxy has counted for each host.
+func (c *Client) Stats(ctx context.Context) (Stats, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://proxy/v1/stats", nil)
+	if err != nil {
+		return Stats{}, err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return Stats{}, fmt.Errorf("reach the Zelie proxy: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return Stats{}, fmt.Errorf("proxy stats: %s", resp.Status)
+	}
+	var st Stats
+	err = json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&st)
+	return st, err
 }
 
 func (c *Client) Apply(ctx context.Context, cfg Config) error {

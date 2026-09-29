@@ -147,7 +147,7 @@ func (c *Client) Wait(ctx context.Context, id string) (int, error) {
 func (c *Client) Usage(ctx context.Context, id string) (engine.Usage, error) {
 	var out usageJSON
 	err := c.do(ctx, http.MethodGet, "/v1/containers/"+url.PathEscape(id)+"/usage", nil, &out)
-	return engine.Usage{MemoryBytes: out.MemoryBytes, CPUUsec: out.CPUUsec}, err
+	return engine.Usage{MemoryBytes: out.MemoryBytes, CPUUsec: out.CPUUsec, RxBytes: out.RxBytes, TxBytes: out.TxBytes}, err
 }
 
 // Host describes the server.

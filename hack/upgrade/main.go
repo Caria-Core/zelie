@@ -307,7 +307,38 @@ func check(c *client, stateFile, want string) error {
 	if err := waitFor("the restored row", time.Minute, func() error { return hasRow(st) }); err != nil {
 		return err
 	}
-	return c.upgradeDatabase()
+	if err := c.upgradeDatabase(); err != nil {
+		return err
+	}
+	return c.metrics()
+}
+
+// metrics checks the app's readings: the requests the proxy counted and
+// the traffic its container saw.
+func (c *client) metrics() error {
+	step("the app's requests and traffic are measured")
+	return waitFor("a reading with requests", 3*time.Minute, func() error {
+		if _, err := c.page(); err != nil {
+			return err
+		}
+		var m struct {
+			Points []struct {
+				Requests int64 `json:"requests"`
+				RxBytes  int64 `json:"rx_bytes"`
+				TxBytes  int64 `json:"tx_bytes"`
+				Memory   int64 `json:"memory_bytes"`
+			} `json:"points"`
+		}
+		if err := c.do("GET", "/api/apps/web/metrics", nil, &m); err != nil {
+			return err
+		}
+		for _, p := range m.Points {
+			if p.Requests > 0 && p.RxBytes > 0 && p.TxBytes > 0 && p.Memory > 0 {
+				return nil
+			}
+		}
+		return fmt.Errorf("readings %+v", m.Points)
+	})
 }
 
 // upgradeDatabase moves a PostgreSQL 17 database to 18 the way the panel

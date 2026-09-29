@@ -22,6 +22,8 @@ type Usage struct {
 	MemoryBytes int64
 	// CPUUsec is the CPU time used so far; two readings give the rate.
 	CPUUsec int64
+	// Bytes received and sent on the container's network so far.
+	RxBytes, TxBytes int64
 }
 
 // Usage reads a container's memory and CPU time from its cgroup.
@@ -45,8 +47,47 @@ func readUsage(dir string) (Usage, error) {
 	if err != nil {
 		return u, err
 	}
-	u.CPUUsec, err = field(bytes.NewReader(b), "usage_usec")
-	return u, err
+	if u.CPUUsec, err = field(bytes.NewReader(b), "usage_usec"); err != nil {
+		return u, err
+	}
+	// Any process in the container sees its network. A container that
+	// has just stopped has none; its traffic reads as zero.
+	b, err = os.ReadFile(filepath.Join(dir, "cgroup.procs"))
+	if err != nil {
+		return u, nil
+	}
+	pid, _, _ := strings.Cut(string(b), "\n")
+	if pid == "" {
+		return u, nil
+	}
+	if f, err := os.Open(filepath.Join(procRoot, pid, "net", "dev")); err == nil {
+		u.RxBytes, u.TxBytes = netDev(f, "eth0")
+		f.Close()
+	}
+	return u, nil
+}
+
+// procRoot is /proc; tests point it elsewhere.
+var procRoot = "/proc"
+
+// netDev reads an interface's received and sent bytes from /proc/net/dev:
+// "  eth0: rx_bytes rx_packets … (8 fields) tx_bytes …".
+func netDev(r io.Reader, iface string) (rx, tx int64) {
+	sc := bufio.NewScanner(r)
+	for sc.Scan() {
+		name, rest, ok := strings.Cut(sc.Text(), ":")
+		if !ok || strings.TrimSpace(name) != iface {
+			continue
+		}
+		f := strings.Fields(rest)
+		if len(f) < 9 {
+			return 0, 0
+		}
+		rx, _ = strconv.ParseInt(f[0], 10, 64)
+		tx, _ = strconv.ParseInt(f[8], 10, 64)
+		return rx, tx
+	}
+	return 0, 0
 }
 
 // Host is what the server has to give.

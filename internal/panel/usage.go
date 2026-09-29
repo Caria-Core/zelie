@@ -44,6 +44,7 @@ type usageJSON struct {
 	MemoryBytes int64 `json:"memory_bytes,omitempty"`
 	// CPU is in CPUs, so 0.5 is half of one; absent until two readings.
 	CPU *float64 `json:"cpu,omitempty"`
+	summaryJSON
 }
 
 // appUsage reports what the app's live container uses now.
@@ -52,9 +53,13 @@ func (s *Server) appUsage(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	sum, err := s.summary(r.Context(), a)
+	if err != nil {
+		s.Log.Error("usage: summary", "app", a.ID, "err", err)
+	}
 	live, err := s.Store.LiveDeployment(r.Context(), a.ID)
 	if errors.Is(err, store.ErrNotFound) {
-		writeJSON(w, http.StatusOK, usageJSON{})
+		writeJSON(w, http.StatusOK, usageJSON{summaryJSON: sum})
 		return
 	}
 	if err != nil {
@@ -64,10 +69,10 @@ func (s *Server) appUsage(w http.ResponseWriter, r *http.Request) {
 	container := fmt.Sprintf("%s-%d", a.ID, live.ID)
 	u, err := s.Core.Usage(r.Context(), container)
 	if err != nil {
-		writeJSON(w, http.StatusOK, usageJSON{})
+		writeJSON(w, http.StatusOK, usageJSON{summaryJSON: sum})
 		return
 	}
-	out := usageJSON{Running: true, MemoryBytes: u.MemoryBytes}
+	out := usageJSON{Running: true, MemoryBytes: u.MemoryBytes, summaryJSON: sum}
 	if cpu := s.samples.rate(container, u.CPUUsec, time.Now()); cpu >= 0 {
 		out.CPU = &cpu
 	}

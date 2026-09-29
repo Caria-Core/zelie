@@ -55,6 +55,12 @@ func newTestProxy(t *testing.T) (*Proxy, string) {
 	t.Cleanup(func() { upstreams = old })
 
 	app := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/missing":
+			w.WriteHeader(http.StatusNotFound)
+		case "/fail":
+			w.WriteHeader(http.StatusInternalServerError)
+		}
 		io.WriteString(w, "host="+r.Host+" xff="+r.Header.Get("X-Forwarded-For")+" proto="+r.Header.Get("X-Forwarded-Proto"))
 	}))
 	t.Cleanup(app.Close)
@@ -183,5 +189,30 @@ func TestTunnel(t *testing.T) {
 	p.serveHTTP(rec, req)
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("unknown host: %d", rec.Code)
+	}
+}
+
+func TestCounting(t *testing.T) {
+	p, _ := newTestProxy(t)
+	get := func(host, path string) {
+		rec := httptest.NewRecorder()
+		p.serveHTTPS(rec, httptest.NewRequest("GET", "https://"+host+path, nil))
+	}
+	get("app.example.com", "/")
+	get("app.example.com", "/missing")
+	get("app.example.com", "/fail")
+	get("other.example.com", "/") // no route: not an app's request
+
+	// The config changes; the counts go on.
+	cfg := Config{TLS: TLSSelfSigned, Routes: []Route{{"app.example.com", "127.0.0.1:1"}}}
+	if err := p.Apply(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	get("app.example.com", "/") // nothing answers there: 502
+
+	st := p.Stats()
+	want := Counts{Requests: 4, ClientErrors: 1, ServerErrors: 2}
+	if got := st.Hosts["app.example.com"]; got != want || len(st.Hosts) != 1 {
+		t.Errorf("stats %+v, want %+v", st.Hosts, want)
 	}
 }
