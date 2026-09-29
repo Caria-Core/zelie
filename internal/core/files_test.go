@@ -1072,3 +1072,97 @@ func TestFilesThroughTheClient(t *testing.T) {
 		t.Errorf("left %v", entries)
 	}
 }
+
+func TestStatRemoveAndRange(t *testing.T) {
+	e := newFileEnv(t)
+	e.write("dir/file.txt", "0123456789")
+	os.Symlink(e.outside, filepath.Join(e.vol, "link"))
+
+	code, body := e.post("stat", map[string]any{"path": "dir/file.txt"})
+	var fe FileEntry
+	json.Unmarshal([]byte(body), &fe)
+	if code != http.StatusOK || fe.Name != "file.txt" || fe.Size != 10 || fe.Dir {
+		t.Errorf("stat of a file: %d %s", code, body)
+	}
+	code, body = e.post("stat", map[string]any{"path": "/"})
+	json.Unmarshal([]byte(body), &fe)
+	if code != http.StatusOK || !fe.Dir {
+		t.Errorf("stat of the top folder: %d %s", code, body)
+	}
+	code, body = e.post("stat", map[string]any{"path": "link"})
+	json.Unmarshal([]byte(body), &fe)
+	if code != http.StatusOK || !fe.Symlink || fe.Dir {
+		t.Errorf("stat of a link must describe it: %d %s", code, body)
+	}
+	if code, _ = e.post("stat", map[string]any{"path": "link/x"}); code < 400 {
+		t.Errorf("stat through a link that leaves the volume: %d", code)
+	}
+	if code, _ = e.post("stat", map[string]any{"path": "missing"}); code != http.StatusNotFound {
+		t.Errorf("stat of nothing: %d", code)
+	}
+
+	for _, tc := range []struct{ query, want string }{
+		{"offset=3&length=4", "3456"},
+		{"offset=8&length=100", "89"},
+		{"offset=10", ""},
+		{"offset=99&length=5", ""},
+		{"length=2", "01"},
+	} {
+		code, out := e.do("GET", "download", e.query("path", "dir/file.txt")+"&"+tc.query, "")
+		if code != http.StatusOK || out != tc.want {
+			t.Errorf("download %s: %d %q, want %q", tc.query, code, out, tc.want)
+		}
+	}
+	if code, _ := e.do("GET", "download", e.query("path", "dir/file.txt")+"&offset=-1", ""); code != http.StatusBadRequest {
+		t.Errorf("a negative offset: %d", code)
+	}
+
+	// Remove never goes into a folder.
+	if code, _ = e.post("remove", map[string]any{"path": "dir"}); code < 400 {
+		t.Errorf("removing a folder with something in it: %d", code)
+	}
+	if code, _ = e.post("remove", map[string]any{"path": "/"}); code != http.StatusBadRequest {
+		t.Errorf("removing the top folder: %d", code)
+	}
+	if code, _ = e.post("remove", map[string]any{"path": "link"}); code != http.StatusNoContent {
+		t.Errorf("removing a link: %d", code)
+	}
+	if code, _ = e.post("remove", map[string]any{"path": "dir/file.txt"}); code != http.StatusNoContent {
+		t.Errorf("removing a file: %d", code)
+	}
+	if code, _ = e.post("remove", map[string]any{"path": "dir"}); code != http.StatusNoContent {
+		t.Errorf("removing an empty folder: %d", code)
+	}
+	e.untouched()
+}
+
+func TestSFTPUserGetsFileRoutesOnly(t *testing.T) {
+	e := newFileEnv(t)
+	e.write("a.txt", "a")
+	e.s.Allowed.Routes = map[uint32][]string{4242: SFTPRoutes}
+	sftp := &peer.Peer{UID: 4242}
+	for _, tc := range []struct {
+		method, path, body string
+		want               int
+	}{
+		{"POST", "/v1/volumes/srv-vol/files/list", `{"path":""}`, http.StatusOK},
+		{"POST", "/v1/volumes/srv-vol/files/stat", `{"path":"a.txt"}`, http.StatusOK},
+		{"GET", "/v1/volumes/srv-vol/files/download?path=a.txt", "", http.StatusOK},
+		{"POST", "/v1/volumes/srv-vol/files/delete", `{"paths":["a.txt"]}`, http.StatusForbidden},
+		{"POST", "/v1/volumes/srv-vol/files/compress", `{}`, http.StatusForbidden},
+		{"PUT", "/v1/volumes/srv-vol/files/content?path=a.txt", "x", http.StatusForbidden},
+		{"GET", "/v1/containers", "", http.StatusForbidden},
+		{"POST", "/v1/containers", `{}`, http.StatusForbidden},
+		{"POST", "/v1/containers/web/stop", "", http.StatusForbidden},
+		{"POST", "/v1/volumes/srv-vol/prepare", "", http.StatusForbidden},
+		{"GET", "/v1/secrets/key", "", http.StatusForbidden},
+		{"POST", "/v1/update", `{}`, http.StatusForbidden},
+	} {
+		if rec := request(t, e.s, sftp, tc.method, tc.path, tc.body); rec.Code != tc.want {
+			t.Errorf("%s %s as the SFTP user: %d, want %d", tc.method, tc.path, rec.Code, tc.want)
+		}
+	}
+	if b, _ := os.ReadFile(filepath.Join(e.vol, "a.txt")); string(b) != "a" {
+		t.Errorf("a refused request changed the file: %q", b)
+	}
+}

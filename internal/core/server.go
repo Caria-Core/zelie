@@ -100,6 +100,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/volumes/{name}/files/list", s.listFiles)
 	mux.HandleFunc("GET /v1/volumes/{name}/files/content", s.readFile)
 	mux.HandleFunc("PUT /v1/volumes/{name}/files/content", s.writeFile)
+	mux.HandleFunc("POST /v1/volumes/{name}/files/stat", s.statFile)
+	mux.HandleFunc("POST /v1/volumes/{name}/files/remove", s.removeFile)
 	mux.HandleFunc("POST /v1/volumes/{name}/files/mkdir", s.makeFolder)
 	mux.HandleFunc("POST /v1/volumes/{name}/files/rename", s.renameFile)
 	mux.HandleFunc("POST /v1/volumes/{name}/files/delete", s.deleteFiles)
@@ -147,7 +149,20 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/offsite/backups", s.listOffsite)
 	mux.HandleFunc("DELETE /v1/offsite/backups/{app}/{name}", s.removeOffsiteBackup)
 	mux.HandleFunc("POST /v1/offsite/backups/{app}/{name}/fetch", s.fetchBackup)
-	return peer.Require(s.Allowed, s.Log, mux)
+	return peer.RequireRoutes(s.Allowed, s.Log, mux)
+}
+
+// SFTPRoutes are the only routes the SFTP process may use: the file
+// operations of a volume, and nothing that starts, stops or configures
+// anything. Which volume a login gets is the panel's decision.
+var SFTPRoutes = []string{
+	"POST /v1/volumes/{name}/files/list",
+	"POST /v1/volumes/{name}/files/stat",
+	"POST /v1/volumes/{name}/files/mkdir",
+	"POST /v1/volumes/{name}/files/rename",
+	"POST /v1/volumes/{name}/files/remove",
+	"PUT /v1/volumes/{name}/files/upload",
+	"GET /v1/volumes/{name}/files/download",
 }
 
 // Serve listens on the socket until ctx is cancelled.

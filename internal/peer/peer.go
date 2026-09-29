@@ -20,6 +20,10 @@ type Peer struct {
 // Policy lists the users allowed in. Root is always allowed.
 type Policy struct {
 	UIDs []uint32
+	// Routes holds users that may use some routes only, by the pattern the
+	// route was registered with, such as "GET /v1/host". A user in UIDs may
+	// use every route, whatever is listed here.
+	Routes map[uint32][]string
 }
 
 func (p Policy) Allows(peer Peer) bool {
@@ -66,5 +70,22 @@ func Require(policy Policy, log *slog.Logger, next http.Handler) http.Handler {
 			return
 		}
 		next.ServeHTTP(w, r)
+	})
+}
+
+// RequireRoutes is Require for a mux, and lets the users of Policy.Routes
+// through to their own routes.
+func RequireRoutes(policy Policy, log *slog.Logger, mux *http.ServeMux) http.Handler {
+	full := Require(policy, log, mux)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if p, ok := From(r.Context()); ok && !policy.Allows(p) {
+			if routes, limited := policy.Routes[p.UID]; limited {
+				if _, pattern := mux.Handler(r); pattern != "" && slices.Contains(routes, pattern) {
+					mux.ServeHTTP(w, r)
+					return
+				}
+			}
+		}
+		full.ServeHTTP(w, r)
 	})
 }

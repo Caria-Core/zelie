@@ -756,10 +756,113 @@ func (s *Server) downloadFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer f.Close()
+	// offset and length ask for part of the file, as SFTP reads do. Past
+	// the end there is nothing to send, not an error.
+	offset, length := int64(0), int64(-1)
+	q := r.URL.Query()
+	for _, part := range []struct {
+		key string
+		to  *int64
+	}{{"offset", &offset}, {"length", &length}} {
+		if !q.Has(part.key) {
+			continue
+		}
+		n, err := strconv.ParseInt(q.Get(part.key), 10, 64)
+		if err != nil || n < 0 {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("%w: %s must be a number of bytes", errBadRequest, part.key))
+			return
+		}
+		*part.to = n
+	}
+	size := st.Size()
+	offset = min(offset, size)
+	n := size - offset
+	if length >= 0 {
+		n = min(n, length)
+	}
+	if offset > 0 {
+		if _, err := f.Seek(offset, io.SeekStart); err != nil {
+			s.fileFailed(w, "download file", name, p, err)
+			return
+		}
+	}
 	w.Header().Set("Content-Type", "application/octet-stream")
-	w.Header().Set("Content-Length", strconv.FormatInt(st.Size(), 10))
+	w.Header().Set("Content-Length", strconv.FormatInt(n, 10))
 	// A file that grows while it is sent is cut at the size announced.
-	io.Copy(w, io.LimitReader(f, st.Size()))
+	io.Copy(w, io.LimitReader(f, n))
+}
+
+// statFile describes one item. A link is described, not followed.
+func (s *Server) statFile(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	var req listRequest
+	if err := decode(w, r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	p, err := filePath(req.Path)
+	if err != nil {
+		s.fileFailed(w, "stat file", name, req.Path, err)
+		return
+	}
+	root, ok := s.filesRoot(w, name, "stat file")
+	if !ok {
+		return
+	}
+	defer root.Close()
+	entry, err := statEntry(root, p)
+	if err != nil {
+		s.fileFailed(w, "stat file", name, p, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, entry)
+}
+
+func statEntry(root *os.Root, p string) (FileEntry, error) {
+	info, err := root.Lstat(p)
+	if err != nil {
+		return FileEntry{}, err
+	}
+	fe := FileEntry{
+		Name: path.Base(p), Size: info.Size(), Mode: info.Mode().String(), Modified: info.ModTime().UTC(),
+		Dir: info.IsDir(), Symlink: info.Mode()&fs.ModeSymlink != 0,
+	}
+	if p == "." {
+		fe.Name = "/"
+	}
+	if fe.Symlink {
+		fe.Target, _ = root.Readlink(p)
+	}
+	return fe, nil
+}
+
+// removeFile removes one file, link or empty folder. Unlike deleteFiles it
+// never goes into a folder.
+func (s *Server) removeFile(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	var req listRequest
+	if err := decode(w, r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	p, err := filePath(req.Path)
+	if err == nil && p == "." {
+		err = errFileRoot.Err()
+	}
+	if err != nil {
+		s.fileFailed(w, "remove file", name, req.Path, err)
+		return
+	}
+	root, ok := s.filesRoot(w, name, "remove file")
+	if !ok {
+		return
+	}
+	defer root.Close()
+	if err := root.Remove(p); err != nil {
+		s.fileFailed(w, "remove file", name, p, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 type compressRequest struct {
@@ -1370,6 +1473,18 @@ func (c *Client) WriteFile(ctx context.Context, ref FileRef, p string, content [
 	return resp.Body.Close()
 }
 
+// StatFile describes one item of a volume.
+func (c *Client) StatFile(ctx context.Context, ref FileRef, p string) (FileEntry, error) {
+	var out FileEntry
+	err := c.do(ctx, http.MethodPost, filesURL(ref, "stat"), listRequest{Path: p}, &out)
+	return out, err
+}
+
+// RemoveFile removes a file or an empty folder of a volume.
+func (c *Client) RemoveFile(ctx context.Context, ref FileRef, p string) error {
+	return c.do(ctx, http.MethodPost, filesURL(ref, "remove"), listRequest{Path: p}, nil)
+}
+
 func (c *Client) MakeFolder(ctx context.Context, ref FileRef, p string) error {
 	return c.do(ctx, http.MethodPost, filesURL(ref, "mkdir"), mkdirRequest{FileOwner: ref.FileOwner, Path: p}, nil)
 }
@@ -1395,7 +1510,20 @@ func (c *Client) UploadFile(ctx context.Context, ref FileRef, p string, size int
 // DownloadFile opens a file of a volume, which the caller closes, and says
 // how long it is.
 func (c *Client) DownloadFile(ctx context.Context, ref FileRef, p string) (io.ReadCloser, int64, error) {
-	resp, err := c.raw(ctx, http.MethodGet, filesURL(ref, "download", "path", p), nil, -1)
+	return c.DownloadRange(ctx, ref, p, 0, -1)
+}
+
+// DownloadRange is DownloadFile for length bytes from offset, or to the end
+// when length is negative. What lies past the end of the file is not sent.
+func (c *Client) DownloadRange(ctx context.Context, ref FileRef, p string, offset, length int64) (io.ReadCloser, int64, error) {
+	kv := []string{"path", p}
+	if offset > 0 {
+		kv = append(kv, "offset", strconv.FormatInt(offset, 10))
+	}
+	if length >= 0 {
+		kv = append(kv, "length", strconv.FormatInt(length, 10))
+	}
+	resp, err := c.raw(ctx, http.MethodGet, filesURL(ref, "download", kv...), nil, -1)
 	if err != nil {
 		return nil, 0, err
 	}
