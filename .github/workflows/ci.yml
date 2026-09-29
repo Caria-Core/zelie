@@ -30,6 +30,19 @@ jobs:
       - run: go vet -tags integration ./...
       - run: go test -race ./...
 
+  # Downloads every egg of the catalog at its pinned commit and checks that
+  # Zelie can make a server from it: it parses, its startup command and
+  # settings are filled in, and its defaults pass its own rules. A catalog
+  # entry that breaks fails here instead of on someone's server.
+  eggs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - run: go test -tags eggcheck -run TestCatalogEggs -v ./internal/panel
+
   web:
     runs-on: ubuntu-latest
     steps:

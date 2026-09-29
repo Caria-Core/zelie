@@ -360,7 +360,7 @@ func TestCheck(t *testing.T) {
 
 func TestStopSignal(t *testing.T) {
 	for stop, want := range map[string]string{
-		"^C": "SIGINT", "^SIGKILL": "SIGKILL", "^term": "SIGTERM", "stop": "", "^": "", "": "",
+		"^C": "SIGINT", "^^C": "SIGINT", "^SIGKILL": "SIGKILL", "^term": "SIGTERM", "stop": "", "^": "", "": "",
 	} {
 		got, ok := (&Egg{Stop: stop}).StopSignal()
 		if got != want || ok != (want != "") {

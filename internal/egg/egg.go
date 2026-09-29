@@ -263,10 +263,11 @@ func configFiles(files *object) ([]ConfigFile, error) {
 }
 
 // StopSignal reports whether Stop is a signal rather than a console
-// command. Eggs write it as "^C" for SIGINT or "^" plus a signal name.
+// command. Eggs write it as "^C" for SIGINT or "^" plus a signal name; some
+// write the caret twice, and mean the same.
 func (e *Egg) StopSignal() (name string, ok bool) {
-	rest, found := strings.CutPrefix(e.Stop, "^")
-	if !found || rest == "" {
+	rest := strings.TrimLeft(e.Stop, "^")
+	if rest == e.Stop || rest == "" {
 		return "", false
 	}
 	rest = strings.ToUpper(rest)

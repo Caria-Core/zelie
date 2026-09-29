@@ -30,8 +30,8 @@ own files run with Node.js, Python, Bun, Deno or Java.
 to an app and the app gets `DATABASE_URL`. Browse tables and keys in the panel,
 read-only, and update to a new version with a backup taken first.
 
-**Game servers.** Minecraft, Rust and Palworld from the list, or any Pterodactyl or
-Pelican egg by its link. A live console, a file manager, SFTP, startup settings,
+**Game servers.** Minecraft, Rust, Valheim, Palworld and a dozen more from the list, or
+any Pterodactyl or Pelican egg by its link. A live console, a file manager, SFTP, startup settings,
 schedules and backups. Zelie opens the game's ports while the server exists, and for
 Steam games tells you when an update is out.
 

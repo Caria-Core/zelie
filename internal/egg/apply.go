@@ -12,6 +12,15 @@ import (
 // caller enforces it when it reads the file.
 const MaxConfigFile = 4 << 20
 
+// KnownParser reports whether ApplyFile can edit files with the parser.
+func KnownParser(parser string) bool {
+	switch parser {
+	case "properties", "file", "ini", "yaml", "json", "xml":
+		return true
+	}
+	return false
+}
+
 // ApplyFile makes the changes an egg asks for in one config file and
 // returns the new content. The parser is one of properties, file, yaml,
 // json, ini and xml. Values go through expand first, so they may hold

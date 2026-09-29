@@ -90,9 +90,15 @@ page shows its memory and CPU as they are now.
 Game servers run from the eggs Pterodactyl and Pelican use, so the games their community
 supports run here too.
 
-- **Games.** Minecraft (Paper), Rust and Palworld are in the list, from Pelican's egg
-  repositories at a commit each Zelie release names. Any other egg can be imported by its
+- **Games.** Minecraft (Vanilla, Paper, Purpur, Fabric, Forge, NeoForge, Velocity and
+  Bedrock), Rust, Valheim, Palworld, 7 Days to Die, ARK: Survival Ascended, Counter-Strike 2,
+  Enshrouded, Garry's Mod, Project Zomboid, Satisfactory, Sons of the Forest, Squad and
+  V Rising are in the list, from Pelican's egg repositories at a commit each Zelie release
+  names. Every entry is downloaded and checked in CI. Any other egg can be imported by its
   link, in either the Pterodactyl or the Pelican format.
+- **Passwords.** An RCON or admin password the egg leaves empty, or sets to a placeholder such
+  as `changeme`, gets a random value when the server is made. The password players join with
+  is left as the egg has it, unless the egg requires one and has none.
 - **Creating one.** Pick the game, then memory, CPU, disk and the image, such as the Java
   version, then ports. Memory, CPU and disk can be changed later on the Settings tab. The egg's install script runs once in its own container. For
   Minecraft, the panel asks you to accept Mojang's EULA first.
