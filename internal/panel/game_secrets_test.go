@@ -60,7 +60,9 @@ func TestSecretValue(t *testing.T) {
 		{"placeholder number", plain("RCON_PASS"), "12345", true},
 		{"chosen value", plain("RCON_PASS"), "hunter2hunter2", false},
 		{"join password", plain("SERVER_PASSWORD", "nullable"), "", false},
-		{"join placeholder", plain("PASSWORD", "required"), "secret", false},
+		{"join placeholder", plain("PASSWORD", "required"), "secret", true},
+		{"join placeholder with separator", plain("SERVER_PASSWORD", "nullable"), "Change-Me", true},
+		{"join chosen value", plain("SERVER_PASSWORD", "nullable"), "letmeplay", false},
 		{"join required and empty", plain("SERVER_PASSWORD", "required"), "", true},
 		{"join optional and empty", plain("SERVER_PASSWORD", "nullable"), "", false},
 		{"other service", plain("STEAM_PASS", "required"), "", false},
@@ -81,6 +83,55 @@ func TestSecretValue(t *testing.T) {
 		} else if got != tc.value {
 			t.Errorf("%s: changed %q to %q", tc.name, tc.value, got)
 		}
+	}
+}
+
+func TestJoinPasswords(t *testing.T) {
+	// The alphabet has none of the characters that look alike.
+	if strings.ContainsAny(joinAlphabet, "0Oo1lIi") {
+		t.Errorf("join alphabet %q has look-alikes", joinAlphabet)
+	}
+	for _, tc := range []struct {
+		name  string
+		rules []string
+		n     int
+	}{
+		{"none", nil, 10},
+		// Valheim's rules.
+		{"valheim", []string{"required", "string", "min:5", "max:20"}, 10},
+		{"shorter cap", []string{"required", "max:6"}, 6},
+		{"longer minimum", []string{"required", "min:14"}, 14},
+	} {
+		v := egg.Variable{Env: "PASSWORD", Rules: tc.rules}
+		got := secretValue(v, "secret")
+		if len(got) != tc.n || strings.Trim(got, joinAlphabet) != "" {
+			t.Errorf("%s: got %q, want %d characters of the join alphabet", tc.name, got, tc.n)
+		}
+		if err := v.Check(got); err != nil {
+			t.Errorf("%s: %q breaks the rules: %v", tc.name, got, err)
+		}
+		if again := secretValue(v, "secret"); again == got {
+			t.Errorf("%s: two servers got %q", tc.name, got)
+		}
+	}
+	// An empty password stays empty for a public server, and a value the
+	// egg sets to something real stays.
+	v := egg.Variable{Env: "SERVER_PASSWORD", Rules: []string{"nullable", "string"}}
+	if got := secretValue(v, ""); got != "" {
+		t.Errorf("empty join password became %q", got)
+	}
+	// Too little room for a value worth typing: the egg's own stays.
+	if got := secretValue(egg.Variable{Env: "PASSWORD", Rules: []string{"required", "max:4"}}, "secret"); got != "secret" {
+		t.Errorf("max:4 gave %q", got)
+	}
+	// What the request sends is kept.
+	e := &egg.Egg{Variables: []egg.Variable{{Env: "PASSWORD", Default: "secret", Rules: []string{"required", "string", "min:5", "max:20"}, UserEditable: true}}}
+	vars, bad := gameVariables(e, nil, map[string]string{"PASSWORD": "secret"}, false)
+	if bad != nil || vars["PASSWORD"] != "secret" {
+		t.Errorf("sent value: %q, %v", vars["PASSWORD"], bad)
+	}
+	if vars, bad = gameVariables(e, nil, nil, false); bad != nil || vars["PASSWORD"] == "secret" || len(vars["PASSWORD"]) != 10 {
+		t.Errorf("default: %q, %v", vars["PASSWORD"], bad)
 	}
 }
 

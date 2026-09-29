@@ -180,6 +180,19 @@ func checkEgg(entry egg.Entry, e *egg.Egg, r *eggReport) {
 		seen[vars[v.Env]] = v.Env
 	}
 
+	// A password the egg leaves as a placeholder must not reach a server as
+	// one, and an empty join password is left empty for a public server.
+	for _, v := range e.Variables {
+		kind := secretKindOf(v.Env)
+		switch {
+		case kind == notSecret:
+		case isPlaceholder(v.Default) && vars[v.Env] == v.Default:
+			r.fail("%s keeps the placeholder %q", v.Env, v.Default)
+		case kind == joinSecret && strings.TrimSpace(v.Default) == "" && vars[v.Env] != "" && !hasRule(v, "required"):
+			r.fail("%s is an optional join password, and a server gets %q", v.Env, vars[v.Env])
+		}
+	}
+
 	var needInput []string
 	for _, v := range e.Variables {
 		value := vars[v.Env]

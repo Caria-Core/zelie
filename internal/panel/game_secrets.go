@@ -10,13 +10,22 @@ import (
 
 // Eggs ship with an empty or made-up value for the passwords that guard a
 // server's administration, and every server made from the egg would share
-// it. A new server gets a random one instead. What players type to join
-// stays as the egg has it: that password is the owner's to choose.
+// it. A new server gets a random one instead.
+//
+// What players type to join is the owner's to choose: an empty one stays
+// empty, which makes a public server. One that is a placeholder such as
+// "secret" would be the same on every server, so it gets a short random
+// value that is easy to read out and type.
 
 const (
 	secretLength    = 24
 	secretMinLength = 8
 	secretAlphabet  = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+
+	joinLength    = 10
+	joinMinLength = 5
+	// joinAlphabet leaves out the characters that look alike: 0 O o, 1 l I i.
+	joinAlphabet = "abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 )
 
 // placeholders are values that mean "put a real one here". They are compared
@@ -50,8 +59,8 @@ type secretKind int
 
 const (
 	notSecret secretKind = iota
-	// joinSecret is a password players give to join: it is only filled in
-	// when the egg requires one and has none.
+	// joinSecret is a password players give to join. An empty one is left
+	// empty unless the egg requires a value, and a placeholder is replaced.
 	joinSecret
 	// adminSecret guards the server's administration.
 	adminSecret
@@ -86,22 +95,24 @@ func secretKindOf(env string) secretKind {
 
 // secretValue is the value a new server gets for the variable, given the
 // value the egg has for it: the same one, or a random one where the egg
-// leaves an administrative secret empty or as a placeholder. The random
-// value uses letters and digits only and fits the variable's rules; when it
-// cannot, the egg's value stays.
+// leaves an administrative secret empty or as a placeholder, or a join
+// password as a placeholder. The random value uses letters and digits only
+// and fits the variable's rules; when it cannot, the egg's value stays.
 func secretValue(v egg.Variable, value string) string {
 	kind := secretKindOf(v.Env)
 	if kind == notSecret {
 		return value
 	}
 	empty := strings.TrimSpace(value) == ""
+	length, minLength, alphabet := secretLength, secretMinLength, secretAlphabet
 	switch {
 	case kind == adminSecret && (empty || isPlaceholder(value)):
-	case kind == joinSecret && empty && hasRule(v, "required"):
+	case kind == joinSecret && (isPlaceholder(value) || empty && hasRule(v, "required")):
+		length, minLength, alphabet = joinLength, joinMinLength, joinAlphabet
 	default:
 		return value
 	}
-	if s, ok := randomSecret(v); ok {
+	if s, ok := randomSecret(v, length, minLength, alphabet); ok {
 		return s
 	}
 	return value
@@ -116,11 +127,11 @@ func hasRule(v egg.Variable, name string) bool {
 	return false
 }
 
-// randomSecret makes a value of secretLength characters, or as many as the
-// rules allow. ok is false when the rules ask for something else, such as a
-// number, or leave no room for a strong value.
-func randomSecret(v egg.Variable) (string, bool) {
-	n := secretLength
+// randomSecret makes a value of length characters from alphabet, or as many
+// as the rules allow. ok is false when the rules ask for something else,
+// such as a number, or leave less room than minLength.
+func randomSecret(v egg.Variable, length, minLength int, alphabet string) (string, bool) {
+	n := length
 	lo := 0
 	for _, r := range v.Rules {
 		name, arg, _ := strings.Cut(r, ":")
@@ -146,7 +157,7 @@ func randomSecret(v egg.Variable) (string, bool) {
 		}
 	}
 	n = max(n, lo)
-	if n < secretMinLength {
+	if n < minLength {
 		return "", false
 	}
 	buf := make([]byte, 0, n)
@@ -156,10 +167,10 @@ func randomSecret(v egg.Variable) (string, bool) {
 			return "", false
 		}
 		for _, c := range b {
-			// 62 does not divide 256; values from 248 up would favour the
-			// first letters.
-			if c < 248 && len(buf) < n {
-				buf = append(buf, secretAlphabet[int(c)%len(secretAlphabet)])
+			// The alphabet does not divide 256; the values above the last
+			// whole multiple would favour the first letters.
+			if int(c) < 256-256%len(alphabet) && len(buf) < n {
+				buf = append(buf, alphabet[int(c)%len(alphabet)])
 			}
 		}
 	}
