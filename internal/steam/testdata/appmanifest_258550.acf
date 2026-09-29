@@ -1,0 +1,27 @@
+"AppState"
+{
+	"appid"		"258550"
+	"Universe"		"1"
+	"name"		"Rust Dedicated Server"
+	"StateFlags"		"4"
+	"installdir"		"rust_dedicated"
+	"LastUpdated"		"1790015999"
+	"SizeOnDisk"		"9230581216"
+	"buildid"		"20913457"
+	"LastOwner"		"0"
+	"BytesToDownload"		"0"
+	"AutoUpdateBehavior"		"0"
+	"InstalledDepots"
+	{
+		"258551"
+		{
+			"manifest"		"7011140012884321987"
+			"size"		"9230581216"
+		}
+	}
+	"UserConfig"
+	{
+		"language"		"english"
+		"BetaKey"		"public"
+	}
+}
