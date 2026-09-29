@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 )
 
 //go:embed all:build
@@ -63,8 +64,8 @@ func Handler() http.Handler {
 }
 
 var (
-	inlineScript = regexp.MustCompile(`(?s)<script>(.*?)</script>`)
-	styleAttr    = regexp.MustCompile(`style="([^"]*)"`)
+	inlineScript = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`(?s)<script>(.*?)</script>`) })
+	styleAttr    = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`style="([^"]*)"`) })
 )
 
 // policyFor builds a Content-Security-Policy that allows the page's own
@@ -74,11 +75,11 @@ var (
 // SvelteKit's screen reader announcer is one.
 func policyFor(index []byte, bundles ...[]byte) string {
 	var scripts, styles []string
-	for _, m := range inlineScript.FindAllSubmatch(index, -1) {
+	for _, m := range inlineScript().FindAllSubmatch(index, -1) {
 		scripts = append(scripts, hashSource(m[1]))
 	}
 	for _, b := range append([][]byte{index}, bundles...) {
-		for _, m := range styleAttr.FindAllSubmatch(b, -1) {
+		for _, m := range styleAttr().FindAllSubmatch(b, -1) {
 			if h := hashSource(m[1]); !slices.Contains(styles, h) {
 				styles = append(styles, h)
 			}

@@ -21,6 +21,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -33,16 +34,16 @@ var publicKey []byte
 // Repo is where releases are published.
 const Repo = "Caria-Core/zelie"
 
-var validVersion = regexp.MustCompile(`^v(\d+)\.(\d+)\.(\d+)$`)
+var validVersion = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^v(\d+)\.(\d+)\.(\d+)$`) })
 
 // Valid reports whether v is a release version such as v1.2.3.
-func Valid(v string) bool { return validVersion.MatchString(v) }
+func Valid(v string) bool { return validVersion().MatchString(v) }
 
 // Newer reports whether version a comes after b. A build that is not a
 // release, such as "dev", is never older than anything: it cannot be told
 // what it would be updated to.
 func Newer(a, b string) bool {
-	ma, mb := validVersion.FindStringSubmatch(a), validVersion.FindStringSubmatch(b)
+	ma, mb := validVersion().FindStringSubmatch(a), validVersion().FindStringSubmatch(b)
 	if ma == nil || mb == nil {
 		return false
 	}

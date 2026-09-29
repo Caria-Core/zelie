@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 
 	"golang.org/x/crypto/curve25519"
 	"golang.org/x/crypto/nacl/box"
@@ -83,10 +84,10 @@ func LoadOrCreate(path string) (*Keys, error) {
 
 func (k *Keys) Public() PublicKey { return k.public }
 
-var validName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,127}$`)
+var validName = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,127}$`) })
 
 // ValidName reports whether name can be an environment variable.
-func ValidName(name string) bool { return validName.MatchString(name) }
+func ValidName(name string) bool { return validName().MatchString(name) }
 
 // The sealed text names the app, so a value sealed for one app does not
 // open for another.

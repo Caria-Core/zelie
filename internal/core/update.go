@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"regexp"
+	"sync"
 
 	"github.com/Caria-Core/zelie/internal/msg"
 	"github.com/Caria-Core/zelie/internal/update"
@@ -39,7 +40,7 @@ type updateRequest struct {
 	Version string `json:"version"`
 }
 
-var validRelease = regexp.MustCompile(`^v\d+\.\d+\.\d+$`)
+var validRelease = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^v\d+\.\d+\.\d+$`) })
 
 func (s *Server) version(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"version": version.Get().Version})
@@ -53,7 +54,7 @@ func (s *Server) startUpdate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	if !validRelease.MatchString(req.Version) {
+	if !validRelease().MatchString(req.Version) {
 		writeError(w, http.StatusBadRequest, errors.New("invalid version"))
 		return
 	}

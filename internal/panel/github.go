@@ -32,7 +32,7 @@ const (
 // GitHub's own limit for a webhook payload.
 const maxWebhook = 25 << 20
 
-var validAccount = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$`)
+var validAccount = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$`) })
 
 // ghConn is a loaded GitHub App: a client and the secret its webhooks are
 // signed with.
@@ -240,7 +240,7 @@ func (s *Server) githubManifest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.Org = strings.TrimSpace(req.Org)
-	if req.Org != "" && !validAccount.MatchString(req.Org) {
+	if req.Org != "" && !validAccount().MatchString(req.Org) {
 		writeError(w, errBadOrg.Err())
 		return
 	}
@@ -432,7 +432,7 @@ func (s *Server) githubPush(w http.ResponseWriter, r *http.Request, body []byte)
 	}
 	branch, ok := strings.CutPrefix(p.Ref, "refs/heads/")
 	// Tags and deleted branches have nothing to deploy.
-	if !ok || p.Deleted || !validCommit.MatchString(p.After) || strings.Trim(p.After, "0") == "" {
+	if !ok || p.Deleted || !validCommit().MatchString(p.After) || strings.Trim(p.After, "0") == "" {
 		writeJSON(w, http.StatusAccepted, map[string]string{"result": "ignored"})
 		return
 	}
@@ -478,14 +478,14 @@ func (a appSource) Resolve(ctx context.Context, repo, branch string) (string, er
 	if err != nil {
 		return "", err
 	}
-	if !validCommit.MatchString(commit) {
+	if !validCommit().MatchString(commit) {
 		return "", errors.New("GitHub gave an unexpected answer")
 	}
 	return commit, nil
 }
 
 func (a appSource) Archive(ctx context.Context, repo, commit string) (io.ReadCloser, error) {
-	if !validRepo.MatchString(repo) || !validCommit.MatchString(commit) {
+	if !validRepo().MatchString(repo) || !validCommit().MatchString(commit) {
 		return nil, errors.New("invalid repository or commit")
 	}
 	return a.c.Archive(ctx, a.inst, repo, commit)

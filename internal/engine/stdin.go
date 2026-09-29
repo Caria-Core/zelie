@@ -163,7 +163,7 @@ func (e *Engine) restoreHolders(ctx context.Context) {
 // WriteStdin writes to the standard input of a container that was created
 // with Spec.Stdin.
 func (e *Engine) WriteStdin(ctx context.Context, id string, data []byte) error {
-	if !validID.MatchString(id) {
+	if !validID().MatchString(id) {
 		return fmt.Errorf("container id %q must be lowercase letters, digits and dashes", id)
 	}
 	f, err := e.openPipe(id, false)

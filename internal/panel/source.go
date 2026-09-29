@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Caria-Core/zelie/internal/msg"
@@ -22,9 +23,11 @@ type Source interface {
 }
 
 var (
-	validRepo   = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})/[A-Za-z0-9._-]{1,100}$`)
-	validBranch = regexp.MustCompile(`^[A-Za-z0-9._][A-Za-z0-9._/-]{0,199}$`)
-	validCommit = regexp.MustCompile(`^[0-9a-f]{40}$`)
+	validRepo = sync.OnceValue(func() *regexp.Regexp {
+		return regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})/[A-Za-z0-9._-]{1,100}$`)
+	})
+	validBranch = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^[A-Za-z0-9._][A-Za-z0-9._/-]{0,199}$`) })
+	validCommit = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^[0-9a-f]{40}$`) })
 )
 
 var (
@@ -33,10 +36,10 @@ var (
 )
 
 func checkRepo(repo, branch string) *msg.Error {
-	if !validRepo.MatchString(repo) || strings.HasSuffix(repo, ".git") {
+	if !validRepo().MatchString(repo) || strings.HasSuffix(repo, ".git") {
 		return errBadRepo.Err()
 	}
-	if !validBranch.MatchString(branch) || strings.Contains(branch, "..") || strings.HasSuffix(branch, "/") {
+	if !validBranch().MatchString(branch) || strings.Contains(branch, "..") || strings.HasSuffix(branch, "/") {
 		return errBadBranch.Err()
 	}
 	return nil
@@ -84,14 +87,14 @@ func (g *PublicGitHub) Resolve(ctx context.Context, repo, branch string) (string
 		return "", err
 	}
 	commit := strings.TrimSpace(string(b))
-	if !validCommit.MatchString(commit) {
+	if !validCommit().MatchString(commit) {
 		return "", errors.New("GitHub gave an unexpected answer")
 	}
 	return commit, nil
 }
 
 func (g *PublicGitHub) Archive(ctx context.Context, repo, commit string) (io.ReadCloser, error) {
-	if !validRepo.MatchString(repo) || !validCommit.MatchString(commit) {
+	if !validRepo().MatchString(repo) || !validCommit().MatchString(commit) {
 		return nil, errors.New("invalid repository or commit")
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, g.Codeload+"/"+repo+"/tar.gz/"+commit, nil)

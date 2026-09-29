@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 )
 
 // Egg is one game server definition.
@@ -81,7 +82,7 @@ type Replace struct {
 	IfValue string
 }
 
-var envName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+var envName = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`) })
 
 var versions = map[string]bool{
 	"PTDL_v1": true, "PTDL_v2": true,
@@ -161,7 +162,7 @@ func Parse(data []byte) (*Egg, error) {
 			UserViewable: boolean(o.get("user_viewable")),
 			UserEditable: boolean(o.get("user_editable")),
 		}
-		if !envName.MatchString(v.Env) {
+		if !envName().MatchString(v.Env) {
 			return nil, fmt.Errorf("variable %d (%q) has no usable env_variable", i+1, v.Name)
 		}
 		v.Rules = rules(o.get("rules"))

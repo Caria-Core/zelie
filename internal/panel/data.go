@@ -145,7 +145,7 @@ func (s *Server) startExport(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"url": "/api/apps/" + a.ID + "/data/export/" + token})
 }
 
-var unsafeName = regexp.MustCompile(`[^A-Za-z0-9._-]+`)
+var unsafeName = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`[^A-Za-z0-9._-]+`) })
 
 func (s *Server) downloadExport(w http.ResponseWriter, r *http.Request) {
 	a, container, ok := s.dataTarget(w, r)
@@ -157,7 +157,7 @@ func (s *Server) downloadExport(w http.ResponseWriter, r *http.Request) {
 		writeError(w, errNoExport.Err())
 		return
 	}
-	name := unsafeName.ReplaceAllString(a.ID+"-"+p.query.Table, "_") + "-" + s.now().Format("2006-01-02") + ".csv"
+	name := unsafeName().ReplaceAllString(a.ID+"-"+p.query.Table, "_") + "-" + s.now().Format("2006-01-02") + ".csv"
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 	w.Header().Set("Content-Disposition", `attachment; filename="`+name+`"`)
 	w.Header().Set("Cache-Control", "no-store")

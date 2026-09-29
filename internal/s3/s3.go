@@ -20,6 +20,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -35,8 +36,8 @@ type Config struct {
 }
 
 var (
-	validBucket = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$`)
-	validRegion = regexp.MustCompile(`^[a-z0-9-]{1,32}$`)
+	validBucket = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$`) })
+	validRegion = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^[a-z0-9-]{1,32}$`) })
 )
 
 // DefaultRegion is used when none is given. Services with no regions of
@@ -69,13 +70,13 @@ func New(cfg Config) (*Client, error) {
 		(u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.User != nil || u.Fragment != "" {
 		return nil, errors.New("the endpoint must be an address like https://s3.example.com")
 	}
-	if !validBucket.MatchString(cfg.Bucket) {
+	if !validBucket().MatchString(cfg.Bucket) {
 		return nil, errors.New("the bucket name is not valid")
 	}
 	if cfg.Region == "" {
 		cfg.Region = DefaultRegion
 	}
-	if !validRegion.MatchString(cfg.Region) {
+	if !validRegion().MatchString(cfg.Region) {
 		return nil, errors.New("the region is not valid")
 	}
 	if cfg.AccessKey == "" || cfg.SecretKey == "" {

@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Caria-Core/zelie/internal/backup"
@@ -39,7 +40,7 @@ var (
 	errNoRoomUpload     = msg.Define(http.StatusUnprocessableEntity, "upload.no_room", "Not enough disk space: the file needs up to {need} and {free} is free, and Zelie keeps 1 GB free for the apps.")
 )
 
-var validUpload = regexp.MustCompile(`^[0-9a-f]{32}$`)
+var validUpload = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^[0-9a-f]{32}$`) })
 
 type uploadMeta struct {
 	App     string    `json:"app"`
@@ -62,7 +63,7 @@ type importRequest struct {
 func (s *Server) uploadsDir() string { return filepath.Join(s.Backups.Root, ".uploads") }
 
 func (s *Server) uploadPath(id string) (string, error) {
-	if !validUpload.MatchString(id) {
+	if !validUpload().MatchString(id) {
 		return "", fmt.Errorf("upload %q: %w", id, backup.ErrInvalid)
 	}
 	return filepath.Join(s.uploadsDir(), id), nil
@@ -100,7 +101,7 @@ func (s *Server) expireUploads() {
 	entries, _ := os.ReadDir(s.uploadsDir())
 	for _, e := range entries {
 		id, ok := strings.CutSuffix(e.Name(), ".json")
-		if !ok || !validUpload.MatchString(id) {
+		if !ok || !validUpload().MatchString(id) {
 			continue
 		}
 		if fi, err := e.Info(); err == nil && time.Since(fi.ModTime()) > uploadExpiry {

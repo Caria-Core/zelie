@@ -513,7 +513,7 @@ func (s *Server) watchGame(a store.App, container string, e *egg.Egg) {
 				}
 				delivered++
 				h.push(container, "line", line)
-				plain := ansi.ReplaceAllString(line, "")
+				plain := ansi().ReplaceAllString(line, "")
 				if !matched && done.Match(plain) {
 					matched = true
 					s.gameRuns.advance(app, container)

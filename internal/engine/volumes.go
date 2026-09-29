@@ -51,7 +51,7 @@ func (e *Engine) volumeDir(name string) string {
 // CreateVolume makes an empty volume. Its top directory belongs to root in
 // the container, which is who images expect to own a fresh mount.
 func (e *Engine) CreateVolume(name string) error {
-	if !validID.MatchString(name) {
+	if !validID().MatchString(name) {
 		return fmt.Errorf("volume name %q must be lowercase letters, digits and dashes", name)
 	}
 	// Only root may look inside: the files carry container IDs, and a
@@ -72,7 +72,7 @@ func (e *Engine) CreateVolume(name string) error {
 // RemoveVolume deletes a volume and everything in it. A volume a container
 // still has mounted is refused, stopped or not.
 func (e *Engine) RemoveVolume(ctx context.Context, name string) error {
-	if !validID.MatchString(name) {
+	if !validID().MatchString(name) {
 		return fmt.Errorf("invalid volume name %q", name)
 	}
 	ctx = e.ctx(ctx)
@@ -111,7 +111,7 @@ func (e *Engine) VolumeSizes() (map[string]int64, error) {
 	}
 	out := make(map[string]int64, len(entries))
 	for _, d := range entries {
-		if !d.IsDir() || !validID.MatchString(d.Name()) {
+		if !d.IsDir() || !validID().MatchString(d.Name()) {
 			continue
 		}
 		n, err := diskUsage(filepath.Join(e.paths.Volumes, d.Name()))
@@ -187,7 +187,7 @@ func (e *Engine) volumeMounts(vols []VolumeMount, idmap []specs.LinuxIDMapping) 
 // files came from a container and are not trusted: the root keeps every
 // path, symbolic links included, inside the volume.
 func (e *Engine) OpenVolume(ctx context.Context, name string) (*os.Root, error) {
-	if !validID.MatchString(name) {
+	if !validID().MatchString(name) {
 		return nil, fmt.Errorf("invalid volume name %q", name)
 	}
 	ctx = e.ctx(ctx)
@@ -230,7 +230,7 @@ func (e *Engine) OpenVolume(ctx context.Context, name string) (*os.Root, error) 
 // does not look at the containers, so whoever uses it must be fine with files
 // that change underneath.
 func (e *Engine) ReadVolume(name string) (*os.Root, error) {
-	if !validID.MatchString(name) {
+	if !validID().MatchString(name) {
 		return nil, fmt.Errorf("invalid volume name %q", name)
 	}
 	root, err := os.OpenRoot(e.volumeDir(name))
@@ -242,7 +242,7 @@ func (e *Engine) ReadVolume(name string) (*os.Root, error) {
 
 // VolumeSize returns how much disk one volume takes.
 func (e *Engine) VolumeSize(name string) (int64, error) {
-	if !validID.MatchString(name) {
+	if !validID().MatchString(name) {
 		return 0, fmt.Errorf("invalid volume name %q", name)
 	}
 	dir := e.volumeDir(name)

@@ -86,7 +86,7 @@ func yamlScalar(old *yaml.Node, value string) *yaml.Node {
 	if old != nil && old.Kind == yaml.ScalarNode {
 		kind = kindLike(old.ShortTag(), value)
 	}
-	if kind == kindFloat && wholeNumber.MatchString(value) {
+	if kind == kindFloat && wholeNumber().MatchString(value) {
 		// Written as a whole number, it is an int to YAML; forcing the tag
 		// would print it.
 		kind = kindInt

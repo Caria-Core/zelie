@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 
 	"github.com/Caria-Core/zelie/internal/engine"
 )
@@ -38,7 +39,7 @@ type InstallRequest struct {
 }
 
 // A shell's name or path, nothing that could carry arguments.
-var entrypointRe = regexp.MustCompile(`^[A-Za-z0-9._/+-]{1,128}$`)
+var entrypointRe = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^[A-Za-z0-9._/+-]{1,128}$`) })
 
 // spec turns the request into a container that runs like any other one:
 // the same user namespace, seccomp profile and limits.
@@ -46,7 +47,7 @@ func (r InstallRequest) spec() (engine.Spec, error) {
 	switch {
 	case r.App == "" || r.Volume == "":
 		return engine.Spec{}, errors.New("an install needs an app and a volume")
-	case !entrypointRe.MatchString(r.Entrypoint):
+	case !entrypointRe().MatchString(r.Entrypoint):
 		return engine.Spec{}, errors.New("the install entrypoint must be a shell such as bash")
 	case strings.ContainsRune(r.Script, 0):
 		return engine.Spec{}, errors.New("the install script cannot hold a null byte")
