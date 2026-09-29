@@ -24,6 +24,7 @@ type Core interface {
 	List(ctx context.Context) ([]engine.Status, error)
 	Run(ctx context.Context, s engine.Spec) error
 	RunApp(ctx context.Context, s engine.Spec, sealedEnv []string, linked ...core.LinkedVar) (string, error)
+	RunInstall(ctx context.Context, req core.InstallRequest) error
 	Pin(ctx context.Context, image string) (string, error)
 	SetLinks(ctx context.Context, app string, links []engine.Link) error
 	SetForwards(ctx context.Context, app string, forwards []engine.Forward) error

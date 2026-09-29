@@ -10,7 +10,7 @@ export type Backup = {
 	engine: Engine | '';
 	// found: made on another server and found in off-site storage.
 	// uploaded: a dump from another server that someone uploaded.
-	reason: 'scheduled' | 'manual' | 'restore' | 'found' | 'uploaded' | 'update' | 'upgrade';
+	reason: 'scheduled' | 'manual' | 'restore' | 'found' | 'uploaded' | 'update' | 'upgrade' | 'reinstall';
 	state: 'running' | 'done' | 'failed';
 	bytes: number;
 	error?: Msg;

@@ -123,7 +123,8 @@
 		found: t('backups.reason.found'),
 		uploaded: t('backups.reason.uploaded'),
 		update: t('backups.reason.update'),
-		upgrade: t('backups.reason.upgrade')
+		upgrade: t('backups.reason.upgrade'),
+		reinstall: t('backups.reason.reinstall')
 	};
 	const adapted = (b: Backup) => Object.entries(b.adapted ?? {});
 	const apps = $derived(links.map((l) => l.db));

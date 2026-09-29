@@ -5,6 +5,7 @@ package egg
 import (
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 )
 
@@ -69,6 +70,8 @@ type Replace struct {
 	Value   string
 	IfValue string
 }
+
+var envName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 var versions = map[string]bool{
 	"PTDL_v1": true, "PTDL_v2": true,
@@ -148,8 +151,8 @@ func Parse(data []byte) (*Egg, error) {
 			UserViewable: boolean(o.get("user_viewable")),
 			UserEditable: boolean(o.get("user_editable")),
 		}
-		if v.Env == "" {
-			return nil, fmt.Errorf("variable %d (%q) has no env_variable", i+1, v.Name)
+		if !envName.MatchString(v.Env) {
+			return nil, fmt.Errorf("variable %d (%q) has no usable env_variable", i+1, v.Name)
 		}
 		v.Rules = rules(o.get("rules"))
 		e.Variables = append(e.Variables, v)

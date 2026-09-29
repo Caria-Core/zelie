@@ -25,6 +25,9 @@ const (
 	BackupUpdate = "update"
 	// BackupUpgrade is the dump a database's new major version loads.
 	BackupUpgrade = "upgrade"
+	// BackupReinstall is taken just before a game server's install runs
+	// again.
+	BackupReinstall = "reinstall"
 )
 
 // Backup states.

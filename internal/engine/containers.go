@@ -88,6 +88,11 @@ type Spec struct {
 	// part of the core's API.
 	Mounts []Mount
 
+	// Files are written by the core and bound read-only into the container,
+	// such as an install script. They live in the container's own
+	// directory and go when it does. Like Mounts, only the core sets them.
+	Files []File
+
 	// Builder runs the container as the builder: in the builder's own ID
 	// block, so what it writes stays readable by the next build step. Only
 	// one builder container exists at a time. Like Mounts, only the core
@@ -102,6 +107,16 @@ type Mount struct {
 	Source, Target string
 	ReadOnly       bool
 }
+
+// File is a file to put in a container. It belongs to root on the host and
+// is readable by everyone, so the container's own root can read it.
+type File struct {
+	Target  string
+	Content []byte
+}
+
+// MaxFileSize is the largest File the engine writes.
+const MaxFileSize = 512 << 10
 
 // Validate checks the spec before anything is created.
 func (s Spec) Validate() error {
@@ -144,6 +159,18 @@ func (s Spec) Validate() error {
 		if !filepath.IsAbs(m.Source) || !filepath.IsAbs(m.Target) || filepath.Clean(m.Target) != m.Target {
 			return fmt.Errorf("mount %s on %s: paths must be absolute and clean", m.Source, m.Target)
 		}
+	}
+	for _, f := range s.Files {
+		if err := CheckVolumeTarget(f.Target); err != nil {
+			return fmt.Errorf("file %s: %w", f.Target, err)
+		}
+		if len(f.Content) > MaxFileSize {
+			return fmt.Errorf("file %s is larger than %d KiB", f.Target, MaxFileSize>>10)
+		}
+		if targets[f.Target] {
+			return fmt.Errorf("two mounts are on %s", f.Target)
+		}
+		targets[f.Target] = true
 	}
 	return nil
 }
@@ -306,6 +333,16 @@ func (e *Engine) Run(ctx context.Context, s Spec) (err error) {
 			opts[1] = "ro"
 		}
 		specOpts = append(specOpts, oci.WithMounts([]specs.Mount{{Destination: m.Target, Type: "bind", Source: m.Source, Options: opts}}))
+	}
+	for i, f := range s.Files {
+		src := filepath.Join(e.containerDir(s.ID), "files", strconv.Itoa(i))
+		if err := os.MkdirAll(filepath.Dir(src), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(src, f.Content, 0o644); err != nil {
+			return err
+		}
+		specOpts = append(specOpts, oci.WithMounts([]specs.Mount{{Destination: f.Target, Type: "bind", Source: src, Options: []string{"rbind", "ro", "nosuid", "nodev"}}}))
 	}
 	if s.Nesting {
 		specOpts = append(specOpts, nestingOpts)

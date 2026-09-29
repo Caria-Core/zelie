@@ -64,6 +64,8 @@ type appJSON struct {
 	// Engine and EngineVersion are set for a database.
 	Engine        string `json:"engine,omitempty"`
 	EngineVersion string `json:"engine_version,omitempty"`
+	// Kind is app or game. A database is an app with an engine.
+	Kind string `json:"kind"`
 	// State is the live container's: running, stopped, or none when
 	// nothing has gone live yet.
 	State string `json:"state"`
@@ -84,7 +86,7 @@ type appJSON struct {
 // fetched once by the caller.
 func (s *Server) appOut(ctx context.Context, a store.App, containers []engine.Status) (appJSON, error) {
 	out := appJSON{ID: a.ID, Source: a.Source, Image: a.Image, Repo: a.Repo, Branch: a.Branch,
-		Port: a.Port, Domain: a.Domain, MemoryMB: a.MemoryMB, CPUs: a.CPUs, AutoDeploy: a.AutoDeploy, HealthPath: a.HealthPath, TestCommand: a.TestCommand, BuildCommand: a.BuildCommand, StartCommand: a.StartCommand, Detected: a.Detected, RestartPulls: a.RestartPulls, Engine: a.Engine, EngineVersion: a.EngineVersion, State: "none",
+		Port: a.Port, Domain: a.Domain, MemoryMB: a.MemoryMB, CPUs: a.CPUs, AutoDeploy: a.AutoDeploy, HealthPath: a.HealthPath, TestCommand: a.TestCommand, BuildCommand: a.BuildCommand, StartCommand: a.StartCommand, Detected: a.Detected, RestartPulls: a.RestartPulls, Engine: a.Engine, EngineVersion: a.EngineVersion, Kind: a.Kind, State: "none",
 		Stopped: a.Stopped, Crashing: s.crashes.gaveUp(a.ID), Update: s.imageUpdates.get(a.ID), UpgradeTo: upgradeTo(a)}
 	vols, err := s.Store.Volumes(ctx, a.ID)
 	if err != nil {
@@ -460,7 +462,7 @@ func (s *Server) getApp(w http.ResponseWriter, r *http.Request) {
 // everything else with the next deployment.
 func (s *Server) updateApp(w http.ResponseWriter, r *http.Request) {
 	a, ok := s.appFrom(w, r)
-	if !ok {
+	if !ok || !s.notGame(w, a) {
 		return
 	}
 	var req appRequest
@@ -610,7 +612,7 @@ func (s *Server) setEnv(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) newDeployment(w http.ResponseWriter, r *http.Request) {
 	a, ok := s.appFrom(w, r)
-	if !ok || !s.unstop(w, r, a) {
+	if !ok || !s.notGame(w, a) || !s.unstop(w, r, a) {
 		return
 	}
 	id, err := s.deploy(r.Context(), a, store.Deployment{})
@@ -626,7 +628,7 @@ func (s *Server) newDeployment(w http.ResponseWriter, r *http.Request) {
 // leaves the running container alone.
 func (s *Server) restartApp(w http.ResponseWriter, r *http.Request) {
 	a, ok := s.appFrom(w, r)
-	if !ok || !s.unstop(w, r, a) {
+	if !ok || !s.notGame(w, a) || !s.unstop(w, r, a) {
 		return
 	}
 	if a.RestartPulls && a.Source == store.SourceGitHub {
@@ -653,7 +655,7 @@ func (s *Server) restartApp(w http.ResponseWriter, r *http.Request) {
 // rollback puts an earlier deployment's image live again.
 func (s *Server) rollback(w http.ResponseWriter, r *http.Request) {
 	a, ok := s.appFrom(w, r)
-	if !ok || !s.unstop(w, r, a) {
+	if !ok || !s.notGame(w, a) || !s.unstop(w, r, a) {
 		return
 	}
 	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
@@ -714,7 +716,7 @@ func (s *Server) stopHandler(w http.ResponseWriter, r *http.Request) {
 // deployment if nothing has gone live yet.
 func (s *Server) startHandler(w http.ResponseWriter, r *http.Request) {
 	a, ok := s.appFrom(w, r)
-	if !ok || !s.unstop(w, r, a) {
+	if !ok || !s.notGame(w, a) || !s.unstop(w, r, a) {
 		return
 	}
 	s.crashes.reset(a.ID)

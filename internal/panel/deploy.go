@@ -136,22 +136,41 @@ func (s *Server) deploy(ctx context.Context, app store.App, d store.Deployment) 
 	if err != nil {
 		return 0, err
 	}
+	s.background(app.ID, func(ctx context.Context) { s.runDeployment(ctx, app.ID, id) })
+	return id, nil
+}
+
+// background runs work on an app once its earlier work is done, until it
+// finishes or the app is deleted or stopped.
+func (s *Server) background(app string, run func(ctx context.Context)) {
 	s.deploys.wg.Add(1)
 	go func() {
 		defer s.deploys.wg.Done()
-		unlock := s.deploys.lock(app.ID)
+		unlock := s.deploys.lock(app)
 		defer unlock()
 		ctx, cancel := context.WithCancel(s.baseContext())
 		defer cancel()
-		s.deploys.running(app.ID, cancel)
-		defer s.deploys.running(app.ID, nil)
-		s.runDeployment(ctx, app.ID, id)
+		s.deploys.running(app, cancel)
+		defer s.deploys.running(app, nil)
+		run(ctx)
 	}()
-	return id, nil
 }
 
 func (s *Server) deployLogPath(id int64) string {
 	return filepath.Join(s.DataDir, "deploys", strconv.FormatInt(id, 10)+".log")
+}
+
+// openDeployLog opens the file a deployment's output is kept in. What it
+// returns is cut off at maxDeployLog.
+func (s *Server) openDeployLog(id int64) (io.Writer, func() error, error) {
+	if err := os.MkdirAll(filepath.Dir(s.deployLogPath(id)), 0o700); err != nil {
+		return nil, nil, err
+	}
+	f, err := os.OpenFile(s.deployLogPath(id), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return nil, nil, err
+	}
+	return &cappedWriter{w: f, left: maxDeployLog}, f.Close, nil
 }
 
 // runDeployment builds or pulls the new version, starts it next to the old
@@ -163,17 +182,12 @@ func (s *Server) runDeployment(ctx context.Context, appID string, id int64) {
 		s.Log.Error("load deployment", "app", appID, "id", id, "err", err)
 		return
 	}
-	if err := os.MkdirAll(filepath.Dir(s.deployLogPath(id)), 0o700); err != nil {
-		s.Log.Error("deployment log", "err", err)
-		return
-	}
-	f, err := os.OpenFile(s.deployLogPath(id), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	out, closeLog, err := s.openDeployLog(id)
 	if err != nil {
 		s.Log.Error("deployment log", "err", err)
 		return
 	}
-	defer f.Close()
-	out := &cappedWriter{w: f, left: maxDeployLog}
+	defer closeLog()
 
 	set := func(state string) {
 		d.State = state

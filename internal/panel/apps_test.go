@@ -56,6 +56,10 @@ type appCore struct {
 	digests    map[string]string // what each registry tag points at now
 	next       byte
 
+	installs    []core.InstallRequest
+	installExit int  // what the install containers exit with
+	installHang bool // install containers never exit
+
 	links map[string][]engine.Link
 
 	forwards  map[string][]engine.Forward
@@ -198,9 +202,24 @@ func (c *appCore) Remove(_ context.Context, id string) error {
 	return nil
 }
 
-func (c *appCore) Logs(_ context.Context, _ string, _ bool, _ int64, w io.Writer) error {
+func (c *appCore) Logs(ctx context.Context, id string, follow bool, _ int64, w io.Writer) error {
+	if strings.Contains(id, "-install-") {
+		_, err := io.WriteString(w, "downloading server.jar\n")
+		if follow {
+			<-ctx.Done()
+		}
+		return err
+	}
 	_, err := io.WriteString(w, "listen EADDRINUSE\n")
 	return err
+}
+
+func (c *appCore) RunInstall(_ context.Context, req core.InstallRequest) error {
+	c.mu.Lock()
+	c.installs = append(c.installs, req)
+	c.mu.Unlock()
+	return c.runApp(engine.Spec{ID: req.ID, App: req.App, Image: req.Image, Env: req.Env,
+		Volumes: []engine.VolumeMount{{Name: req.Volume, Target: core.InstallVolumePath}}}, nil)
 }
 
 func (c *appCore) Build(_ context.Context, app, version string, env, sealed []string, src io.Reader, out io.Writer) (build.Result, error) {
@@ -224,12 +243,22 @@ func (c *appCore) Build(_ context.Context, app, version string, env, sealed []st
 		Builder: "railpack", BuildCommand: "npm run build", StartCommand: "node index.js"}, nil
 }
 
-func (c *appCore) Wait(_ context.Context, id string) (int, error) {
+func (c *appCore) Wait(ctx context.Context, id string) (int, error) {
+	c.mu.Lock()
+	hang := c.installHang && strings.Contains(id, "-install-")
+	c.mu.Unlock()
+	if hang {
+		<-ctx.Done()
+		return 0, ctx.Err()
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if s, ok := c.containers[id]; ok {
 		s.State = "stopped"
 		c.containers[id] = s
+	}
+	if strings.Contains(id, "-install-") {
+		return c.installExit, nil
 	}
 	return c.testExit, nil
 }

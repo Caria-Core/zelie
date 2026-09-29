@@ -55,6 +55,8 @@ type Server struct {
 	HealthCheck func(ctx context.Context, url, host string) (int, error)
 	// Registry answers what image tags point at; nil asks the real ones.
 	Registry Registry
+	// Eggs downloads egg files; nil asks the real sources.
+	Eggs EggFetcher
 	// PortCheck replaces the connection a database's health check makes.
 	PortCheck func(ctx context.Context, ip netip.Addr, port int) bool
 
@@ -202,6 +204,10 @@ func (s *Server) Handler() http.Handler {
 	web.HandleFunc("GET /api/nodes/{node}/allocations/suggest", s.adminOnly(s.suggestAllocations))
 	web.HandleFunc("POST /api/nodes/{node}/allocations", s.adminOnly(s.addAllocations))
 	web.HandleFunc("DELETE /api/nodes/{node}/allocations/{id}", s.adminOnly(s.deleteAllocation))
+	web.HandleFunc("GET /api/eggs/catalog", s.adminOnly(s.eggCatalog))
+	web.HandleFunc("POST /api/games", s.adminOnly(s.createGame))
+	web.HandleFunc("GET /api/games/{app}", s.adminOnly(s.getGame))
+	web.HandleFunc("POST /api/games/{app}/reinstall", s.adminOnly(s.reinstallGame))
 	web.HandleFunc("GET /api/host", s.signedIn(s.hostInfo))
 	web.HandleFunc("GET /api/github", s.signedIn(s.githubStatus))
 	web.HandleFunc("POST /api/github/manifest", s.confirmed(s.githubManifest))
@@ -259,6 +265,9 @@ func (s *Server) Serve(ctx context.Context, socket string) error {
 	if err := s.Store.FailUnfinishedBackups(ctx, s.now()); err != nil {
 		return err
 	}
+	if err := s.Store.FailUnfinishedInstalls(ctx); err != nil {
+		return err
+	}
 	go s.runBackups(ctx)
 	go s.runUploads(ctx)
 	// Everything that watches containers needs the core, which may still be
@@ -268,6 +277,7 @@ func (s *Server) Serve(ctx context.Context, socket string) error {
 			return
 		}
 		s.pinLive(ctx)
+		s.removeStaleInstalls(ctx)
 		go s.supervise(ctx)
 		go s.watchVolumes(ctx)
 		s.syncAllLinks(ctx)

@@ -50,11 +50,22 @@ type App struct {
 	// major version EngineVersion.
 	Engine        string
 	EngineVersion string
-	CreatedAt     time.Time
+	// Kind is KindApp or KindGame. A database is a KindApp with an Engine.
+	Kind      string
+	CreatedAt time.Time
 }
+
+// What an app is.
+const (
+	KindApp  = "app"
+	KindGame = "game"
+)
 
 // IsDatabase reports whether the app is one of Zelie's databases.
 func (a App) IsDatabase() bool { return a.Engine != "" }
+
+// IsGame reports whether the app is a game server.
+func (a App) IsGame() bool { return a.Kind == KindGame }
 
 // Detected is how the last build built an app.
 type Detected struct {
@@ -66,7 +77,7 @@ type Detected struct {
 // ErrExists is returned when a name or domain is already taken.
 var ErrExists = errors.New("already exists")
 
-const appColumns = "id, source, image, repo, branch, port, domain, memory_mb, cpus, auto_deploy, health_path, test_command, stopped, build_command, start_command, detected, restart_pulls, engine, engine_version, created_at"
+const appColumns = "id, source, image, repo, branch, port, domain, memory_mb, cpus, auto_deploy, health_path, test_command, stopped, build_command, start_command, detected, restart_pulls, engine, engine_version, kind, created_at"
 
 func scanApp(row scanner) (App, error) {
 	var a App
@@ -74,7 +85,7 @@ func scanApp(row scanner) (App, error) {
 	var test sql.NullString
 	var detected string
 	err := row.Scan(&a.ID, &a.Source, &a.Image, &a.Repo, &a.Branch, &a.Port, &a.Domain, &a.MemoryMB, &a.CPUs, &a.AutoDeploy, &a.HealthPath, &test, &a.Stopped,
-		&a.BuildCommand, &a.StartCommand, &detected, &a.RestartPulls, &a.Engine, &a.EngineVersion, &created)
+		&a.BuildCommand, &a.StartCommand, &detected, &a.RestartPulls, &a.Engine, &a.EngineVersion, &a.Kind, &created)
 	a.CreatedAt = time.Unix(created, 0)
 	json.Unmarshal([]byte(detected), &a.Detected)
 	a.TestCommand, a.TestSet = test.String, test.Valid
@@ -85,9 +96,9 @@ func scanApp(row scanner) (App, error) {
 }
 
 func (s *Store) CreateApp(ctx context.Context, a App) error {
-	_, err := s.db.ExecContext(ctx, "INSERT INTO apps ("+appColumns+") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+	_, err := s.db.ExecContext(ctx, "INSERT INTO apps ("+appColumns+") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 		a.ID, a.Source, a.Image, a.Repo, a.Branch, a.Port, a.Domain, a.MemoryMB, a.CPUs, a.AutoDeploy, a.HealthPath, a.testColumn(), a.Stopped,
-		a.BuildCommand, a.StartCommand, "{}", a.RestartPulls, a.Engine, a.EngineVersion, a.CreatedAt.Unix())
+		a.BuildCommand, a.StartCommand, "{}", a.RestartPulls, a.Engine, a.EngineVersion, a.kind(), a.CreatedAt.Unix())
 	return uniqueErr(err)
 }
 
@@ -119,6 +130,14 @@ func (s *Store) SetDetected(ctx context.Context, appID string, d Detected) error
 func (s *Store) SetStopped(ctx context.Context, appID string, stopped bool) error {
 	res, err := s.db.ExecContext(ctx, "UPDATE apps SET stopped = ? WHERE id = ?", stopped, appID)
 	return oneRow(res, err)
+}
+
+// kind is the app's kind, KindApp when none was set.
+func (a App) kind() string {
+	if a.Kind == "" {
+		return KindApp
+	}
+	return a.Kind
 }
 
 func (a App) testColumn() any {
@@ -229,27 +248,31 @@ func (s *Store) SetEnv(ctx context.Context, appID string, vars []EnvVar) error {
 // Deployment states. A deployment moves forward through them and ends in
 // one of the last four.
 const (
-	DeployQueued   = "queued"
-	DeployBuilding = "building"
-	DeployTesting  = "testing"
-	DeployStarting = "starting"
-	DeployLive     = "live"
-	DeployFailed   = "failed"
-	DeployReplaced = "replaced" // was live until a newer one took over
-	DeploySkipped  = "skipped"  // a newer one came before it started
+	DeployQueued     = "queued"
+	DeployBuilding   = "building"
+	DeployTesting    = "testing"
+	DeployStarting   = "starting"
+	DeployInstalling = "installing" // a game server's install container runs
+	DeployInstalled  = "installed"  // the install finished; nothing goes live
+	DeployLive       = "live"
+	DeployFailed     = "failed"
+	DeployReplaced   = "replaced" // was live until a newer one took over
+	DeploySkipped    = "skipped"  // a newer one came before it started
 )
 
 // What started a deployment.
 const (
-	CauseManual   = "manual"
-	CausePush     = "push"
-	CauseRestart  = "restart"  // the live image again, without a build
-	CauseRollback = "rollback" // an earlier deployment's image
-	CauseRecover  = "recover"  // the live image again, after it stopped by itself
-	CauseRestore  = "restore"  // the live image again, after a backup was put back
-	CauseBackup   = "backup"   // the live image again, after the app was stopped for its backup
-	CauseUpdate   = "update"   // what the image's tag points at now; a database is backed up first
-	CauseUpgrade  = "upgrade"  // a database's new major version, with its data dumped and loaded
+	CauseManual    = "manual"
+	CausePush      = "push"
+	CauseRestart   = "restart"   // the live image again, without a build
+	CauseRollback  = "rollback"  // an earlier deployment's image
+	CauseRecover   = "recover"   // the live image again, after it stopped by itself
+	CauseRestore   = "restore"   // the live image again, after a backup was put back
+	CauseBackup    = "backup"    // the live image again, after the app was stopped for its backup
+	CauseUpdate    = "update"    // what the image's tag points at now; a database is backed up first
+	CauseUpgrade   = "upgrade"   // a database's new major version, with its data dumped and loaded
+	CauseInstall   = "install"   // a new game server's install container
+	CauseReinstall = "reinstall" // the install again, after a backup of the server's files
 )
 
 // Deployment is one attempt to put a version of an app live.
@@ -403,7 +426,7 @@ func (s *Store) LiveDeployment(ctx context.Context, appID string) (Deployment, e
 // SetDeployment records progress. Ending states also set the finish time.
 func (s *Store) SetDeployment(ctx context.Context, d Deployment, now time.Time) error {
 	var finished any
-	if d.State == DeployLive || d.State == DeployFailed || d.State == DeployReplaced || d.State == DeploySkipped {
+	if d.State == DeployLive || d.State == DeployFailed || d.State == DeployReplaced || d.State == DeploySkipped || d.State == DeployInstalled {
 		finished = now.Unix()
 	}
 	text, js := msgColumns(d.Error)
@@ -427,8 +450,8 @@ func (s *Store) GoLive(ctx context.Context, d Deployment, now time.Time) error {
 // FailUnfinished marks deployments that were in progress when the panel
 // stopped as failed. The panel calls it on start.
 func (s *Store) FailUnfinished(ctx context.Context, now time.Time) error {
-	_, err := s.db.ExecContext(ctx, "UPDATE deployments SET state = ?, error = ?, finished_at = ? WHERE state IN (?, ?, ?, ?)",
-		DeployFailed, "the panel restarted during this deployment", now.Unix(), DeployQueued, DeployBuilding, DeployTesting, DeployStarting)
+	_, err := s.db.ExecContext(ctx, "UPDATE deployments SET state = ?, error = ?, finished_at = ? WHERE state IN (?, ?, ?, ?, ?)",
+		DeployFailed, "the panel restarted during this deployment", now.Unix(), DeployQueued, DeployBuilding, DeployTesting, DeployStarting, DeployInstalling)
 	return err
 }
 

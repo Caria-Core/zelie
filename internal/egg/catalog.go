@@ -47,6 +47,16 @@ var Catalog = []Entry{
 	},
 }
 
+// Lookup returns the catalog entry with the given id.
+func Lookup(id string) (Entry, bool) {
+	for _, e := range Catalog {
+		if e.ID == id {
+			return e, true
+		}
+	}
+	return Entry{}, false
+}
+
 // RawBase is where catalog files are downloaded from. Tests point it at a
 // local server.
 var RawBase = "https://raw.githubusercontent.com"

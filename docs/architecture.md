@@ -152,6 +152,12 @@ container, and one that lets exactly that traffic through; where ufw or another 
 firewall is present, the same opening is made there. The rules follow the container when
 it restarts with a new address, and go when the server is deleted.
 
+A new server is set up by the egg's install script. Zelie runs it once, in a container
+of its own that is built from the egg's install image, with the server's files mounted
+at `/mnt/server` and the same isolation and limits as any other container. Its output is
+kept as a log. The script runs again only when you ask for a reinstall, and Zelie backs up
+the server's files first; it does not delete them.
+
 ## State and secrets
 
 The panel keeps its state in SQLite. An app's variables can be marked secret. The panel

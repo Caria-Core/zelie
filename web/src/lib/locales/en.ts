@@ -576,6 +576,7 @@ export default {
 	'backups.reason.uploaded': 'uploaded',
 	'backups.reason.update': 'before an update',
 	'backups.reason.upgrade': 'for an upgrade',
+	'backups.reason.reinstall': 'before a reinstall',
 	'offsite.foundTitle': 'Backups from another server',
 	'offsite.foundLead': 'Moving to this server, or starting over after losing one? Set the folder above to the old server\'s, then look for its backups.',
 	'offsite.look': 'Look in off-site storage',

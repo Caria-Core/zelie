@@ -325,5 +325,35 @@ CREATE TABLE allocations (
 	UNIQUE (node_id, ip, port)
 ) STRICT;
 CREATE INDEX allocations_app ON allocations(app_id);
+`, `
+-- What an app is: a plain app, or a game server. A database is told apart
+-- by its engine and keeps kind 'app'.
+ALTER TABLE apps ADD COLUMN kind TEXT NOT NULL DEFAULT 'app' CHECK (kind IN ('app', 'game'));
+
+-- Egg files as they were fetched, so a server never needs the network to
+-- read its egg again. source is a catalog id or the address it came from.
+CREATE TABLE eggs (
+	id          INTEGER PRIMARY KEY,
+	name        TEXT NOT NULL,
+	source      TEXT NOT NULL,
+	raw         BLOB NOT NULL,
+	imported_at INTEGER NOT NULL
+) STRICT;
+CREATE INDEX eggs_source ON eggs(source);
+
+-- What a game server has beyond its app row. image and startup are what
+-- the egg offered and the server uses; variables is a JSON object from
+-- environment variable name to value. install_id is the deployment whose
+-- log holds the last install.
+CREATE TABLE game_servers (
+	app_id        TEXT PRIMARY KEY REFERENCES apps(id) ON DELETE CASCADE,
+	egg_id        INTEGER NOT NULL REFERENCES eggs(id),
+	image         TEXT NOT NULL,
+	startup       TEXT NOT NULL,
+	variables     TEXT NOT NULL DEFAULT '{}',
+	install_state TEXT NOT NULL CHECK (install_state IN ('installing', 'installed', 'failed')),
+	install_id    INTEGER,
+	installed_at  INTEGER
+) STRICT;
 `,
 }
