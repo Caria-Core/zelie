@@ -54,7 +54,7 @@ func (c *steamCore) Logs(ctx context.Context, id string, follow bool, tail int64
 	return c.appCore.Logs(ctx, id, follow, tail, w)
 }
 
-func (c *steamCore) PeekVolumeFile(_ context.Context, volume, path string) ([]byte, error) {
+func (c *steamCore) ReadFile(_ context.Context, _ core.FileRef, path string) ([]byte, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.peeked = append(c.peeked, path)

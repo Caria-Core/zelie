@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Caria-Core/zelie/internal/core"
 	"github.com/Caria-Core/zelie/internal/egg"
 	"github.com/Caria-Core/zelie/internal/engine"
 	"github.com/Caria-Core/zelie/internal/msg"
@@ -112,23 +113,24 @@ type gameSteamJSON struct {
 	AutoUpdate      bool       `json:"auto_update"`
 }
 
-// volumePeeker is the part of the core that reads a file out of a volume.
-type volumePeeker interface {
-	PeekVolumeFile(ctx context.Context, volume, path string) ([]byte, error)
-}
-
 // installedBuild reads the build id SteamCMD left in the server's files. It
 // is empty when the server has not been installed or the file is not there.
+// It reads the way the file manager does, which works while the server
+// runs; a peek into the volume would be refused then.
 func (s *Server) installedBuild(ctx context.Context, a store.App, g store.GameServer, appID int64) string {
-	peek, ok := s.Core.(volumePeeker)
-	if !ok || g.InstallState != store.InstallDone {
+	if g.InstallState != store.InstallDone {
 		return ""
 	}
 	vols, err := s.Store.Volumes(ctx, a.ID)
-	if err != nil || len(vols) == 0 {
+	if err != nil {
 		return ""
 	}
-	manifest, err := peek.PeekVolumeFile(ctx, vols[0].Name, steam.ManifestPath(appID))
+	i := slices.IndexFunc(vols, func(v store.Volume) bool { return v.Path == gameVolumePath })
+	if i < 0 {
+		return ""
+	}
+	ref := core.FileRef{Volume: vols[i].Name, FileOwner: core.FileOwner{UID: gameUID, GID: gameGID}}
+	manifest, err := s.Core.ReadFile(ctx, ref, steam.ManifestPath(appID))
 	if err != nil {
 		if !isNotFound(err) {
 			s.Log.Warn("read steam manifest", "server", a.ID, "err", err)
