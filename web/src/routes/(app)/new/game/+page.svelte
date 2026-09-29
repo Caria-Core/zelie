@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { Check, Download, Gamepad2 } from '@lucide/svelte';
+	import { Check, Download, Gamepad2, Search } from '@lucide/svelte';
 	import { goto } from '$app/navigation';
 	import { api, ApiError } from '$lib/api';
 	import { apps, reload } from '$lib/apps.svelte';
@@ -18,6 +18,7 @@
 
 	// memory_mb, disk_mb and ports are what the game needs, for games that need more than most.
 	type Entry = { id: string; name: string; game: string; memory_mb?: number; disk_mb?: number; ports?: number };
+	const defaultMemory = 4096;
 	const steps = $derived([t('game.new.step.game'), t('game.new.step.resources'), t('game.new.step.ports'), t('game.new.step.settings')]);
 
 	let step = $state(1);
@@ -33,7 +34,7 @@
 	let name = $state('');
 	let named = $state(false);
 	let image = $state('');
-	let memory = $state(4096);
+	let memory = $state(defaultMemory);
 	let cpus = $state(2);
 	let disk = $state(10240);
 	// Ports beyond the named ones, for a game that needs more than its egg
@@ -80,7 +81,29 @@
 	const editable = $derived(shownVars.filter((v) => !v.locked));
 	const lockedVars = $derived(shownVars.filter((v) => v.locked));
 	const needsEula = $derived(preview?.features.includes('eula') ?? false);
-	const cardName = $derived(catalog.find((c) => c.id === chosen)?.name ?? '');
+	const entry = $derived(catalog.find((c) => c.id === chosen));
+	const cardName = $derived(entry ? (entry.name === entry.game ? entry.name : `${entry.game} ${entry.name}`) : '');
+	// One card per game; a game with several eggs, such as Minecraft, offers
+	// its kinds under the cards once it is picked.
+	type Group = { game: string; entries: Entry[] };
+	const groups = $derived.by(() => {
+		const list: Group[] = [];
+		for (const c of catalog) {
+			const g = list.find((x) => x.game === c.game);
+			if (g) g.entries.push(c);
+			else list.push({ game: c.game, entries: [c] });
+		}
+		return list;
+	});
+	let query = $state('');
+	const shownGroups = $derived.by(() => {
+		const q = query.trim().toLowerCase();
+		if (!q) return groups;
+		return groups.filter((g) => g.game.toLowerCase().includes(q) || g.entries.some((e) => e.name.toLowerCase().includes(q)));
+	});
+	function pickGroup(g: Group) {
+		if (!g.entries.some((e) => e.id === chosen)) chosen = g.entries[0].id;
+	}
 	const urlValid = $derived(/^https:\/\/\S+$/.test(eggUrl.trim()));
 
 	$effect(() => {
@@ -117,10 +140,9 @@
 			picks = {};
 			eula = false;
 			if (!named) name = suggestName(preview.name);
-			const entry = catalog.find((c) => c.id === chosen);
 			extra = 0;
 			if (host.info) {
-				memory = Math.min(entry?.memory_mb ?? memory, Math.floor(host.info.memory_bytes / 2 ** 20));
+				memory = Math.min(entry?.memory_mb ?? defaultMemory, Math.floor(host.info.memory_bytes / 2 ** 20));
 				cpus = Math.min(Math.max(cpus, 1), host.info.cpus);
 				const fit = sizeSteps(diskMB).filter((s) => s <= diskMB / 2);
 				disk = entry?.disk_mb ? Math.floor(Math.min(entry.disk_mb, diskMB / 2)) : fit.includes(disk) ? disk : (fit[fit.length - 1] ?? defaultSize);
@@ -241,20 +263,53 @@
 				<h2 class="font-medium">{t('game.new.gameTitle')}</h2>
 				<p class="text-sm text-muted">{t('game.new.gameLead')}</p>
 			</div>
-			<div class="grid gap-3 sm:grid-cols-2">
-				{#each catalog as c (c.id)}
+			{#if groups.length > 8}
+				<div class="relative">
+					<Search size={15} class="pointer-events-none absolute top-1/2 left-3.5 -translate-y-1/2 text-muted" />
+					<input
+						class="h-10 w-full min-w-0 rounded-xl border border-line bg-bg pr-3.5 pl-9 text-[15px] outline-none transition focus:border-muted"
+						type="search"
+						bind:value={query}
+						placeholder={t('game.new.search')}
+						aria-label={t('game.new.search')}
+						autocomplete="off"
+					/>
+				</div>
+			{/if}
+			<div class="grid grid-flow-dense gap-3 sm:grid-cols-2">
+				{#each shownGroups as g (g.game)}
+					{@const on = g.entries.some((e) => e.id === chosen)}
 					<button
 						type="button"
-						class="flex items-start gap-4 rounded-2xl border p-4 text-left transition hover:bg-hover {chosen === c.id ? 'border-fg' : 'border-line'}"
-						aria-pressed={chosen === c.id}
-						onclick={() => (chosen = c.id)}
+						class="flex items-start gap-4 rounded-2xl border p-4 text-left transition hover:bg-hover {on ? 'border-fg' : 'border-line'}"
+						aria-pressed={on}
+						onclick={() => pickGroup(g)}
 					>
 						<span class="inline-flex size-10 shrink-0 items-center justify-center rounded-xl border border-line bg-panel" aria-hidden="true"><Gamepad2 size={20} strokeWidth={1.5} /></span>
 						<span class="min-w-0">
-							<span class="block font-medium">{c.game}</span>
-							{#if c.name !== c.game}<span class="block text-sm text-muted">{c.name}</span>{/if}
+							<span class="block font-medium">{g.game}</span>
+							{#if g.entries.length > 1}
+								<span class="block text-sm text-muted">{t('game.new.kinds', { n: g.entries.length })}</span>
+							{:else if g.entries[0].name !== g.game}
+								<span class="block text-sm text-muted">{g.entries[0].name}</span>
+							{/if}
 						</span>
 					</button>
+					{#if on && g.entries.length > 1}
+						<div class="flex flex-col gap-2 sm:col-span-2" role="group" aria-label={t('game.new.kind', { game: g.game })}>
+							<p class="text-sm font-medium">{t('game.new.kind', { game: g.game })}</p>
+							<div class="flex flex-wrap gap-2">
+								{#each g.entries as k (k.id)}
+									<button
+										type="button"
+										class="h-9 rounded-full border px-4 text-sm transition hover:bg-hover {chosen === k.id ? 'border-fg' : 'border-line'}"
+										aria-pressed={chosen === k.id}
+										onclick={() => (chosen = k.id)}>{k.name}</button
+									>
+								{/each}
+							</div>
+						</div>
+					{/if}
 				{/each}
 				<button
 					type="button"
@@ -269,6 +324,9 @@
 					</span>
 				</button>
 			</div>
+			{#if query.trim() && !shownGroups.length}
+				<p class="text-sm text-muted">{t('game.new.noMatch', { query: query.trim() })}</p>
+			{/if}
 			{#if chosen === 'url'}
 				<Field label={t('game.new.eggUrl')} hint={t('game.new.eggUrlHint')} type="url" placeholder="https://…/egg-my-game.json" autocomplete="off" bind:value={eggUrl} />
 			{/if}
