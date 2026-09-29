@@ -253,6 +253,10 @@ func (s *Server) updateGamePorts(w http.ResponseWriter, r *http.Request) {
 		writeError(w, errInstalling.Err())
 		return
 	}
+	// Starts run under the same lock, so none can begin between the check
+	// below and the change, with half of the old ports.
+	unlock := s.deploys.lock(a.ID)
+	defer unlock()
 	if s.gameState(ctx, a) != stateStopped {
 		writeError(w, errStopForPorts.Err())
 		return

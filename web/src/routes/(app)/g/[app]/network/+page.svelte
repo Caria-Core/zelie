@@ -123,23 +123,17 @@
 			{#each rows as r (r.key)}
 				{@const p = r.saved}
 				<li class="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 px-4 py-3">
-					<div class="flex min-w-0 flex-col gap-1.5">
-						{#if p}
-							<span class="font-mono text-[15px] select-all">{address(p)}</span>
-						{:else}
-							<span class="text-[15px] text-muted">{t('network.newPort')}</span>
-						{/if}
-						<span class="flex flex-wrap items-center gap-1.5">
-							{#if p?.default}
-								<span class="rounded-full bg-selected px-2.5 py-0.5 text-xs">{t('network.default')}</span>
-							{/if}
-							{#each p?.used_by ?? [] as use (use.env)}
-								<span class="rounded-full bg-selected px-2.5 py-0.5 text-xs" title={use.env}>{use.name}</span>
-							{/each}
-							{#if !p?.default && !p?.used_by.length}
-								<span class="rounded-full bg-selected px-2.5 py-0.5 text-xs">{t('network.extra')}</span>
-							{/if}
+					<div class="flex min-w-0 flex-col gap-0.5">
+						<span class="text-[15px]">
+							{#if r.key === 'primary'}{t('game.new.rolePrimary')}{:else if r.env}{game.info?.variables.find((v) => v.env === r.env)?.name ?? r.env}<span
+									class="ml-1.5 font-mono text-xs text-muted">· {r.env}</span
+								>{:else}{t('network.extra')}{/if}
 						</span>
+						{#if p}
+							<span class="font-mono text-sm text-muted select-all">{address(p)}</span>
+						{:else}
+							<span class="text-sm text-muted">{t('network.newPort')}</span>
+						{/if}
 					</div>
 					<div class="flex items-center gap-2">
 						<select

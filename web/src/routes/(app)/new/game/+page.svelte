@@ -36,8 +36,9 @@
 	let memory = $state(4096);
 	let cpus = $state(2);
 	let disk = $state(10240);
-	let portsText = $state('1');
-	const ports = $derived(Math.max(1, Math.round(Number(portsText)) || 1));
+	// Ports beyond the named ones, for a game that needs more than its egg
+	// says, such as a plugin's.
+	let extra = $state(0);
 	let eula = $state(false);
 	let values = $state<Record<string, string>>({});
 	// Server complaints about one variable, by its environment name.
@@ -51,15 +52,15 @@
 	const free = $derived(freeList.length);
 
 	// The ports of the server by role: the one players join on, then one for
-	// each port variable the egg has, as many as the server takes. What the
-	// server would pick by itself is filled in; a choice replaces it.
+	// each port variable the egg has. What the server would pick by itself
+	// is filled in; a choice replaces it.
 	type Role = { key: string; label: string; env: string };
 	const roles = $derived.by(() => {
 		const list: Role[] = [{ key: '', label: t('game.new.rolePrimary'), env: '' }];
-		const vars = preview?.port_variables ?? [];
-		for (let i = 1; i < ports && i <= vars.length; i++) list.push({ key: vars[i - 1].env, label: vars[i - 1].name, env: vars[i - 1].env });
+		for (const v of preview?.port_variables ?? []) list.push({ key: v.env, label: v.name, env: v.env });
 		return list;
 	});
+	const ports = $derived(roles.length + extra);
 	// Allocation ids picked by hand, by role key.
 	let picks = $state<Record<string, number>>({});
 	const taken = $derived(new Set(roles.flatMap((r) => (r.key in picks ? [picks[r.key]] : []))));
@@ -71,8 +72,6 @@
 		return out;
 	});
 	const optionsFor = (r: Role) => freeList.filter((a) => a.id === shown[r.key] || !Object.values(shown).includes(a.id));
-	// Ports past the named roles come from the pool without a choice.
-	const unnamed = $derived(Math.max(0, ports - roles.length));
 
 	const diskMB = $derived(host.info ? host.info.disk_bytes / 2 ** 20 : 102400);
 	// Variables with a port are set by the ports step; the ones the egg
@@ -119,7 +118,7 @@
 			eula = false;
 			if (!named) name = suggestName(preview.name);
 			const entry = catalog.find((c) => c.id === chosen);
-			portsText = String(entry?.ports ?? 1);
+			extra = 0;
 			if (host.info) {
 				memory = Math.min(entry?.memory_mb ?? memory, Math.floor(host.info.memory_bytes / 2 ** 20));
 				cpus = Math.min(Math.max(cpus, 1), host.info.cpus);
@@ -336,9 +335,6 @@
 			{/if}
 			<ErrorText message={poolError && pool !== null ? poolError : ''} />
 			{#if free > 0}
-				<div class="max-w-48">
-					<Field label={t('game.new.portCount')} hint={t('game.new.portCountHint')} type="number" min="1" max={Math.min(16, free)} bind:value={portsText} />
-				</div>
 				<ul class="flex flex-col divide-y divide-line rounded-2xl border border-line" aria-label={t('game.new.roles')}>
 					{#each roles as r (r.key)}
 						<li class="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 px-4 py-3">
@@ -356,10 +352,15 @@
 						</li>
 					{/each}
 				</ul>
-				{#if unnamed > 0}<p class="text-sm text-muted">{t('game.new.unnamedPorts', { n: unnamed })}</p>{/if}
-				{#if preview?.port_variables.length && ports > 1}
-					<p class="text-sm text-muted">{t('game.new.portVariables', { names: preview.port_variables.map((v) => v.name).join(', ') })}</p>
-				{/if}
+				<div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted">
+					{#if extra > 0}<span>{t('game.new.extraPorts', { n: extra })}</span>{/if}
+					{#if ports < Math.min(16, free)}
+						<button type="button" class="text-fg underline decoration-line underline-offset-2 hover:decoration-fg" onclick={() => extra++}>{t('game.new.addPort')}</button>
+					{/if}
+					{#if extra > 0}
+						<button type="button" class="text-fg underline decoration-line underline-offset-2 hover:decoration-fg" onclick={() => extra--}>{t('game.new.removePort')}</button>
+					{/if}
+				</div>
 			{/if}
 			<ErrorText message={error} />
 			<div class="flex items-center gap-3">
