@@ -1,19 +1,17 @@
 package main
 
 import (
-	"bufio"
 	"context"
-	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"os"
 	"strings"
 	"time"
 
+	"github.com/Caria-Core/zelie/internal/query"
 	"github.com/coder/websocket"
 )
 
@@ -120,18 +118,18 @@ func game(c *client, stateFile string) error {
 	if err != nil {
 		return err
 	}
-	var status string
+	var status query.MinecraftStatus
 	if err := waitFor("the server to answer a ping", time.Minute, func() error {
 		var err error
-		status, err = serverListPing(net.JoinHostPort(ip, fmt.Sprint(port)))
+		status, err = query.Minecraft(context.Background(), net.JoinHostPort(ip, fmt.Sprint(port)))
 		return err
 	}); err != nil {
 		return err
 	}
-	if !strings.Contains(status, `"version"`) {
-		return fmt.Errorf("the status has no version: %s", status)
+	if !strings.Contains(status.Raw, `"version"`) {
+		return fmt.Errorf("the status has no version: %s", status.Raw)
 	}
-	fmt.Println(status)
+	fmt.Println(status.Raw)
 
 	step("stop it cleanly")
 	if err := c.do("POST", "/api/games/"+gameID+"/power", map[string]string{"action": "stop"}, nil); err != nil {
@@ -321,75 +319,4 @@ func ownAddress() (string, error) {
 		}
 	}
 	return "", errors.New("this machine has no IPv4 address besides loopback")
-}
-
-// serverListPing asks a Minecraft server for its status, as the game's
-// server list does, and returns the JSON it answers with.
-func serverListPing(addr string) (string, error) {
-	host, portStr, _ := net.SplitHostPort(addr)
-	var port uint16
-	fmt.Sscan(portStr, &port)
-	conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
-	if err != nil {
-		return "", err
-	}
-	defer conn.Close()
-	conn.SetDeadline(time.Now().Add(10 * time.Second))
-
-	// Every packet is its length and its body, both as VarInts where a
-	// number is. Handshake: id 0, protocol version, address, port, and
-	// next state 1 for a status. Then the status request: id 0.
-	hs := varInt(0)
-	hs = append(hs, varInt(767)...)
-	hs = append(hs, varInt(len(host))...)
-	hs = append(hs, host...)
-	hs = binary.BigEndian.AppendUint16(hs, port)
-	hs = append(hs, varInt(1)...)
-	out := append(varInt(len(hs)), hs...)
-	out = append(out, 1, 0)
-	if _, err := conn.Write(out); err != nil {
-		return "", err
-	}
-
-	r := bufio.NewReader(conn)
-	if _, err := readVarInt(r); err != nil { // packet length
-		return "", err
-	}
-	if id, err := readVarInt(r); err != nil || id != 0 {
-		return "", fmt.Errorf("the status answer has id %d: %v", id, err)
-	}
-	n, err := readVarInt(r)
-	if err != nil || n <= 0 || n > 1<<20 {
-		return "", fmt.Errorf("the status answer has length %d: %v", n, err)
-	}
-	b := make([]byte, n)
-	if _, err := io.ReadFull(r, b); err != nil {
-		return "", err
-	}
-	return string(b), nil
-}
-
-func varInt(n int) []byte {
-	var b []byte
-	for u := uint32(n); ; u >>= 7 {
-		if u < 0x80 {
-			return append(b, byte(u))
-		}
-		b = append(b, byte(u)|0x80)
-	}
-}
-
-func readVarInt(r io.ByteReader) (int, error) {
-	var n uint32
-	for shift := 0; shift < 35; shift += 7 {
-		b, err := r.ReadByte()
-		if err != nil {
-			return 0, err
-		}
-		n |= uint32(b&0x7f) << shift
-		if b&0x80 == 0 {
-			return int(int32(n)), nil
-		}
-	}
-	return 0, errors.New("VarInt is too long")
 }

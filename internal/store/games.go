@@ -40,6 +40,10 @@ type GameServer struct {
 	InstalledAt time.Time // zero until an install has finished
 	// EULAAcceptedAt is when the game's EULA was accepted; zero until then.
 	EULAAcceptedAt time.Time
+	// SteamAppID is the app SteamCMD installs for this server, or 0.
+	SteamAppID int64
+	// SteamAutoUpdate lets the panel update the server once it is empty.
+	SteamAutoUpdate bool
 }
 
 // AddEgg stores an egg file. The same file from the same source is stored
@@ -89,13 +93,13 @@ func (s *Store) Egg(ctx context.Context, id int64) (Egg, error) {
 	return e, err
 }
 
-const gameColumns = "app_id, egg_id, image, startup, variables, install_state, coalesce(install_id, 0), coalesce(installed_at, 0), coalesce(eula_accepted_at, 0)"
+const gameColumns = "app_id, egg_id, image, startup, variables, install_state, coalesce(install_id, 0), coalesce(installed_at, 0), coalesce(eula_accepted_at, 0), steam_app_id, steam_auto_update"
 
 func scanGame(row scanner) (GameServer, error) {
 	var g GameServer
 	var vars string
 	var installed, eula int64
-	err := row.Scan(&g.AppID, &g.EggID, &g.Image, &g.Startup, &vars, &g.InstallState, &g.InstallID, &installed, &eula)
+	err := row.Scan(&g.AppID, &g.EggID, &g.Image, &g.Startup, &vars, &g.InstallState, &g.InstallID, &installed, &eula, &g.SteamAppID, &g.SteamAutoUpdate)
 	if errors.Is(err, sql.ErrNoRows) {
 		return g, ErrNotFound
 	}
@@ -125,8 +129,8 @@ func (s *Store) CreateGameServer(ctx context.Context, g GameServer) error {
 	if !g.EULAAcceptedAt.IsZero() {
 		eula = g.EULAAcceptedAt.Unix()
 	}
-	_, err = s.db.ExecContext(ctx, "INSERT INTO game_servers (app_id, egg_id, image, startup, variables, install_state, eula_accepted_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-		g.AppID, g.EggID, g.Image, g.Startup, string(vars), InstallRunning, eula)
+	_, err = s.db.ExecContext(ctx, "INSERT INTO game_servers (app_id, egg_id, image, startup, variables, install_state, eula_accepted_at, steam_app_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+		g.AppID, g.EggID, g.Image, g.Startup, string(vars), InstallRunning, eula, g.SteamAppID)
 	return uniqueErr(err)
 }
 

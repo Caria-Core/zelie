@@ -107,6 +107,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/volumes/{name}/files/download", s.downloadFile)
 	mux.HandleFunc("POST /v1/volumes/{name}/files/compress", s.compressFiles)
 	mux.HandleFunc("POST /v1/volumes/{name}/files/extract", s.extractFile)
+	mux.HandleFunc("POST /v1/volumes/{name}/peek", s.peekVolume)
 	mux.HandleFunc("GET /v1/links/{app}", s.links)
 	mux.HandleFunc("PUT /v1/links/{app}", s.setLinks)
 	mux.HandleFunc("PUT /v1/forwards/{app}", s.setForwards)

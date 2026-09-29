@@ -14,7 +14,8 @@
 	import Lead from '$lib/ui/Lead.svelte';
 	import Resources from '$lib/ui/Resources.svelte';
 
-	type Entry = { id: string; name: string; game: string };
+	// memory_mb, disk_mb and ports are what the game needs, for games that need more than most.
+	type Entry = { id: string; name: string; game: string; memory_mb?: number; disk_mb?: number; ports?: number };
 	const steps = $derived([t('game.new.step.game'), t('game.new.step.resources'), t('game.new.step.ports'), t('game.new.step.settings')]);
 
 	let step = $state(1);
@@ -87,11 +88,13 @@
 			problems = {};
 			eula = false;
 			if (!named) name = suggestName(preview.name);
+			const entry = catalog.find((c) => c.id === chosen);
+			portsText = String(entry?.ports ?? 1);
 			if (host.info) {
-				memory = Math.min(memory, Math.floor(host.info.memory_bytes / 2 ** 20));
+				memory = Math.min(entry?.memory_mb ?? memory, Math.floor(host.info.memory_bytes / 2 ** 20));
 				cpus = Math.min(Math.max(cpus, 1), host.info.cpus);
 				const fit = sizeSteps(diskMB).filter((s) => s <= diskMB / 2);
-				disk = fit.includes(disk) ? disk : (fit[fit.length - 1] ?? defaultSize);
+				disk = entry?.disk_mb ? Math.floor(Math.min(entry.disk_mb, diskMB / 2)) : fit.includes(disk) ? disk : (fit[fit.length - 1] ?? defaultSize);
 			}
 			step = 2;
 		} catch (err) {
@@ -331,6 +334,9 @@
 				<div class="max-w-48">
 					<Field label={t('game.new.portCount')} hint={t('game.new.portCountHint')} type="number" min="1" max={Math.min(16, free)} bind:value={portsText} />
 				</div>
+				{#if preview?.port_variables.length}
+					<p class="text-sm text-muted">{t('game.new.portVariables', { names: preview.port_variables.map((v) => v.name).join(', ') })}</p>
+				{/if}
 			{/if}
 			<ErrorText message={error} />
 			<div class="flex items-center gap-3">

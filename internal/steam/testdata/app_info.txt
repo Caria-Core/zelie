@@ -1,0 +1,136 @@
+Redirecting stderr to '/root/.local/share/Steam/logs/stderr.txt'
+[  0%] Checking for available updates...
+[----] Verifying installation...
+Steam Console Client (c) Valve Corporation - version 1770000000
+-- type 'quit' to exit --
+Loading Steam API...OK
+
+Connecting anonymously to Steam Public...OK
+Waiting for client config...OK
+Waiting for user info...OK
+AppID : 258550, change number : 31000001/0, last change : Tue Sep 22 18:04:11 2026
+"258550"
+{
+	"common"
+	{
+		"name"		"Rust Dedicated Server"
+		"type"		"Tool"
+		"oslist"		"windows,linux"
+		"gameid"		"258550"
+		"description"		"A \"dedicated\" server; not a game.
+Second line."
+	}
+	"config"
+	{
+		"installdir"		"rust_dedicated"
+		"launch"
+		{
+			"0"
+			{
+				"executable"		"RustDedicated.exe"
+				"config"
+				{
+					"oslist"		"windows"
+				}
+			}
+			"1"
+			{
+				"executable"		"RustDedicated"
+				"config"
+				{
+					"oslist"		"linux"
+				}
+			}
+		}
+	}
+	"depots"
+	{
+		"258551"
+		{
+			"config"
+			{
+				"oslist"		"linux"
+			}
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"7011140012884321987"
+					"size"		"9230581216"
+					"download"		"4187301122"
+				}
+			}
+		}
+		"baselanguages"		"english"
+		"branches"
+		{
+			"public"
+			{
+				"buildid"		"20913457"
+				"timeupdated"		"1790015051"
+			}
+			"aux01"
+			{
+				"buildid"		"20990001"
+				"description"		"Staging"
+				"timeupdated"		"1790019999"
+			}
+			"legacy"
+			{
+				"buildid"		"11111111"
+				"pwdrequired"		"1"
+				"timeupdated"		"1700000000"
+			}
+		}
+	}
+}
+AppID : 2394010, change number : 31000002/0, last change : Mon Sep 21 09:40:02 2026
+"2394010"
+{
+	"common"
+	{
+		"name"		"Palworld Dedicated Server"
+		"type"		"Tool"
+	}
+	"depots"
+	{
+		"2394012"
+		{
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"1122334455667788990"
+					"size"		"5500000000"
+				}
+			}
+		}
+		"branches"
+		{
+			"public"
+			{
+				"buildid"		"20871234"
+				"timeupdated"		"1789900000"
+			}
+		}
+	}
+}
+AppID : 4000000, change number : 31000003/0, last change : Mon Sep 21 09:40:02 2026
+"4000000"
+{
+	"common"
+	{
+		"name"		"A tool with no public branch"
+	}
+	"depots"
+	{
+		"branches"
+		{
+			"beta"
+			{
+				"buildid"		"5"
+			}
+		}
+	}
+}
+Unloading Steam API...OK

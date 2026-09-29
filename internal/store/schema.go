@@ -364,5 +364,11 @@ ALTER TABLE nodes ADD COLUMN public_address TEXT NOT NULL DEFAULT '';
 -- When an administrator accepted the game's EULA for this server, for eggs
 -- that ask for it. NULL until then.
 ALTER TABLE game_servers ADD COLUMN eula_accepted_at INTEGER;
+`, `
+-- The Steam app a game server installs and updates, from its egg, and whether
+-- the panel may update it when no one is playing. 0 means it is not a Steam
+-- game, or has not been looked at yet.
+ALTER TABLE game_servers ADD COLUMN steam_app_id INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE game_servers ADD COLUMN steam_auto_update INTEGER NOT NULL DEFAULT 0;
 `,
 }

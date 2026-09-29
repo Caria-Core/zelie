@@ -102,12 +102,17 @@ type catalogEntryJSON struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
 	Game string `json:"game"`
+	// Sizes the game needs, when it needs more than the usual: the
+	// interface offers them for a new server.
+	MemoryMB int64 `json:"memory_mb,omitempty"`
+	DiskMB   int64 `json:"disk_mb,omitempty"`
+	Ports    int   `json:"ports,omitempty"`
 }
 
 func (s *Server) eggCatalog(w http.ResponseWriter, r *http.Request) {
 	out := make([]catalogEntryJSON, 0, len(egg.Catalog))
 	for _, e := range egg.Catalog {
-		out = append(out, catalogEntryJSON{ID: e.ID, Name: e.Name, Game: e.Game})
+		out = append(out, catalogEntryJSON{ID: e.ID, Name: e.Name, Game: e.Game, MemoryMB: e.MemoryMB, DiskMB: e.DiskMB, Ports: e.Ports})
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -275,6 +280,7 @@ func (s *Server) createGame(w http.ResponseWriter, r *http.Request) {
 		writeError(w, bad)
 		return
 	}
+	req.Ports = recommendedPorts(req)
 	if req.Ports == 0 {
 		req.Ports = 1
 	}
@@ -287,6 +293,7 @@ func (s *Server) createGame(w http.ResponseWriter, r *http.Request) {
 		s.coreFailed(w, "read host", err)
 		return
 	}
+	req.MemoryMB, req.DiskMB = recommendedSize(req, h)
 	a := store.App{
 		ID: req.Name, Kind: store.KindGame, Source: store.SourceImage, Image: image,
 		MemoryMB: req.MemoryMB, CPUs: req.CPUs, HealthPath: "/", CreatedAt: s.now(),
@@ -345,7 +352,8 @@ func (s *Server) createGame(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, "store egg", err)
 		return
 	}
-	g := store.GameServer{AppID: a.ID, EggID: stored.ID, Image: image, Startup: e.Startup, Variables: vars}
+	assignPorts(e, vars, req.Variables, portNumbers(p.Allocations[1:]))
+	g := store.GameServer{AppID: a.ID, EggID: stored.ID, Image: image, Startup: e.Startup, Variables: vars, SteamAppID: steamAppID(e, vars)}
 	if needsEULA {
 		g.EULAAcceptedAt = s.now()
 	}
@@ -412,6 +420,9 @@ type gamePortJSON struct {
 	Address string `json:"address"`
 	// Default is the port players connect to and SERVER_PORT holds.
 	Default bool `json:"default"`
+	// UsedBy are the egg's variables that hold this port, such as the
+	// query port.
+	UsedBy []portUseJSON `json:"used_by"`
 }
 
 type gameInstallJSON struct {
@@ -452,6 +463,8 @@ type gameJSON struct {
 	State string `json:"state"`
 	// Crashing says why Zelie stopped bringing a crashing server back.
 	Crashing *msg.Msg `json:"crashing,omitempty"`
+	// Steam is set for games installed with SteamCMD.
+	Steam *gameSteamJSON `json:"steam,omitempty"`
 }
 
 // gameOut describes a game server for the interface.
@@ -510,12 +523,13 @@ func (s *Server) gameOut(ctx context.Context, a store.App) (gameJSON, error) {
 		if p.IP != store.AnyAddress {
 			host = p.IP
 		}
-		out.Ports = append(out.Ports, gamePortJSON{ID: p.ID, IP: p.IP, Port: p.Port, Address: host, Default: p.Port == a.Port})
+		out.Ports = append(out.Ports, gamePortJSON{ID: p.ID, IP: p.IP, Port: p.Port, Address: host, Default: p.Port == a.Port, UsedBy: portUses(e, g.Variables, p.Port)})
 	}
 	out.Variables = variablesOut(e, g.Variables)
 	// Without the node, only the placeholder for its name stays as written.
 	this, _ := s.Store.Node(ctx, store.ThisNode)
 	out.StartupPreview = egg.Expand(g.Startup, gameVars(a, g, this), a.Port)
+	out.Steam = s.steamOut(ctx, a, g, e)
 	return out, nil
 }
 
@@ -556,6 +570,9 @@ type eggPreviewJSON struct {
 	Startup     string             `json:"startup"`
 	Variables   []gameVariableJSON `json:"variables"`
 	Features    []string           `json:"features"`
+	// PortVariables are the variables that take an extra port each when the
+	// server has more than one.
+	PortVariables []portUseJSON `json:"port_variables"`
 }
 
 // eggPreview reads an egg without making a server, so the interface can ask
@@ -570,7 +587,7 @@ func (s *Server) eggPreview(w http.ResponseWriter, r *http.Request) {
 		s.failWith(w, "load egg", err)
 		return
 	}
-	out := eggPreviewJSON{Name: e.Name, Description: e.Description, Startup: e.Startup, Images: []gameImageJSON{}, Variables: variablesOut(e, nil), Features: featuresOut(e)}
+	out := eggPreviewJSON{Name: e.Name, Description: e.Description, Startup: e.Startup, Images: []gameImageJSON{}, Variables: variablesOut(e, nil), Features: featuresOut(e), PortVariables: portVariableNames(e)}
 	for _, img := range e.Images {
 		out.Images = append(out.Images, gameImageJSON{Label: img.Label, Ref: img.Ref})
 	}

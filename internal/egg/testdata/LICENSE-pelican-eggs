@@ -1,4 +1,4 @@
-Test fixtures paper.json, rust.json and palworld.yaml are copied unchanged from the
+Test fixtures paper.json, rust.json, rust-plcn.yaml and palworld.yaml are copied unchanged from the
 pelican-eggs organisation: pelican-eggs/minecraft at 75bf05db3c6c305e0fa6eef1d38c7e7176121de9
 and pelican-eggs/games-steamcmd at e17e2c3db36aaf1ddecbc227803dd6cdbb0e6b1f. Both repositories are MIT licensed.
 

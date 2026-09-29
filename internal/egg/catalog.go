@@ -24,6 +24,13 @@ type Entry struct {
 	Repo   string // owner/name on GitHub
 	Commit string // full SHA
 	Path   string
+
+	// What a game needs when the egg does not say, offered as the defaults
+	// of a new server: memory and disk in MB, and how many ports it takes.
+	// Zero means the general defaults.
+	MemoryMB int64
+	DiskMB   int64
+	Ports    int
 }
 
 var Catalog = []Entry{
@@ -38,6 +45,12 @@ var Catalog = []Entry{
 		Repo:   "pelican-eggs/games-steamcmd",
 		Commit: "e17e2c3db36aaf1ddecbc227803dd6cdbb0e6b1f",
 		Path:   "rust/vanilla/egg-rust.yaml",
+		// The game files alone are about 10 GB, and the server holds the
+		// whole map in memory. It listens on four ports: the game's, the
+		// query, RCON and the companion app.
+		MemoryMB: 8 << 10,
+		DiskMB:   30 << 10,
+		Ports:    4,
 	},
 	{
 		ID: "palworld", Name: "Palworld", Game: "Palworld",

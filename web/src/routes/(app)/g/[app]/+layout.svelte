@@ -1,10 +1,10 @@
 <script lang="ts">
-	import { Check, Copy, Ellipsis, Play, RotateCw, Skull, Square } from '@lucide/svelte';
+	import { Check, Copy, Download, Ellipsis, Play, RotateCw, Skull, Square } from '@lucide/svelte';
 	import { untrack } from 'svelte';
 	import { page } from '$app/state';
 	import { ask } from '$lib/ask.svelte';
 	import { messageOf } from '$lib/errors';
-	import { address, defaultPort, game, gameState, loadGame, power } from '$lib/games.svelte';
+	import { address, defaultPort, game, gameState, loadGame, power, updateSteam } from '$lib/games.svelte';
 	import { say, t } from '$lib/i18n';
 	import AppIcon from '$lib/ui/AppIcon.svelte';
 	import Button from '$lib/ui/Button.svelte';
@@ -63,6 +63,26 @@
 			danger: action !== 'restart'
 		});
 		if (ok) run(action);
+	}
+
+	async function updateNow() {
+		const running = phase === 'running' || phase === 'starting';
+		const ok = await ask({
+			title: t('game.updateConfirm', { server: id }),
+			text: t(running ? 'game.updateConfirmRunning' : 'game.updateConfirmStopped'),
+			action: t('game.updateNow'),
+			danger: false
+		});
+		if (!ok) return;
+		acting = true;
+		error = '';
+		try {
+			await updateSteam(id);
+		} catch (err) {
+			error = messageOf(err);
+		} finally {
+			acting = false;
+		}
 	}
 
 	async function copy(text: string) {
@@ -160,6 +180,15 @@
 			</div>
 		</header>
 		<ErrorText message={error} />
+		{#if g.steam?.update_available && ready}
+			<div class="flex flex-wrap items-center gap-x-3 gap-y-2 text-sm">
+				<span class="rounded-full bg-selected px-2.5 py-0.5 text-xs">{t('game.updateAvailable')}</span>
+				<span class="text-muted">{t('game.updateBuilds', { from: g.steam.installed_build, to: g.steam.latest_build })}</span>
+				<Button kind="quiet" class="!h-8 !px-3 !text-sm" onclick={updateNow} busy={acting} disabled={moving}>
+					<Download size={14} strokeWidth={1.75} />{t('game.updateNow')}
+				</Button>
+			</div>
+		{/if}
 		{#if g.crashing}
 			<p class="rounded-xl border border-danger/30 px-4 py-3 text-sm text-danger">{t('game.crashing', { why: say(g.crashing) })}</p>
 		{/if}
