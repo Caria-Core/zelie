@@ -23,6 +23,8 @@ const (
 	BackupUploaded = "uploaded"
 	// BackupUpdate is taken just before a database moves to a new image.
 	BackupUpdate = "update"
+	// BackupUpgrade is the dump a database's new major version loads.
+	BackupUpgrade = "upgrade"
 )
 
 // Backup states.

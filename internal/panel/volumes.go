@@ -308,8 +308,19 @@ func (s *Server) removeAppVolumes(ctx context.Context, appID string) error {
 	if err != nil {
 		return err
 	}
+	kept, err := s.Store.KeptVolumes(ctx, appID)
+	if err != nil {
+		return err
+	}
+	names := []string{}
 	for _, v := range vols {
-		if err := s.Core.RemoveVolume(ctx, v.Name); err != nil && !isNotFound(err) {
+		names = append(names, v.Name)
+	}
+	for _, k := range kept {
+		names = append(names, k.Name)
+	}
+	for _, name := range names {
+		if err := s.Core.RemoveVolume(ctx, name); err != nil && !isNotFound(err) {
 			return err
 		}
 	}

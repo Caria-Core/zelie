@@ -7,7 +7,7 @@ export type Deployment = {
 	image?: string;
 	state: 'queued' | 'building' | 'testing' | 'starting' | 'live' | 'failed' | 'replaced' | 'skipped';
 	error?: Msg;
-	cause: 'manual' | 'push' | 'restart' | 'rollback' | 'recover' | 'restore' | 'backup' | 'update';
+	cause: 'manual' | 'push' | 'restart' | 'rollback' | 'recover' | 'restore' | 'backup' | 'update' | 'upgrade';
 	// The image still exists, so it can be rolled back to.
 	kept: boolean;
 	// The first line of the pushed commit's message.
@@ -49,6 +49,8 @@ export type App = {
 	latest?: Deployment;
 	// A newer build of the image's tag, with the versions the images give.
 	update?: { current?: string; version?: string };
+	// A newer major version a database can move to.
+	upgrade_to?: string;
 };
 
 export type Engine = 'postgres' | 'mariadb' | 'redis';

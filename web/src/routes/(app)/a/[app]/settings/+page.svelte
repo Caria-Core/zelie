@@ -3,9 +3,10 @@
 	import { Trash } from '@lucide/svelte';
 	import { goto } from '$app/navigation';
 	import { api } from '$lib/api';
-	import { reload } from '$lib/apps.svelte';
+	import { engineLabel, reload } from '$lib/apps.svelte';
 	import { current, load } from '$lib/current.svelte';
-	import { messageOf } from '$lib/errors';
+	import { sensitive } from '$lib/confirm.svelte';
+	import { Cancelled, messageOf } from '$lib/errors';
 	import { t } from '$lib/i18n';
 	import Button from '$lib/ui/Button.svelte';
 	import ErrorText from '$lib/ui/ErrorText.svelte';
@@ -106,6 +107,25 @@
 			busy = false;
 		}
 	}
+
+	let upgrading = $state(false);
+	let upgradeError = $state('');
+	async function upgrade() {
+		const to = app.upgrade_to!;
+		const engine = engineLabel[app.engine!];
+		if (!(await ask({ title: t('db.upgradeConfirm', { app: app.id, engine, to }), text: t('db.upgradeConfirmText'), action: t('db.upgrade', { to }) }))) return;
+		upgrading = true;
+		upgradeError = '';
+		try {
+			await sensitive(() => api('POST', `/apps/${app.id}/upgrade`, { version: to }));
+			await load(app.id);
+			await goto(`/a/${app.id}`);
+		} catch (err) {
+			if (!(err instanceof Cancelled)) upgradeError = messageOf(err);
+		} finally {
+			upgrading = false;
+		}
+	}
 </script>
 
 {#snippet check(label: string, hint: string, checked: boolean, set: (v: boolean) => void)}
@@ -182,6 +202,28 @@
 			<ErrorText message={error} />
 		</div>
 	</form>
+
+	{#if database}
+		{@const engine = engineLabel[app.engine!]}
+		<section class="flex flex-col gap-4">
+			{#if app.upgrade_to}
+				{@const v = { engine, from: app.engine_version ?? '', to: app.upgrade_to }}
+				{@render heading(t('db.version'), t('db.upgradeLead', v))}
+				<ol class="flex flex-col gap-2.5">
+					{#each [t('db.upgradeStep1'), t('db.upgradeStep2'), t('db.upgradeStep3', v), t('db.upgradeStep4', v)] as step, i (i)}
+						<li class="flex gap-3 text-sm">
+							<span class="grid size-6 shrink-0 place-items-center rounded-full bg-selected text-xs font-medium">{i + 1}</span>
+							<span class="pt-0.5 text-muted">{step}</span>
+						</li>
+					{/each}
+				</ol>
+				<ErrorText message={upgradeError} />
+				<Button kind="secondary" class="self-start" busy={upgrading} disabled={app.stopped} onclick={upgrade}>{t('db.upgrade', { to: app.upgrade_to })}</Button>
+			{:else}
+				{@render heading(t('db.version'), t('db.versionLead', { engine, version: app.engine_version ?? '' }))}
+			{/if}
+		</section>
+	{/if}
 
 	<section class="flex flex-col gap-3 rounded-2xl border border-danger/30 p-5">
 		<div>

@@ -161,6 +161,11 @@
 						<span>·</span>
 						{#if a.engine}
 							<span>{engineLabel[a.engine]} {a.engine_version}</span>
+							{#if a.upgrade_to}
+								<a href="/a/{a.id}/settings" class="text-fg underline decoration-line underline-offset-2 hover:decoration-fg"
+									>{t('db.upgradeAvailable', { version: a.upgrade_to })}</a
+								>
+							{/if}
 						{:else}
 							<span class="font-mono">{a.source === 'github' ? `${a.repo}@${a.branch}` : a.image}</span>
 						{/if}

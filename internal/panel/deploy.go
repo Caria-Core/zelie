@@ -211,6 +211,13 @@ func (s *Server) runDeployment(ctx context.Context, appID string, id int64) {
 	if d.Cause == store.CauseRecover {
 		s.lastOutput(ctx, app.ID, out)
 	}
+	if d.Cause == store.CauseUpgrade {
+		set(store.DeployStarting)
+		if err := s.runUpgrade(ctx, app, &d, out); err != nil {
+			fail(err)
+		}
+		return
+	}
 	if d.Cause == store.CauseUpdate && app.IsDatabase() {
 		fmt.Fprintln(out, "Backing up the database before the update.")
 		if !s.backupBusy.take(app.ID) {

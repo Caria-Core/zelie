@@ -255,5 +255,18 @@ CREATE TABLE external_access (
 	port       INTEGER NOT NULL UNIQUE,
 	created_at INTEGER NOT NULL
 ) STRICT;
+`, `
+-- A database's volume from before an upgrade to a new major version, kept
+-- so its data is not lost until the user removes it. version is the one
+-- the files belong to. Nothing mounts it.
+CREATE TABLE kept_volumes (
+	id         INTEGER PRIMARY KEY,
+	name       TEXT NOT NULL UNIQUE,
+	app_id     TEXT NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
+	path       TEXT NOT NULL,
+	limit_mb   INTEGER NOT NULL,
+	version    TEXT NOT NULL,
+	kept_at    INTEGER NOT NULL
+) STRICT;
 `,
 }

@@ -2,8 +2,10 @@
 	import { ask } from '$lib/ask.svelte';
 	import { HardDrive, Plus, Trash } from '@lucide/svelte';
 	import { api } from '$lib/api';
+	import { engineLabel } from '$lib/apps.svelte';
+	import { sensitive } from '$lib/confirm.svelte';
 	import { current, load, restart } from '$lib/current.svelte';
-	import { messageOf } from '$lib/errors';
+	import { Cancelled, messageOf } from '$lib/errors';
 	import { ago } from '$lib/format';
 	import { host, loadHost, megabytes } from '$lib/host.svelte';
 	import { t } from '$lib/i18n';
@@ -27,10 +29,27 @@
 
 	const diskMB = $derived(host.info ? host.info.disk_bytes / 2 ** 20 : 102400);
 
+	// A database's files from before an upgrade, until they are removed.
+	type Kept = { id: number; version: string; used_bytes: number | null; kept_at: string };
+	let kept = $state<Kept[]>([]);
+
 	async function refresh(id: string) {
 		volumes = await api<Volume[]>('GET', `/apps/${id}/volumes`).catch((err) => {
 			error = messageOf(err);
 			return [];
+		});
+		if (current.app?.engine) kept = await api<Kept[]>('GET', `/apps/${id}/kept-volumes`).catch(() => []);
+	}
+
+	async function removeKept(k: Kept) {
+		const v = { engine: engineLabel[app.engine!], version: k.version };
+		if (!(await ask({ title: t('db.keptConfirm', v), text: t('db.keptConfirmText'), action: t('db.keptRemove'), danger: true }))) return;
+		act(async () => {
+			try {
+				await sensitive(() => api('DELETE', `/apps/${app.id}/kept-volumes/${k.id}`));
+			} catch (err) {
+				if (!(err instanceof Cancelled)) throw err;
+			}
 		});
 	}
 
@@ -154,6 +173,30 @@
 			{/each}
 		</ul>
 		{#if running && !database}<p class="text-sm text-muted">{t('storage.stopFirst')}</p>{/if}
+	{/if}
+
+	{#if kept.length > 0}
+		<div class="flex flex-col gap-3">
+			<h3 class="font-medium">{t('db.kept')}</h3>
+			<ul class="flex flex-col gap-3">
+				{#each kept as k (k.id)}
+					<li class="flex items-center justify-between gap-3 rounded-2xl border border-dashed border-line p-4">
+						<div class="flex min-w-0 items-center gap-3">
+							<span class="grid size-9 shrink-0 place-items-center rounded-xl bg-selected"><HardDrive size={18} strokeWidth={1.75} /></span>
+							<div class="min-w-0">
+								<p class="truncate text-[15px]">{t('db.keptItem', { engine: engineLabel[app.engine!], version: k.version })}</p>
+								<p class="text-sm text-muted">
+									{t('db.keptWhen', { when: ago(k.kept_at) })}{k.used_bytes !== null ? ' · ' + megabytes(k.used_bytes / 2 ** 20) : ''}
+								</p>
+							</div>
+						</div>
+						<Button kind="secondary" class="!h-9 !px-3.5 text-sm hover:!text-danger" disabled={busy} onclick={() => removeKept(k)}
+							><Trash size={16} />{t('db.keptRemove')}</Button
+						>
+					</li>
+				{/each}
+			</ul>
+		</div>
 	{/if}
 
 	{#if pending}

@@ -99,6 +99,12 @@ func (s *Store) UpdateApp(ctx context.Context, a App) error {
 	return oneRow(res, uniqueErr(err))
 }
 
+// SetEngineVersion moves a database to another version of its engine.
+func (s *Store) SetEngineVersion(ctx context.Context, appID, image, version string) error {
+	res, err := s.db.ExecContext(ctx, "UPDATE apps SET image = ?, engine_version = ? WHERE id = ? AND engine != ''", image, version, appID)
+	return oneRow(res, err)
+}
+
 // SetDetected records how the last build built the app.
 func (s *Store) SetDetected(ctx context.Context, appID string, d Detected) error {
 	b, err := json.Marshal(d)
@@ -243,6 +249,7 @@ const (
 	CauseRestore  = "restore"  // the live image again, after a backup was put back
 	CauseBackup   = "backup"   // the live image again, after the app was stopped for its backup
 	CauseUpdate   = "update"   // what the image's tag points at now; a database is backed up first
+	CauseUpgrade  = "upgrade"  // a database's new major version, with its data dumped and loaded
 )
 
 // Deployment is one attempt to put a version of an app live.

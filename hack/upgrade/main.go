@@ -304,7 +304,98 @@ func check(c *client, stateFile, want string) error {
 	}); err != nil {
 		return err
 	}
-	return waitFor("the restored row", time.Minute, func() error { return hasRow(st) })
+	if err := waitFor("the restored row", time.Minute, func() error { return hasRow(st) }); err != nil {
+		return err
+	}
+	return c.upgradeDatabase()
+}
+
+// upgradeDatabase moves a PostgreSQL 17 database to 18 the way the panel
+// does, and checks its rows came along.
+func (c *client) upgradeDatabase() error {
+	step("a PostgreSQL 17 database upgrades to 18 with its rows")
+	if err := c.do("POST", "/api/databases", map[string]string{"id": "old", "engine": "postgres", "version": "17"}, nil); err != nil {
+		return err
+	}
+	if err := c.waitRunning("old"); err != nil {
+		return err
+	}
+	db, err := c.external("old")
+	if err != nil {
+		return err
+	}
+	if _, err := psql(db, "CREATE TABLE notes (body text); INSERT INTO notes VALUES ('"+row+"')"); err != nil {
+		return err
+	}
+	if err := c.confirm(); err != nil {
+		return err
+	}
+	var dep struct {
+		ID int64 `json:"id"`
+	}
+	if err := c.do("POST", "/api/apps/old/upgrade", map[string]string{"version": "18"}, &dep); err != nil {
+		return err
+	}
+	if err := c.waitLive("old", dep.ID); err != nil {
+		return err
+	}
+	// Its user for outside access was in the old files.
+	if db, err = c.external("old"); err != nil {
+		return err
+	}
+	version, err := psql(db, "SHOW server_version_num")
+	if err != nil {
+		return err
+	}
+	if !strings.HasPrefix(strings.TrimSpace(version), "18") {
+		return fmt.Errorf("the database runs %s after the upgrade", version)
+	}
+	if err := hasRow(db); err != nil {
+		return err
+	}
+	var kept []struct {
+		Version string `json:"version"`
+	}
+	if err := c.do("GET", "/api/apps/old/kept-volumes", nil, &kept); err != nil {
+		return err
+	}
+	if len(kept) != 1 || kept[0].Version != "17" {
+		return fmt.Errorf("kept volumes %+v", kept)
+	}
+	return nil
+}
+
+func (c *client) waitRunning(app string) error {
+	return waitFor(app+" to run", 3*time.Minute, func() error {
+		var a struct {
+			State string `json:"state"`
+		}
+		if err := c.do("GET", "/api/apps/"+app, nil, &a); err != nil {
+			return err
+		}
+		if a.State != "running" {
+			return fmt.Errorf("state %s", a.State)
+		}
+		return nil
+	})
+}
+
+// external turns on outside access to a database, or gives it a new
+// password, and returns how to sign in.
+func (c *client) external(app string) (*state, error) {
+	if err := c.confirm(); err != nil {
+		return nil, err
+	}
+	var ext struct {
+		Port     int    `json:"port"`
+		User     string `json:"user"`
+		Database string `json:"database"`
+		Password string `json:"password"`
+	}
+	if err := c.do("POST", "/api/apps/"+app+"/external", nil, &ext); err != nil {
+		return nil, err
+	}
+	return &state{DBPort: ext.Port, DBUser: ext.User, DBName: ext.Database, DBPassword: ext.Password}, nil
 }
 
 func hasRow(st *state) error {

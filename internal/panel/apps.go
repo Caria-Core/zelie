@@ -76,6 +76,8 @@ type appJSON struct {
 	Latest     *deploymentJSON `json:"latest,omitempty"`
 	// Update is a newer build of the image's tag, found by the daily check.
 	Update *imageUpdate `json:"update,omitempty"`
+	// UpgradeTo is a newer major version a database can move to.
+	UpgradeTo string `json:"upgrade_to,omitempty"`
 }
 
 // appOut describes an app for the interface. containers is the core's list,
@@ -83,7 +85,7 @@ type appJSON struct {
 func (s *Server) appOut(ctx context.Context, a store.App, containers []engine.Status) (appJSON, error) {
 	out := appJSON{ID: a.ID, Source: a.Source, Image: a.Image, Repo: a.Repo, Branch: a.Branch,
 		Port: a.Port, Domain: a.Domain, MemoryMB: a.MemoryMB, CPUs: a.CPUs, AutoDeploy: a.AutoDeploy, HealthPath: a.HealthPath, TestCommand: a.TestCommand, BuildCommand: a.BuildCommand, StartCommand: a.StartCommand, Detected: a.Detected, RestartPulls: a.RestartPulls, Engine: a.Engine, EngineVersion: a.EngineVersion, State: "none",
-		Stopped: a.Stopped, Crashing: s.crashes.gaveUp(a.ID), Update: s.imageUpdates.get(a.ID)}
+		Stopped: a.Stopped, Crashing: s.crashes.gaveUp(a.ID), Update: s.imageUpdates.get(a.ID), UpgradeTo: upgradeTo(a)}
 	vols, err := s.Store.Volumes(ctx, a.ID)
 	if err != nil {
 		return out, err
