@@ -1,7 +1,6 @@
 package panel
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -340,83 +339,11 @@ func (s *Server) stopContainer(ctx context.Context, id string, e *egg.Egg, out i
 	return nil
 }
 
-// watchGame follows a starting server's console until its done line comes
-// out or it exits.
-func (s *Server) watchGame(app, container string, done *egg.Done) {
-	if done.Empty() {
-		// The egg says nothing to wait for.
-		s.gameRuns.advance(app, container)
-		return
-	}
-	ctx, cancel := context.WithCancel(s.baseContext())
-	s.watchers.Add(1)
-	go func() {
-		defer s.watchers.Done()
-		defer cancel()
-		go func() {
-			// An error other than "gone" is the core being busy; the
-			// console is still worth reading.
-			if _, err := s.Core.Wait(ctx, container); err == nil || isNotFound(err) {
-				cancel()
-			}
-		}()
-		for ctx.Err() == nil {
-			w := &lineWatcher{match: func(line string) bool {
-				if !done.Match(line) {
-					return false
-				}
-				s.gameRuns.advance(app, container)
-				cancel()
-				return true
-			}}
-			s.Core.Logs(ctx, container, true, 0, w)
-			select {
-			case <-ctx.Done():
-			case <-time.After(watchRetry):
-			}
-		}
-	}()
-}
-
 var ansi = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
-
-const maxWatchedLine = 64 << 10
 
 // watchRetry is how long the follower waits before it reads the console
 // again after the core dropped it. Tests shorten it.
 var watchRetry = time.Second
-
-// lineWatcher hands a console's output to match one line at a time, until
-// match says it has what it looked for. Colour codes are taken out first.
-type lineWatcher struct {
-	match func(line string) bool
-	rest  []byte
-	found bool
-}
-
-func (w *lineWatcher) Write(p []byte) (int, error) {
-	if w.found {
-		return len(p), nil
-	}
-	w.rest = append(w.rest, p...)
-	for {
-		i := bytes.IndexByte(w.rest, '\n')
-		if i < 0 {
-			break
-		}
-		line := ansi.ReplaceAllString(strings.TrimRight(string(w.rest[:i]), "\r"), "")
-		w.rest = w.rest[i+1:]
-		if w.match(line) {
-			w.found, w.rest = true, nil
-			return len(p), nil
-		}
-	}
-	if len(w.rest) > maxWatchedLine {
-		// A line this long is not a status message.
-		w.rest = nil
-	}
-	return len(p), nil
-}
 
 // resumeGames follows the servers that are running when the panel starts,
 // which run on through a panel restart. Their console from the start is read
@@ -491,6 +418,13 @@ type powerRequest struct {
 	Action string `json:"action"`
 }
 
+// powerResult is what a power action answers with.
+type powerResult struct {
+	Status     int
+	State      string
+	Deployment int64 // set by a start or restart
+}
+
 // gamePower starts, stops, restarts or kills a game server.
 func (s *Server) gamePower(w http.ResponseWriter, r *http.Request) {
 	a, g, ok := s.gameFrom(w, r)
@@ -501,48 +435,60 @@ func (s *Server) gamePower(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	ctx := r.Context()
-	user := loginFrom(ctx).account.ID
-	switch req.Action {
+	res, err := s.power(r.Context(), a, g, req.Action, loginFrom(r.Context()).account.ID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	out := map[string]any{"state": res.State}
+	if res.Deployment != 0 {
+		out["deployment"] = res.Deployment
+	}
+	writeJSON(w, res.Status, out)
+}
+
+// internalError logs err and answers with the message that hides it.
+func (s *Server) internalError(what string, err error) *msg.Error {
+	s.Log.Error(what, "err", err)
+	return errServer.Err()
+}
+
+// power does what the power endpoint and the console's power message ask.
+func (s *Server) power(ctx context.Context, a store.App, g store.GameServer, action string, user int64) (powerResult, *msg.Error) {
+	switch action {
 	case "start", "restart":
 		switch g.InstallState {
 		case store.InstallRunning:
-			writeError(w, errInstalling.Err())
-			return
+			return powerResult{}, errInstalling.Err()
 		case store.InstallDone:
 		default:
-			writeError(w, errNotInstalled.Err())
-			return
+			return powerResult{}, errNotInstalled.Err()
 		}
-		if req.Action == "start" {
+		if action == "start" {
 			if state := s.gameState(ctx, a); state == stateStarting || state == stateRunning {
-				writeError(w, errAlreadyRunning.Err())
-				return
+				return powerResult{}, errAlreadyRunning.Err()
 			}
 		}
-		if !s.unstop(w, r, a) {
-			return
+		if err := s.unstopApp(ctx, a); err != nil {
+			return powerResult{}, err
 		}
 		s.crashes.reset(a.ID)
 		id, err := s.deploy(ctx, a, store.Deployment{Cause: store.CauseRestart})
 		if err != nil {
-			s.fail(w, "deploy", err)
-			return
+			return powerResult{}, s.internalError("deploy", err)
 		}
-		s.Log.Info("game server power", "server", a.ID, "action", req.Action, "user", user)
-		writeJSON(w, http.StatusAccepted, map[string]any{"state": stateStarting, "deployment": id})
+		s.Log.Info("game server power", "server", a.ID, "action", action, "user", user)
+		return powerResult{Status: http.StatusAccepted, State: stateStarting, Deployment: id}, nil
 	case "stop":
 		// Marked first, so the supervisor does not bring it back.
 		if err := s.Store.SetStopped(ctx, a.ID, true); err != nil {
-			s.fail(w, "stop game server", err)
-			return
+			return powerResult{}, s.internalError("stop game server", err)
 		}
 		s.deploys.cancel(a.ID)
 		state := s.gameState(ctx, a)
 		_, e, _, err := s.gameParts(ctx, a.ID)
 		if err != nil {
-			s.fail(w, "stop game server", err)
-			return
+			return powerResult{}, s.internalError("stop game server", err)
 		}
 		if state == stateStarting || state == stateRunning {
 			state = stateStopping
@@ -556,21 +502,19 @@ func (s *Server) gamePower(w http.ResponseWriter, r *http.Request) {
 			}
 		})
 		s.Log.Info("game server power", "server", a.ID, "action", "stop", "user", user)
-		writeJSON(w, http.StatusAccepted, map[string]any{"state": state})
+		return powerResult{Status: http.StatusAccepted, State: state}, nil
 	case "kill":
 		if err := s.Store.SetStopped(ctx, a.ID, true); err != nil {
-			s.fail(w, "kill game server", err)
-			return
+			return powerResult{}, s.internalError("kill game server", err)
 		}
 		s.deploys.cancel(a.ID)
 		if err := s.killGame(ctx, a.ID); err != nil {
-			s.coreFailed(w, "kill game server", err)
-			return
+			return powerResult{}, s.coreError("kill game server", err)
 		}
 		s.Log.Info("game server power", "server", a.ID, "action", "kill", "user", user)
-		writeJSON(w, http.StatusOK, map[string]any{"state": stateStopped})
+		return powerResult{Status: http.StatusOK, State: stateStopped}, nil
 	default:
-		writeError(w, errBadPower.Err())
+		return powerResult{}, errBadPower.Err()
 	}
 }
 

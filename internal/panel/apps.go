@@ -680,23 +680,28 @@ func (s *Server) rollback(w http.ResponseWriter, r *http.Request) {
 // unstop clears the stopped flag: deploying or restarting means the user
 // wants the app running. An app with a volume over its limit may not run.
 func (s *Server) unstop(w http.ResponseWriter, r *http.Request, a store.App) bool {
-	vols, err := s.Store.Volumes(r.Context(), a.ID)
-	if err != nil {
-		s.fail(w, "list volumes", err)
-		return false
-	}
-	if over := s.overLimit(vols); over != nil {
-		writeError(w, over)
-		return false
-	}
-	if !a.Stopped {
-		return true
-	}
-	if err := s.Store.SetStopped(r.Context(), a.ID, false); err != nil {
-		s.fail(w, "start app", err)
+	if err := s.unstopApp(r.Context(), a); err != nil {
+		writeError(w, err)
 		return false
 	}
 	return true
+}
+
+func (s *Server) unstopApp(ctx context.Context, a store.App) *msg.Error {
+	vols, err := s.Store.Volumes(ctx, a.ID)
+	if err != nil {
+		return s.internalError("list volumes", err)
+	}
+	if over := s.overLimit(vols); over != nil {
+		return over
+	}
+	if !a.Stopped {
+		return nil
+	}
+	if err := s.Store.SetStopped(ctx, a.ID, false); err != nil {
+		return s.internalError("start app", err)
+	}
+	return nil
 }
 
 func (s *Server) stopHandler(w http.ResponseWriter, r *http.Request) {
@@ -833,6 +838,8 @@ func (s *Server) deleteApp(w http.ResponseWriter, r *http.Request) {
 	// longer exists.
 	s.deploys.cancel(a.ID)
 	defer s.gameRuns.forget(a.ID)
+	defer s.consoles.forget(a.ID)
+	defer s.consoleHist.forget(a.ID)
 	unlock := s.deploys.lock(a.ID)
 	defer unlock()
 	list, err := s.Core.List(ctx)

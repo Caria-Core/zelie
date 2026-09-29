@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Caria-Core/zelie/internal/core"
 	"github.com/Caria-Core/zelie/internal/store"
@@ -227,28 +228,41 @@ func TestRegexDoneLine(t *testing.T) {
 	e.waitState(t, "survival", "running")
 }
 
-func TestLineWatcher(t *testing.T) {
+func TestLineSplitter(t *testing.T) {
 	var seen []string
-	w := &lineWatcher{match: func(line string) bool {
-		seen = append(seen, line)
-		return line == "Done"
-	}}
-	// Lines arrive in pieces, with colours and Windows line endings.
-	for _, chunk := range []string{"first\nsec", "ond\x1b[1;32m line\x1b[0m\r\nDo", "ne\nafter\n"} {
+	w := &lineSplitter{emit: func(line string) { seen = append(seen, line) }}
+	// Lines arrive in pieces, with colours and Windows line endings; the
+	// colours stay for the interface to draw.
+	for _, chunk := range []string{"first\nsec", "ond\x1b[1;32m line\x1b[0m\r\nDo", "ne\n\nafter\n"} {
 		if n, err := w.Write([]byte(chunk)); err != nil || n != len(chunk) {
 			t.Fatalf("write: %d %v", n, err)
 		}
 	}
-	if want := []string{"first", "second line", "Done"}; !slices.Equal(seen, want) {
+	if want := []string{"first", "second\x1b[1;32m line\x1b[0m", "Done", "", "after"}; !slices.Equal(seen, want) {
 		t.Errorf("seen %q", seen)
 	}
-	// A line with no end does not grow without bound.
-	long := &lineWatcher{match: func(string) bool { return false }}
+
+	// A line with no end is cut and its rest dropped, without growing
+	// without bound; the next line is whole.
+	seen = nil
 	for range 3 {
-		long.Write(make([]byte, 40<<10))
+		w.Write(make([]byte, 40<<10))
+		if len(w.rest) > consoleMaxLine {
+			t.Fatalf("kept %d bytes", len(w.rest))
+		}
 	}
-	if len(long.rest) > maxWatchedLine {
-		t.Errorf("kept %d bytes", len(long.rest))
+	w.Write([]byte("tail of it\nnext\n"))
+	if len(seen) != 2 || len(seen[0]) != consoleMaxLine || seen[1] != "next" {
+		t.Errorf("after a long line: %d lines %q", len(seen), seen)
+	}
+
+	// A long line that does end, and bytes that are not UTF-8.
+	seen = nil
+	w = &lineSplitter{emit: func(line string) { seen = append(seen, line) }}
+	w.Write([]byte(strings.Repeat("é", consoleMaxLine) + "\n"))
+	w.Write([]byte("bad \xff byte\n"))
+	if len(seen) != 2 || len(seen[0]) > consoleMaxLine || !utf8.ValidString(seen[0]) || seen[1] != "bad \uFFFD byte" {
+		t.Errorf("seen %d lines", len(seen))
 	}
 }
 

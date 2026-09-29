@@ -12,6 +12,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/coder/websocket"
 )
 
 func TestValidate(t *testing.T) {
@@ -144,6 +147,67 @@ func TestPanelOverUnixSocket(t *testing.T) {
 	}
 	if _, err := p.getCertificate(&tls.ClientHelloInfo{ServerName: "panel.example.com"}); err != nil {
 		t.Errorf("panel host: %v", err)
+	}
+}
+
+func TestWebSocketToThePanel(t *testing.T) {
+	sock := filepath.Join(t.TempDir(), "panel.sock")
+	l, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	panel := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer c.CloseNow()
+		// The panel checks the origin against the host it is given.
+		c.Write(r.Context(), websocket.MessageText, []byte("host="+r.Host+" origin="+r.Header.Get("Origin")+" xff="+r.Header.Get("X-Forwarded-For")))
+		for {
+			typ, b, err := c.Read(r.Context())
+			if err != nil {
+				return
+			}
+			c.Write(r.Context(), typ, b)
+		}
+	}), ReadHeaderTimeout: 100 * time.Millisecond, IdleTimeout: 100 * time.Millisecond}
+	go panel.Serve(l)
+	t.Cleanup(func() { panel.Close() })
+
+	p := &Proxy{StateDir: t.TempDir(), PanelSocket: sock, Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	if err := p.Apply(context.Background(), Config{TLS: TLSSelfSigned, Panel: "panel.example.com"}); err != nil {
+		t.Fatal(err)
+	}
+	// The servers' header and idle timeouts, made short, must not touch a
+	// socket that has been upgraded.
+	front := httptest.NewUnstartedServer(http.HandlerFunc(p.serveHTTPS))
+	front.Config.ReadHeaderTimeout, front.Config.IdleTimeout = 100*time.Millisecond, 100*time.Millisecond
+	front.Start()
+	t.Cleanup(front.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	c, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(front.URL, "http")+"/socket", &websocket.DialOptions{
+		Host:       "panel.example.com",
+		HTTPHeader: http.Header{"Origin": {"https://panel.example.com"}},
+	})
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer c.CloseNow()
+	_, b, err := c.Read(ctx)
+	if err != nil || !strings.HasPrefix(string(b), "host=panel.example.com origin=https://panel.example.com xff=127.0.0.1") {
+		t.Fatalf("panel saw %q: %v", b, err)
+	}
+	for _, word := range []string{"one", "two"} {
+		time.Sleep(250 * time.Millisecond)
+		if err := c.Write(ctx, websocket.MessageText, []byte(word)); err != nil {
+			t.Fatal(err)
+		}
+		if _, b, err := c.Read(ctx); err != nil || string(b) != word {
+			t.Fatalf("echo %q: %v", b, err)
+		}
 	}
 }
 

@@ -5,6 +5,7 @@ go 1.27.1
 require (
 	filippo.io/age v1.3.2
 	github.com/caddyserver/certmagic v0.25.3
+	github.com/coder/websocket v1.8.15
 	github.com/containerd/containerd/api v1.12.0
 	github.com/containerd/containerd/v2 v2.4.1
 	github.com/containerd/errdefs v1.0.0

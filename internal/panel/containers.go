@@ -118,13 +118,18 @@ var errCoreDown = msg.Define(http.StatusBadGateway, "core.failed", "The Zelie co
 // coreFailed passes on what the core said about a bad request, and hides
 // the details of anything else.
 func (s *Server) coreFailed(w http.ResponseWriter, what string, err error) {
+	writeError(w, s.coreError(what, err))
+}
+
+// coreError is the message for a failed request to the core: its own when it
+// has one for the person, otherwise a note that the core is down.
+func (s *Server) coreError(what string, err error) *msg.Error {
 	var ce *core.Error
 	if errors.As(err, &ce) && ce.Status < 500 {
-		writeError(w, &msg.Error{Status: ce.Status, Msg: ce.Msg()})
-		return
+		return &msg.Error{Status: ce.Status, Msg: ce.Msg()}
 	}
 	s.Log.Error(what, "err", err)
-	writeError(w, errCoreDown.Err())
+	return errCoreDown.Err()
 }
 
 // isNotFound reports whether the core said the thing asked for does not

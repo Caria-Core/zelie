@@ -67,7 +67,11 @@ type Server struct {
 	samples samples
 	meter   meter
 	powUsed powUsed
-	sizes   volumeSizes
+	// Console tokens already used, and the consoles being watched.
+	consoleUsed powUsed
+	consoles    consoleHubs
+	consoleHist consoleHistory
+	sizes       volumeSizes
 	// Releases returns the latest release; tests replace GitHub.
 	Releases func(ctx context.Context) (Release, error)
 	releases releases
@@ -212,6 +216,10 @@ func (s *Server) Handler() http.Handler {
 	web.HandleFunc("GET /api/games/{app}", s.adminOnly(s.getGame))
 	web.HandleFunc("POST /api/games/{app}/reinstall", s.adminOnly(s.reinstallGame))
 	web.HandleFunc("POST /api/games/{app}/power", s.adminOnly(s.gamePower))
+	web.HandleFunc("POST /api/games/{app}/console/token", s.adminOnly(s.consoleToken))
+	// Not behind signedIn: a browser's socket carries the token instead,
+	// which consoleSocket checks together with the session.
+	web.HandleFunc("GET /api/games/{app}/console", s.consoleSocket)
 	web.HandleFunc("GET /api/host", s.signedIn(s.hostInfo))
 	web.HandleFunc("GET /api/github", s.signedIn(s.githubStatus))
 	web.HandleFunc("POST /api/github/manifest", s.confirmed(s.githubManifest))
