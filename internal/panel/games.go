@@ -544,6 +544,9 @@ type gamePortJSON struct {
 
 type gameInstallJSON struct {
 	State string `json:"state"`
+	// CloneOf names the server whose files are being copied, while the
+	// "install" is a copy.
+	CloneOf string `json:"clone_of,omitempty"`
 	// Deployment is the deployment whose log holds the last install's
 	// output: GET /api/apps/{app}/deployments/{id}/log.
 	Deployment  int64      `json:"deployment,omitempty"`
@@ -618,6 +621,11 @@ func (s *Server) gameOut(ctx context.Context, a store.App) (gameJSON, error) {
 		Crashing:  s.crashes.gaveUp(a.ID),
 	}
 	out.EULANeeded = e.HasFeature(egg.FeatureEULA) && g.EULAAcceptedAt.IsZero()
+	if g.InstallState == store.InstallRunning {
+		if d, err := s.Store.Deployment(ctx, a.ID, g.InstallID); err == nil && d.Cause == store.CauseClone {
+			out.Install.CloneOf = d.Message
+		}
+	}
 	if !g.InstalledAt.IsZero() {
 		out.Install.InstalledAt = &g.InstalledAt
 	}
@@ -754,7 +762,7 @@ func (s *Server) gameFrom(w http.ResponseWriter, r *http.Request) (store.App, st
 	}
 	switch {
 	case errors.Is(err, store.ErrNotFound):
-		writeError(w, errNoGame.Err())
+		writeError(w, s.cloneFailures.gone(r.PathValue("app"), s.now(), errNoGame))
 		return a, g, false
 	case err != nil:
 		s.fail(w, "load game server", err)

@@ -25,6 +25,10 @@
 	let everConnected = $state(false);
 	let stopped = $state('');
 	let installed = $state(false);
+	// The server this one was copied from, remembered for the message that
+	// follows the copy.
+	let copy = $state({ id: '', from: '' });
+	const copiedFrom = $derived(copy.id === id ? copy.from : '');
 	let scroller = $state<HTMLElement>();
 	let atBottom = $state(true);
 
@@ -43,6 +47,9 @@
 	const canType = $derived(connected && (phase === 'running' || phase === 'starting'));
 	const installing = $derived(phase === 'installing');
 	const eulaNeeded = $derived(!!info?.eula_needed && info.install.state === 'installed' && phase !== 'running' && phase !== 'starting');
+	$effect(() => {
+		if (info?.install.clone_of) copy = { id, from: info.install.clone_of };
+	});
 	const failed = $derived(!installing && info?.install.state === 'failed');
 
 	let eulaOpen = false;
@@ -301,8 +308,13 @@
 		<div class="flex items-start gap-3 rounded-xl border border-line px-4 py-3" role="status">
 			<LoaderCircle size={18} class="mt-0.5 shrink-0 animate-spin text-muted" />
 			<div class="min-w-0">
-				<p class="text-sm font-medium">{t('console.installing')}</p>
-				<p class="text-sm text-muted">{t('console.installingText')}</p>
+				{#if info?.install.clone_of}
+					<p class="text-sm font-medium">{t('console.copying')}</p>
+					<p class="text-sm text-muted">{t('console.copyingText', { server: info.install.clone_of })}</p>
+				{:else}
+					<p class="text-sm font-medium">{t('console.installing')}</p>
+					<p class="text-sm text-muted">{t('console.installingText')}</p>
+				{/if}
 			</div>
 		</div>
 	{:else if failed}
@@ -315,8 +327,13 @@
 		</div>
 	{:else if installed && phase !== 'running'}
 		<div class="rounded-xl border border-line px-4 py-3" role="status">
-			<p class="text-sm font-medium text-ok">{t('console.installed')}</p>
-			<p class="text-sm text-muted">{t('console.installedText')}</p>
+			{#if copiedFrom}
+				<p class="text-sm font-medium text-ok">{t('console.copied')}</p>
+				<p class="text-sm text-muted">{t(info?.ports.length ? 'console.copiedText' : 'console.copiedFilesText', { server: copiedFrom })}</p>
+			{:else}
+				<p class="text-sm font-medium text-ok">{t('console.installed')}</p>
+				<p class="text-sm text-muted">{t('console.installedText')}</p>
+			{/if}
 		</div>
 	{/if}
 

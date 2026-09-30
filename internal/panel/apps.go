@@ -408,7 +408,7 @@ func (s *Server) appFrom(w http.ResponseWriter, r *http.Request) (store.App, boo
 	a, err := s.Store.App(r.Context(), r.PathValue("app"))
 	switch {
 	case errors.Is(err, store.ErrNotFound):
-		writeError(w, errNoApp.Err())
+		writeError(w, s.cloneFailures.gone(r.PathValue("app"), s.now(), errNoApp))
 		return a, false
 	case err != nil:
 		s.fail(w, "load app", err)

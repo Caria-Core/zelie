@@ -1,6 +1,6 @@
-import { api } from './api';
+import { api, ApiError } from './api';
 import { reload as reloadList } from './apps.svelte';
-import type { Msg } from './i18n';
+import { say, type Msg } from './i18n';
 
 export type GameVariable = {
 	env: string;
@@ -56,7 +56,8 @@ export type Game = {
 	features: string[];
 	// The egg asks for a EULA nobody has accepted, so the server will not start.
 	eula_needed?: boolean;
-	install: { state: 'installing' | 'installed' | 'failed'; deployment?: number; installed_at?: string };
+	// clone_of names the server being copied while the install is a copy.
+	install: { state: 'installing' | 'installed' | 'failed'; deployment?: number; installed_at?: string; clone_of?: string };
 	// stopped, starting, running, stopping or crashed.
 	state: string;
 	crashing?: Msg;
@@ -79,15 +80,26 @@ export type PortRange = { ip: string; ports: string; first: number; last: number
 
 // The game server open in its pages. The layout loads it and the console
 // reports what the socket says the state is, which is faster than a poll.
-export const game = $state<{ info: Game | null; missing: boolean; live: string }>({ info: null, missing: false, live: '' });
+// gone says why the server is missing, when it was a copy that failed and was removed.
+export const game = $state<{ info: Game | null; missing: boolean; gone: string; live: string }>({ info: null, missing: false, gone: '', live: '' });
 
 export async function loadGame(id: string): Promise<void> {
 	try {
 		game.info = await api<Game>('GET', `/games/${encodeURIComponent(id)}`);
 		game.missing = false;
-	} catch {
+		game.gone = '';
+	} catch (err) {
 		game.missing = true;
+		game.gone = err instanceof ApiError && err.msg.code === 'game.clone_failed' ? say(err.msg) : '';
 	}
+}
+
+// Makes a new server from this one and starts copying its files. The new
+// server is there at once, installing.
+export async function cloneGame(id: string, name: string): Promise<Game> {
+	const made = await api<Game>('POST', `/games/${encodeURIComponent(id)}/clone`, { name });
+	await reloadList();
+	return made;
 }
 
 // What the server is doing, for the header and the console.

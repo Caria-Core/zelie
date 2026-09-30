@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { Activity, ArrowUpRight, CircleArrowUp, Clock, Cpu, Ellipsis, MemoryStick, Play, RotateCw, Rocket, Square, TriangleAlert } from '@lucide/svelte';
+	import { Activity, ArrowUpRight, CircleArrowUp, Clock, CopyPlus, Cpu, Ellipsis, MemoryStick, Play, RotateCw, Rocket, Square, TriangleAlert } from '@lucide/svelte';
 	import { untrack } from 'svelte';
 	import { page } from '$app/state';
 	import { api } from '$lib/api';
@@ -13,6 +13,7 @@
 	import { megabytes, type Usage } from '$lib/host.svelte';
 	import AppIcon from '$lib/ui/AppIcon.svelte';
 	import Button from '$lib/ui/Button.svelte';
+	import CloneDialog from '$lib/ui/CloneDialog.svelte';
 	import ErrorText from '$lib/ui/ErrorText.svelte';
 	import StateDot from '$lib/ui/StateDot.svelte';
 
@@ -37,6 +38,7 @@
 		current.app = null;
 		game.info = null;
 		game.missing = false;
+		game.gone = '';
 		game.live = '';
 		refresh(app);
 		// Faster while a deployment moves, slower otherwise. Untracked:
@@ -90,6 +92,7 @@
 	// With pushes deploying on their own, deploying by hand is rare and goes
 	// in a menu.
 	let more = $state(false);
+	let cloning = $state(false);
 	let menu = $state<HTMLElement>();
 
 	async function askStop() {
@@ -202,7 +205,14 @@
 />
 
 {#if current.missing}
-	<p class="text-muted">404</p>
+	{#if current.gone}
+		<div class="flex flex-col gap-3">
+			<p role="alert" class="rounded-xl border border-danger/30 px-4 py-3 text-sm text-danger">{current.gone}</p>
+			<a href="/" class="w-fit text-sm text-muted underline decoration-line underline-offset-2 hover:text-fg hover:decoration-fg">{t('nav.apps')}</a>
+		</div>
+	{:else}
+		<p class="text-muted">404</p>
+	{/if}
 {:else if current.app && current.app.id === id}
 	{@const a = current.app}
 	<div class="flex flex-col gap-6">
@@ -303,6 +313,23 @@
 				{/if}
 				{#if files}
 					<!-- Nothing to deploy: it runs the files in its volume. -->
+					<div class="relative" bind:this={menu}>
+						<Button kind="secondary" class="!px-3" aria-label={t('app.more')} title={t('app.more')} aria-expanded={more} onclick={() => (more = !more)}>
+							<Ellipsis size={18} strokeWidth={1.75} />
+						</Button>
+						{#if more}
+							<div class="absolute top-12 right-0 z-20 w-[min(20rem,calc(100vw-2rem))] rounded-2xl border border-line bg-bg p-1.5 shadow-lg">
+								<button
+									class="flex w-full flex-col items-start gap-1 rounded-xl px-3 py-2.5 text-left transition hover:bg-hover disabled:opacity-50"
+									disabled={phase === 'installing' || game.info?.install.state !== 'installed'}
+									onclick={() => ((more = false), (cloning = true))}
+								>
+									<span class="flex items-center gap-2 text-[15px] font-medium"><CopyPlus size={16} strokeWidth={1.75} />{t('game.clone')}</span>
+									<span class="text-sm text-muted">{t('game.cloneHint')}</span>
+								</button>
+							</div>
+						{/if}
+					</div>
 				{:else if !a.engine && a.source === 'github' && a.auto_deploy}
 					<div class="relative" bind:this={menu}>
 						<Button kind="secondary" class="!px-3" aria-label={t('app.more')} title={t('app.more')} aria-expanded={more} onclick={() => (more = !more)}>
@@ -371,4 +398,7 @@
 			{@render children()}
 		{/if}
 	</div>
+	{#if files}
+		<CloneDialog {id} files running={phase === 'running' || phase === 'starting'} bind:open={cloning} />
+	{/if}
 {/if}

@@ -127,16 +127,16 @@ func hasRule(v egg.Variable, name string) bool {
 	return false
 }
 
-// randomSecret makes a value of length characters from alphabet, or as many
-// as the rules allow. ok is false when the rules ask for something else,
-// such as a number, or leave less room than minLength.
-func randomSecret(v egg.Variable, length, minLength int, alphabet string) (string, bool) {
-	n := length
+// secretSize is how many characters a random value for v has: length, or as
+// many as the rules allow. ok is false when the rules ask for something
+// else, such as a number, or leave less room than minLength.
+func secretSize(v egg.Variable, length, minLength int) (n int, ok bool) {
+	n = length
 	lo := 0
 	for _, r := range v.Rules {
 		name, arg, _ := strings.Cut(r, ":")
 		if name == "integer" || name == "numeric" || name == "in" || name == "boolean" || name == "url" {
-			return "", false
+			return 0, false
 		}
 		nums := []int{}
 		for _, part := range strings.Split(arg, ",") {
@@ -157,7 +157,15 @@ func randomSecret(v egg.Variable, length, minLength int, alphabet string) (strin
 		}
 	}
 	n = max(n, lo)
-	if n < minLength {
+	return n, n >= minLength
+}
+
+// randomSecret makes a value of length characters from alphabet, or as many
+// as the rules allow. ok is false when the rules ask for something else,
+// such as a number, or leave less room than minLength.
+func randomSecret(v egg.Variable, length, minLength int, alphabet string) (string, bool) {
+	n, ok := secretSize(v, length, minLength)
+	if !ok {
 		return "", false
 	}
 	buf := make([]byte, 0, n)
@@ -184,3 +192,23 @@ func randomSecret(v egg.Variable, length, minLength int, alphabet string) (strin
 
 // initialValue is what a variable holds on a new server when nothing sets it.
 func initialValue(v egg.Variable) string { return secretValue(v, v.Default) }
+
+// cloneSecret is the value a copy of a server gets for the variable. An
+// administrative secret that Zelie made up for the original is made up
+// again: a copy that shared its RCON password would be a way into both. That
+// is a variable the egg leaves empty or as a placeholder, holding a value of
+// the shape Zelie generates. Everything else stays as it is: what the owner
+// typed, the password players join with, and what the egg sets itself.
+func cloneSecret(v egg.Variable, value string) string {
+	if secretKindOf(v.Env) != adminSecret || strings.TrimSpace(v.Default) != "" && !isPlaceholder(v.Default) {
+		return value
+	}
+	n, ok := secretSize(v, secretLength, secretMinLength)
+	if !ok || len(value) != n || strings.Trim(value, secretAlphabet) != "" {
+		return value
+	}
+	if fresh, ok := randomSecret(v, secretLength, secretMinLength, secretAlphabet); ok {
+		return fresh
+	}
+	return value
+}

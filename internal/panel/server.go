@@ -108,6 +108,10 @@ type Server struct {
 	// jobs are backups and restores running in the background.
 	jobs sync.WaitGroup
 	ctx  context.Context // lives as long as the server
+
+	// cloneFailures remembers why copies of servers failed, for the page of
+	// the server that is no more.
+	cloneFailures cloneFailures
 }
 
 // baseContext is for work that outlives the request that started it.
@@ -270,6 +274,7 @@ func (s *Server) Handler() http.Handler {
 	web.HandleFunc("GET /api/games/{app}/diagnosis", s.managesGame(s.getDiagnosis))
 	web.HandleFunc("POST /api/games/{app}/diagnosis/fix", s.managesGame(s.applyDiagnosisFix))
 	web.HandleFunc("POST /api/games/{app}/reinstall", s.adminOnly(s.reinstallGame))
+	web.HandleFunc("POST /api/games/{app}/clone", s.managesGame(s.cloneGame))
 	web.HandleFunc("PUT /api/games/{app}/steam", s.adminOnly(s.setSteam))
 	web.HandleFunc("POST /api/games/{app}/steam/update", s.adminOnly(s.updateSteam))
 	web.HandleFunc("POST /api/games/{app}/power", s.adminOnly(s.gamePower))

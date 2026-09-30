@@ -1,12 +1,14 @@
-import { api } from './api';
+import { api, ApiError } from './api';
+import { say } from './i18n';
 import { inProgress, reload as reloadList, type AppDetail } from './apps.svelte';
 import type { Usage } from './host.svelte';
 
 // The app open in the app pages. The layout loads it, and what it uses now;
 // the tabs read both.
-export const current = $state<{ app: AppDetail | null; missing: boolean; usage: Usage | null }>({
+export const current = $state<{ app: AppDetail | null; missing: boolean; gone: string; usage: Usage | null }>({
 	app: null,
 	missing: false,
+	gone: '',
 	usage: null
 });
 
@@ -14,8 +16,10 @@ export async function load(id: string): Promise<void> {
 	try {
 		current.app = await api<AppDetail>('GET', `/apps/${encodeURIComponent(id)}`);
 		current.missing = false;
-	} catch {
+		current.gone = '';
+	} catch (err) {
 		current.missing = true;
+		current.gone = err instanceof ApiError && err.msg.code === 'game.clone_failed' ? say(err.msg) : '';
 	}
 }
 

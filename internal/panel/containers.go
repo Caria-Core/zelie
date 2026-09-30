@@ -72,6 +72,7 @@ type Core interface {
 	RestoreBackup(ctx context.Context, app, name, kind, container, volume string) error
 	BackUpVolumes(ctx context.Context, app string, vols []core.VolumeRef, live bool) (core.Backup, error)
 	RestoreVolumes(ctx context.Context, app, name string, vols []core.VolumeRef, size int64) error
+	CopyVolume(ctx context.Context, from, to string) error
 	RecoveryKey(ctx context.Context, host string, w io.Writer) error
 	Offsite(ctx context.Context) (core.OffsiteInfo, error)
 	SetOffsite(ctx context.Context, cfg core.OffsiteConfig) (core.OffsiteInfo, error)

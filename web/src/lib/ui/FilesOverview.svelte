@@ -17,9 +17,9 @@
 		<div class="flex items-start gap-3 rounded-xl border border-line px-4 py-3" role="status">
 			<LoaderCircle size={18} class="mt-0.5 shrink-0 animate-spin text-muted" />
 			<div class="min-w-0">
-				<p class="text-sm font-medium">{t('console.installing')}</p>
+				<p class="text-sm font-medium">{g?.install.clone_of ? t('console.copying') : t('console.installing')}</p>
 				<p class="text-sm text-muted">
-					{t('files.overview.installing')}
+					{g?.install.clone_of ? t('files.overview.copying', { server: g.install.clone_of }) : t('files.overview.installing')}
 					<a href="/a/{app.id}/console" class="text-fg underline decoration-line underline-offset-2 hover:decoration-fg">{t('game.tab.console')}</a>
 				</p>
 			</div>

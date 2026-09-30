@@ -103,6 +103,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/volumes", s.createVolume)
 	mux.HandleFunc("DELETE /v1/volumes/{name}", s.removeVolume)
 	mux.HandleFunc("POST /v1/volumes/{name}/prepare", s.prepareVolume)
+	mux.HandleFunc("POST /v1/volume-copies", s.copyVolume)
 	mux.HandleFunc("POST /v1/volumes/{name}/files/list", s.listFiles)
 	mux.HandleFunc("GET /v1/volumes/{name}/files/content", s.readFile)
 	mux.HandleFunc("PUT /v1/volumes/{name}/files/content", s.writeFile)

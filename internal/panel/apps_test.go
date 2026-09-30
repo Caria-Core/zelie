@@ -100,6 +100,14 @@ type appCore struct {
 	// Containers another request removes first: removing them again finds
 	// nothing.
 	vanishing map[string]bool
+
+	// Volume copies: each as "from to", what makes them fail, and a hook
+	// that runs first, without the lock.
+	copies   []string
+	copyErr  error
+	copyHook func(from, to string)
+	// host replaces what Host says, when set.
+	host *engine.Host
 }
 
 func newAppCore(t *testing.T) *appCore {
@@ -534,6 +542,11 @@ func (c *appCore) Usage(_ context.Context, id string) (engine.Usage, error) {
 }
 
 func (c *appCore) Host(context.Context) (engine.Host, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.host != nil {
+		return *c.host, nil
+	}
 	return engine.Host{CPUs: 2, MemoryBytes: 3 << 30, DiskBytes: 100 << 30, DiskFreeBytes: 60 << 30}, nil
 }
 

@@ -125,6 +125,10 @@ supports run here too.
 - **Steam updates.** For Steam games, Zelie asks Steam once an hour which build is the
   latest and shows when the server is behind. It can update by itself when nobody is
   playing. A reinstall or an update takes a backup first.
+- **Clone.** The menu next to Start makes a new server from this one: same egg, settings and
+  limits, every file, and new ports from the pool for the same jobs. Schedules, backups and
+  the SFTP password stay behind, and passwords Zelie made up for the original, such as RCON,
+  are made up again. The copy starts stopped.
 - **Crashes** are handled as for apps. The header shows the server's limits, and its
   memory and CPU use while it runs.
 

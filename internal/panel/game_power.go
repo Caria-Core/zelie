@@ -433,7 +433,7 @@ func (s *Server) gameState(ctx context.Context, a store.App) string {
 		s.Log.Error("game server state", "server", a.ID, "err", err)
 		return stateUnknown
 	}
-	if len(recent) > 0 && recent[0].FinishedAt.IsZero() && recent[0].Cause != store.CauseInstall && recent[0].Cause != store.CauseReinstall {
+	if len(recent) > 0 && recent[0].FinishedAt.IsZero() && recent[0].Cause != store.CauseInstall && recent[0].Cause != store.CauseReinstall && recent[0].Cause != store.CauseClone {
 		return stateStarting
 	}
 	if _, err := s.Store.LiveDeployment(ctx, a.ID); errors.Is(err, store.ErrNotFound) {

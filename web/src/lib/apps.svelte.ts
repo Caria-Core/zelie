@@ -7,7 +7,7 @@ export type Deployment = {
 	image?: string;
 	state: 'queued' | 'building' | 'testing' | 'starting' | 'installing' | 'installed' | 'live' | 'failed' | 'replaced' | 'skipped';
 	error?: Msg;
-	cause: 'manual' | 'push' | 'restart' | 'rollback' | 'recover' | 'restore' | 'backup' | 'update' | 'upgrade' | 'install' | 'reinstall';
+	cause: 'manual' | 'push' | 'restart' | 'rollback' | 'recover' | 'restore' | 'backup' | 'update' | 'upgrade' | 'install' | 'reinstall' | 'clone';
 	// The image still exists, so it can be rolled back to.
 	kept: boolean;
 	// The first line of the pushed commit's message.
@@ -71,7 +71,7 @@ export const runtimeLabel: Record<string, string> = { nodejs: 'Node.js', python:
 // was never started is stopped, not "not deployed".
 export function gameListState(a: App): string {
 	const d = a.latest;
-	if (d && (d.cause === 'install' || d.cause === 'reinstall') && (d.state === 'queued' || d.state === 'installing')) return 'installing';
+	if (d && (d.cause === 'install' || d.cause === 'reinstall' || d.cause === 'clone') && (d.state === 'queued' || d.state === 'installing')) return 'installing';
 	return a.state === 'none' ? 'stopped' : shownState(a);
 }
 

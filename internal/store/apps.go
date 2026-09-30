@@ -291,6 +291,7 @@ const (
 	CauseUpgrade   = "upgrade"   // a database's new major version, with its data dumped and loaded
 	CauseInstall   = "install"   // a new game server's install container
 	CauseReinstall = "reinstall" // the install again, after a backup of the server's files
+	CauseClone     = "clone"     // a new server filled with the files of another; Message names it
 )
 
 // Deployment is one attempt to put a version of an app live.
