@@ -1,53 +1,135 @@
-# Zelie Panel
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/logo-dark.svg">
+    <img src="docs/images/logo.svg" width="72" height="72" alt="Zelie">
+  </picture>
+</p>
 
-Zelie is a server panel for your own machine. It runs websites and APIs from GitHub or a
-container image, databases, and game servers such as Minecraft and Rust, and puts them
-online with HTTPS. You skip the setup: no reverse proxy to configure, no certificates to
-renew, no Dockerfile unless you want one.
+<h1 align="center">Zelie</h1>
 
-It is meant to replace older panels such as Pterodactyl, Pelican and cPanel with
-something lighter and safer. Zelie is a single binary with no web server, PHP or database
-server of its own to look after. Every app, database and game server runs in its own
-locked-down container, and one command installs the whole thing.
+<p align="center">
+  A server panel for your own machine: game servers, apps and databases, in one binary.<br>
+  <a href="https://zelie.cariacore.com">Website</a> ·
+  <a href="docs/features.md">Features</a> ·
+  <a href="docs/install.md">Install</a> ·
+  <a href="https://zelie.cariacore.com/compare">Compare</a>
+</p>
 
-> [!WARNING]
-> **Alpha.** Zelie runs real sites and game servers, but it changes quickly and has had
-> not run on many servers yet. Keep your own backups, and wait before you move
-> anything important onto it.
+Zelie runs Minecraft, Rust and other game servers from the same eggs Pterodactyl and
+Pelican use. Next to them it deploys websites, APIs and Discord bots from GitHub, a
+container image or plain files, runs PostgreSQL, MariaDB and Redis, and puts it all online
+with HTTPS.
 
-![Zelie's home page: apps, databases and game servers, all live](docs/images/home.png)
+It is one file. There is no PHP, no web server, no queue worker, no database server and no
+Docker to install and keep up to date. One command sets it up, and the panel updates
+itself.
 
-## What it does
+> [!NOTE]
+> **Early development.** Zelie has only been tried on a small number of servers so far,
+> and it still changes quickly. For now, run it on a spare server rather than one that
+> hosts something important.
 
-**Apps.** Deploy a GitHub repository, public or private, and every push to its branch
-goes live. Zelie builds it with your Dockerfile, or works out the build itself with
-[Railpack](https://github.com/railwayapp/railpack). A new version starts next to the old
-one and only takes over once it answers; if the build, the tests or the start fail, the
-old version keeps serving. Any container image works too, and so does a folder of your
-own files run with Node.js, Python, Bun, Deno or Java.
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/home-dark.webp">
+  <img src="docs/images/home.webp" alt="Zelie's home page: apps, databases and game servers, all live">
+</picture>
 
-**Databases.** PostgreSQL, MariaDB and Redis, with no port open to the internet. Link one
-to an app and the app gets `DATABASE_URL`. Browse tables and keys in the panel,
-read-only, and update to a new version with a backup taken first.
+## Why Zelie
 
-**Game servers.** Minecraft, Rust, Valheim, Palworld and a dozen more from the list, or
-any Pterodactyl or Pelican egg by its link. A live console, a file manager, SFTP, startup settings,
-schedules and backups. Zelie opens the game's ports while the server exists, and for
-Steam games tells you when an update is out.
+**Light.** Zelie's own processes use under 90 MB of memory when idle. That is checked on
+every change: the test run fails if it grows past the limit. On a live server we measured
+Pelican's panel, queue worker and Wings at about 230 MB, before its database and Docker.
+Coolify asks for at least 2 GB of RAM. The rest of your machine goes to your players and
+your apps.
 
-![A Minecraft server's live console in Zelie](docs/images/console.png)
+**Simple to install.** One command, a few minutes, one question about how the panel is
+reached. No guide with a dozen steps.
 
-**Backups.** Databases, app files and game worlds on a schedule, encrypted on the server,
-with copies in any S3-compatible storage. A restore first backs up what is there.
+**Updates itself.** A new release is one click on the Server page. Games, apps and
+databases keep running while Zelie updates, and if the new version does not come up, the
+old one is put back.
 
-**Metrics.** Requests, server errors, memory, CPU and traffic for every app, a reading a
-minute, kept for a day.
+**Secure by design.** The part of Zelie that runs as root has no network port. The web
+panel runs as its own user, so a bug in it is not a bug with root rights. Every account
+needs a passkey or an authenticator app. Secrets are sealed as they are saved, so the
+panel cannot read them back.
 
-**Logins.** Every administrator needs a passkey or an authenticator app. Secrets are
-sealed as they are saved, so the web interface cannot read them back, and SFTP never
-accepts an account's password.
+**One panel for everything.** Your game server, its website and its database sit under one
+login, with metrics and backups for each.
 
-![An app's metrics in Zelie](docs/images/metrics.png)
+## Compared with other panels
+
+|  | Zelie | Pterodactyl | Pelican | Coolify |
+|---|---|---|---|---|
+| Install | One command | Manual guide | Manual guide | One command |
+| Runs on | One Go binary | PHP, Laravel, MySQL, Redis | PHP, Laravel | PHP, Laravel, PostgreSQL, Redis |
+| Needs Docker | No, its own containerd | Yes, for Wings | Yes, for Wings | Yes |
+| Idle memory | Under 90 MB | PHP panel, queue worker and Wings | About 230 MB, before the database | At least 2 GB of RAM asked for |
+| Updates from the panel | ✅ With automatic rollback | ❌ | ❌ | ✅ |
+| Pterodactyl and Pelican eggs | ✅ | ✅ | ✅ | ❌ |
+| Console, files, SFTP, schedules | ✅ | ✅ | ✅ | ❌ |
+| Deploys from GitHub | ✅ | ❌ | ❌ | ✅ |
+| Rollback in a click | ✅ | ❌ | ❌ | ✅ |
+| Databases | PostgreSQL, MariaDB, Redis | MySQL for game servers | MySQL for game servers | Many |
+| Automatic HTTPS for apps | ✅ | ❌ | ❌ | ✅ |
+| Two-step login | Required for everyone | Optional | Optional | Optional |
+| Root part reachable from the network | No | Wings, on a public port | Wings, on a public port | SSH as root |
+| Encrypted backups to S3 | ✅ | Not encrypted | Not encrypted | Databases only |
+| Several machines from one panel | Planned | ✅ | ✅ | ✅ |
+| Sub-users | Planned | ✅ | ✅ | Teams |
+
+The other panels are described as they install by default. The [comparison
+page](https://zelie.cariacore.com/compare) has the details, and a note on each measurement.
+
+## Game servers
+
+- **21 games ready to pick**, from Pelican's egg repositories: Minecraft (Vanilla, Paper,
+  Purpur, Fabric, Forge, NeoForge, Velocity, Bedrock), Rust, Valheim, Palworld, ARK:
+  Survival Ascended, 7 Days to Die, Counter-Strike 2, Enshrouded, Garry's Mod, Project
+  Zomboid, Satisfactory, Sons of the Forest, Squad and V Rising. Each is downloaded and
+  checked on every release. Any other Pterodactyl or Pelican egg can be imported by its
+  link.
+- **A live console** with colours and history, start, stop, restart and kill. When a server
+  crashes, Zelie reads its last lines and says why: out of memory, the wrong Java, a port
+  in use, the EULA. Where it can, it offers the fix.
+- **Files and SFTP.** A file manager with a code editor, upload by dragging, archives, and
+  SFTP that reaches one server's files and nothing else.
+- **Ports you choose.** A pool of ports on one IP or several; you pick which port the
+  game, query, RCON or Rust+ gets.
+- **Schedules and backups.** Console commands, restarts and backups at cron times. For
+  Minecraft, the world is saved before a backup.
+- **Steam updates.** Zelie checks each hour whether a Steam game is behind, and can update
+  it when nobody is playing.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/console-dark.webp">
+  <img src="docs/images/console.webp" alt="A Minecraft server's live console in Zelie">
+</picture>
+
+## Apps and databases
+
+- **From GitHub**, public or private. Every push builds, runs your tests and passes a health
+  check before traffic moves over. If any step fails, the old version keeps serving. The
+  last five versions stay ready to roll back.
+- **From a container image**, or from a folder of your own files run with Node.js, Python,
+  Bun, Deno or Java: a Discord bot or a site that used to live on a game panel.
+- **Builds** with your Dockerfile, or [Railpack](https://github.com/railwayapp/railpack)
+  works out the build.
+- **Databases.** PostgreSQL, MariaDB and Redis, with no port open to the internet. Link one
+  to an app and it gets `DATABASE_URL`. Browse tables and keys in the panel, and move to a
+  new major version with a backup taken first.
+- **Metrics.** Requests, errors, memory, CPU and traffic for every app, a reading a minute.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/app-metrics-dark.webp">
+  <img src="docs/images/app-metrics.webp" alt="An app's requests, errors, memory and CPU in Zelie">
+</picture>
+
+## Backups
+
+Databases, app files and game worlds on a schedule, compressed and encrypted on the
+server, with copies in any S3-compatible storage. A restore first backs up what is there,
+and a new server can find its backups in S3 and bring them back.
 
 [docs/features.md](docs/features.md) goes through every feature, and
 [docs/architecture.md](docs/architecture.md) explains how Zelie is built and why.
@@ -60,22 +142,19 @@ On a Debian or Ubuntu server with systemd, amd64 or arm64, as root:
 curl -fsSL https://github.com/Caria-Core/zelie/releases/latest/download/install.sh | sh
 ```
 
-The script checks the release's signature before it installs anything. Then it asks one
-question, how people will reach the panel:
+The script checks the release's signature before it installs anything. Then it asks how
+people will reach the panel:
 
 1. **A domain** that points to the server. Zelie gets certificates from Let's Encrypt.
    Choose this when nothing else serves websites on the server.
-2. **A Cloudflare Tunnel.** No port opens to the internet. Choose this when your domain
-   is on Cloudflare, when another web server already has ports 80 and 443, or when the
-   server is behind NAT.
-3. **The server's IP address**, with a self-signed certificate. Only for trying Zelie
-   out.
+2. **A Cloudflare Tunnel.** No port opens to the internet. Choose this when your domain is
+   on Cloudflare, when another web server already has ports 80 and 443, or when the server
+   is behind NAT.
+3. **The server's IP address**, with a self-signed certificate. Only for trying Zelie out.
 
-It ends with a link to create the administrator. After that, updates are one click on the
-panel's Server page. [docs/install.md](docs/install.md) walks through every step and what
-the install changes on the server.
-
-To build Zelie yourself, see [CONTRIBUTING.md](CONTRIBUTING.md).
+It ends with a link to create the administrator. [docs/install.md](docs/install.md) walks
+through every step and what the install changes on the server. To build Zelie yourself,
+see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 

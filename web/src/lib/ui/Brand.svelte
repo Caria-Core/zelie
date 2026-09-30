@@ -9,9 +9,9 @@
 
 <span class="flex items-center gap-2.5 text-[17px] {cls}">
 	{#if home}
-		<a href={home} class="flex items-center gap-2.5"><Logo /><span>{t('app.name')}</span></a>
+		<a href={home} class="flex items-center gap-2.5"><Logo size={26} /><span>{t('app.name')}</span></a>
 	{:else}
-		<Logo /><span>{t('app.name')}</span>
+		<Logo size={26} /><span>{t('app.name')}</span>
 	{/if}
 	<a href="https://cariacore.com" target="_blank" rel="noopener" class="text-muted transition hover:text-fg">{t('app.by')}</a>
 </span>
