@@ -339,12 +339,16 @@ func TestDiagnosisDiskAndFilesApps(t *testing.T) {
 	if after, _ := e.s.Store.App(context.Background(), "site"); after.MemoryMB <= before.MemoryMB {
 		t.Errorf("memory %d, was %d", after.MemoryMB, before.MemoryMB)
 	}
+}
 
-	// Disk: the log says it, and the fix goes through the volume's check.
+// The disk case has an environment of its own: two power environments in one
+// test would change the test timings under each other's watchers.
+func TestDiagnosisDiskFull(t *testing.T) {
+	// The log says it, and the fix goes through the volume's check.
 	g := newPowerEnv(t)
 	g.newGame(t, "survival", consoleEggURL, nil)
 	g.crashWith(t, "survival", "java.io.IOException: No space left on device\n", 1)
-	_, out = g.b.do("GET", "/api/games/survival/diagnosis", nil)
+	_, out := g.b.do("GET", "/api/games/survival/diagnosis", nil)
 	f, _ := out["fix"].(map[string]any)
 	if f["kind"] != fixRaiseDisk || f["params"].(map[string]any)["disk_mb"] != float64(15<<10) {
 		t.Fatalf("disk: %v", out)
