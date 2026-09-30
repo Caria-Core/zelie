@@ -40,9 +40,7 @@ func newPowerEnv(t *testing.T) *appEnv {
 	eggs.files[consoleEggURL] = consoleEgg
 	ctx, cancel := context.WithCancel(context.Background())
 	e.s.ctx = ctx
-	oldGrace, oldRetry := gameStopGrace, watchRetry
-	gameStopGrace, watchRetry = 2*time.Second, 5*time.Millisecond
-	t.Cleanup(func() { gameStopGrace, watchRetry = oldGrace, oldRetry })
+	e.s.testStopGrace, e.s.testWatchRetry = 2*time.Second, 5*time.Millisecond
 	t.Cleanup(func() {
 		cancel()
 		e.s.watchers.Wait()
@@ -360,7 +358,7 @@ func TestStopFallsBackToSIGTERM(t *testing.T) {
 
 func TestStopKillsAfterTheGracePeriod(t *testing.T) {
 	e := newPowerEnv(t)
-	gameStopGrace = 40 * time.Millisecond
+	e.s.testStopGrace = 40 * time.Millisecond
 	e.newGame(t, "survival", consoleEggURL, nil)
 	e.power(t, "survival", "start")
 	e.settle(t, "survival")

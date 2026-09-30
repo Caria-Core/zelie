@@ -34,6 +34,9 @@ import (
 const setupLinkTTL = 24 * time.Hour
 
 type Server struct {
+	// Shorter waits for tests; zero means the usual ones.
+	testStopGrace, testWatchRetry time.Duration
+
 	Store  *store.Store
 	Sealer *Sealer
 	Core   Core

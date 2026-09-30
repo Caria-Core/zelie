@@ -479,7 +479,7 @@ func (s *Server) runTask(ctx context.Context, x store.Schedule, t store.Schedule
 // waitStopped waits for a server that is stopping, so the next task finds it
 // stopped.
 func (s *Server) waitStopped(ctx context.Context, id string) error {
-	deadline := time.Now().Add(gameStopGrace + 30*time.Second)
+	deadline := time.Now().Add(s.stopGrace() + 30*time.Second)
 	for {
 		// Read again each time: stopping sets the app's stopped flag.
 		a, err := s.Store.App(ctx, id)

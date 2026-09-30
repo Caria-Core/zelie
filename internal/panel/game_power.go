@@ -40,8 +40,18 @@ const (
 )
 
 // gameStopGrace is how long a server gets to stop after being asked, before
-// it is killed. Tests shorten it.
-var gameStopGrace = 60 * time.Second
+// it is killed.
+const gameStopGrace = 60 * time.Second
+
+// stopGrace is gameStopGrace, or the shorter time a test gave this server.
+// A field rather than a variable, so tests that run side by side do not
+// change it under each other.
+func (s *Server) stopGrace() time.Duration {
+	if s.testStopGrace > 0 {
+		return s.testStopGrace
+	}
+	return gameStopGrace
+}
 
 const (
 	stateStopped  = "stopped"
@@ -355,12 +365,12 @@ func (s *Server) stopContainer(ctx context.Context, id string, e *egg.Egg, out i
 		fmt.Fprintln(out, "Stopping the server with SIGTERM.")
 		s.Core.Signal(ctx, id, "SIGTERM")
 	}
-	waitCtx, cancel := context.WithTimeout(ctx, gameStopGrace)
+	waitCtx, cancel := context.WithTimeout(ctx, s.stopGrace())
 	_, err := s.Core.Wait(waitCtx, id)
 	timedOut := errors.Is(waitCtx.Err(), context.DeadlineExceeded)
 	cancel()
 	if err != nil && timedOut {
-		fmt.Fprintf(out, "The server did not stop within %d seconds, so it is killed.\n", int(gameStopGrace/time.Second))
+		fmt.Fprintf(out, "The server did not stop within %d seconds, so it is killed.\n", int(s.stopGrace()/time.Second))
 	}
 	// Removes the stopped task, and kills a server that is still up.
 	if err := s.Core.Stop(ctx, id, 0); err != nil && !isNotFound(err) {
@@ -372,8 +382,15 @@ func (s *Server) stopContainer(ctx context.Context, id string, e *egg.Egg, out i
 var ansi = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`) })
 
 // watchRetry is how long the follower waits before it reads the console
-// again after the core dropped it. Tests shorten it.
-var watchRetry = time.Second
+// again after the core dropped it.
+const watchRetry = time.Second
+
+func (s *Server) watchRetry() time.Duration {
+	if s.testWatchRetry > 0 {
+		return s.testWatchRetry
+	}
+	return watchRetry
+}
 
 // resumeGames follows the servers that are running when the panel starts,
 // which run on through a panel restart. Their console from the start is read

@@ -541,7 +541,7 @@ func (s *Server) watchGame(a store.App, container string, e *egg.Egg) {
 			s.Core.Logs(ctx, container, true, 0, w)
 			select {
 			case <-ctx.Done():
-			case <-time.After(watchRetry):
+			case <-time.After(s.watchRetry()):
 			}
 		}
 	}()
