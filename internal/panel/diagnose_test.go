@@ -254,7 +254,7 @@ func TestDiagnosisAfterZelieGaveUp(t *testing.T) {
 	if e.s.crashes.gaveUp("survival") == nil {
 		t.Fatal("Zelie did not give up")
 	}
-		if _, out := e.b.do("GET", "/api/games/survival/diagnosis", nil); out["cause"] == nil {
+	if _, out := e.b.do("GET", "/api/games/survival/diagnosis", nil); out["cause"] == nil {
 		t.Errorf("gave up: %v", out)
 	}
 }
