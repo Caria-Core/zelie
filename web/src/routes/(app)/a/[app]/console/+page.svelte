@@ -3,4 +3,4 @@
 	import GameConsole from '$lib/ui/GameConsole.svelte';
 </script>
 
-<GameConsole id={page.params.app ?? ''} settings="/a/{page.params.app}/settings" />
+<GameConsole id={page.params.app ?? ''} settings="/a/{page.params.app}/settings" base="/a/{page.params.app}" />

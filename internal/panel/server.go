@@ -267,6 +267,8 @@ func (s *Server) Handler() http.Handler {
 	web.HandleFunc("GET /api/account/ssh-keys", s.signedIn(s.listSSHKeys))
 	web.HandleFunc("POST /api/account/ssh-keys", s.confirmed(s.addSSHKey))
 	web.HandleFunc("DELETE /api/account/ssh-keys/{id}", s.confirmed(s.deleteSSHKey))
+	web.HandleFunc("GET /api/games/{app}/diagnosis", s.managesGame(s.getDiagnosis))
+	web.HandleFunc("POST /api/games/{app}/diagnosis/fix", s.managesGame(s.applyDiagnosisFix))
 	web.HandleFunc("POST /api/games/{app}/reinstall", s.adminOnly(s.reinstallGame))
 	web.HandleFunc("PUT /api/games/{app}/steam", s.adminOnly(s.setSteam))
 	web.HandleFunc("POST /api/games/{app}/steam/update", s.adminOnly(s.updateSteam))

@@ -900,15 +900,30 @@ func (s *Server) updateGameResources(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
+	a, err := s.setGameResources(ctx, a, req)
+	if err != nil {
+		s.failWith(w, "change game resources", err)
+		return
+	}
+	out, err := s.gameOut(ctx, a)
+	if err != nil {
+		s.fail(w, "describe game server", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// setGameResources applies a resources request to the server and returns
+// the app as saved. Its error is a *msg.Error for the user, the core's
+// failure, or the panel's own.
+func (s *Server) setGameResources(ctx context.Context, a store.App, req gameResourcesRequest) (store.App, error) {
 	vols, err := s.Store.Volumes(ctx, a.ID)
 	if err != nil {
-		s.fail(w, "list volumes", err)
-		return
+		return a, fmt.Errorf("list volumes: %w", err)
 	}
 	i := slices.IndexFunc(vols, func(v store.Volume) bool { return v.Path == gameVolumePath })
 	if i < 0 {
-		s.fail(w, "find volume", errors.New("the server has no volume"))
-		return
+		return a, errors.New("the server has no volume")
 	}
 	vol := vols[i]
 	if req.MemoryMB != 0 {
@@ -922,33 +937,23 @@ func (s *Server) updateGameResources(w http.ResponseWriter, r *http.Request) {
 	}
 	h, err := s.Core.Host(ctx)
 	if err != nil {
-		s.coreFailed(w, "read host", err)
-		return
+		return a, s.coreError("read host", err)
 	}
 	disk := vol.LimitMB
 	if bad := s.gameLimits(&a, &disk, h); bad != nil {
-		writeError(w, bad)
-		return
+		return a, bad
 	}
 	if err := s.checkVolume(ctx, vol); err != nil {
-		s.failWith(w, "check volume", err)
-		return
+		return a, err
 	}
 	if err := s.Store.UpdateApp(ctx, a); err != nil {
-		s.fail(w, "save game resources", err)
-		return
+		return a, fmt.Errorf("save game resources: %w", err)
 	}
 	if err := s.Store.UpdateVolume(ctx, vol); err != nil {
-		s.fail(w, "update volume", err)
-		return
+		return a, fmt.Errorf("update volume: %w", err)
 	}
 	s.Log.Info("game resources changed", "server", a.ID, "user", loginFrom(ctx).account.ID, "memory_mb", a.MemoryMB, "cpus", a.CPUs, "disk_mb", vol.LimitMB)
-	out, err := s.gameOut(ctx, a)
-	if err != nil {
-		s.fail(w, "describe game server", err)
-		return
-	}
-	writeJSON(w, http.StatusOK, out)
+	return a, nil
 }
 
 // acceptEULA records the administrator's acceptance of the game's EULA for
@@ -990,25 +995,31 @@ func (s *Server) reinstallGame(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	ctx := r.Context()
+	id, err := s.reinstall(r.Context(), a, g)
+	if err != nil {
+		s.failWith(w, "reinstall game server", err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]int64{"id": id})
+}
+
+// reinstall queues the install again and returns its deployment's id. Its
+// error is a *msg.Error for the user, the core's failure, or the panel's own.
+func (s *Server) reinstall(ctx context.Context, a store.App, g store.GameServer) (int64, error) {
 	list, err := s.Core.List(ctx)
 	if err != nil {
-		s.coreFailed(w, "list containers", err)
-		return
+		return 0, s.coreError("list containers", err)
 	}
 	for _, c := range list {
 		if c.App == a.ID && c.State == "running" {
-			writeError(w, errStopToInstall.Err())
-			return
+			return 0, errStopToInstall.Err()
 		}
 	}
 	switch began, err := s.Store.BeginInstall(ctx, a.ID); {
 	case err != nil:
-		s.fail(w, "begin install", err)
-		return
+		return 0, fmt.Errorf("begin install: %w", err)
 	case !began:
-		writeError(w, errInstalling.Err())
-		return
+		return 0, errInstalling.Err()
 	}
 	// The next start pulls the image's tag again and pins what it finds,
 	// so a reinstall is also how a server moves to a newer build.
@@ -1016,18 +1027,16 @@ func (s *Server) reinstallGame(w http.ResponseWriter, r *http.Request) {
 		a.Image = g.Image
 		if err := s.Store.UpdateApp(ctx, a); err != nil {
 			s.Store.SetInstall(context.WithoutCancel(ctx), a.ID, g.InstallState, g.InstallID, time.Time{})
-			s.fail(w, "reset image", err)
-			return
+			return 0, fmt.Errorf("reset image: %w", err)
 		}
 	}
 	id, err := s.startInstall(ctx, a, store.CauseReinstall, g.InstallState)
 	if err != nil {
 		s.Store.SetInstall(context.WithoutCancel(ctx), a.ID, g.InstallState, g.InstallID, time.Time{})
-		s.fail(w, "start install", err)
-		return
+		return 0, fmt.Errorf("start install: %w", err)
 	}
 	s.Log.Info("game server install queued again", "server", a.ID, "user", loginFrom(ctx).account.ID)
-	writeJSON(w, http.StatusCreated, map[string]int64{"id": id})
+	return id, nil
 }
 
 // startInstall queues an install of the server as a deployment, whose log

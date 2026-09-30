@@ -1,17 +1,18 @@
 <script lang="ts">
-	import { ArrowDown, LoaderCircle, Send } from '@lucide/svelte';
+	import { ArrowDown, LoaderCircle, Send, Stethoscope } from '@lucide/svelte';
 	import { untrack } from 'svelte';
 	import { api, ApiError } from '$lib/api';
 	import { parseAnsi, type Span } from '$lib/ansi';
-	import { acceptEula, eulaLink, game, gameState, loadGame, power } from '$lib/games.svelte';
-	import { say, t } from '$lib/i18n';
+	import { acceptEula, applyFix, eulaLink, game, gameState, loadDiagnosis, loadGame, power, type Diagnosis, type DiagnosisFix } from '$lib/games.svelte';
+	import { say, t, type Key } from '$lib/i18n';
 	import { reload } from '$lib/apps.svelte';
 	import { ask } from '$lib/ask.svelte';
 	import { messageOf } from '$lib/errors';
 	import Button from './Button.svelte';
 
-	// settings is where a failed install can be run again.
-	let { id, settings }: { id: string; settings: string } = $props();
+	// settings is where a failed install can be run again. base is the
+	// server's own pages, such as /g/survival.
+	let { id, settings, base }: { id: string; settings: string; base: string } = $props();
 
 	type Line = { n: number; spans: Span[]; kind: 'line' | 'install' | 'notice' };
 
@@ -67,6 +68,72 @@
 			eulaError = messageOf(err);
 		} finally {
 			eulaOpen = false;
+		}
+	}
+
+	// The crash doctor: asked once each time the server has crashed or its
+	// install failed.
+	let diag = $state<Diagnosis | null>(null);
+	let applied = $state(false);
+	let fixing = $state(false);
+	let fixError = $state('');
+	const needsDoctor = $derived(phase === 'crashed' || failed);
+
+	$effect(() => {
+		const server = id;
+		if (!needsDoctor) {
+			diag = null;
+			return;
+		}
+		let stale = false;
+		loadDiagnosis(server)
+			.then((d) => !stale && (diag = d.cause ? d : null))
+			.catch(() => {});
+		return () => (stale = true);
+	});
+
+	$effect(() => {
+		if (phase === 'starting' || phase === 'running' || phase === 'installing') applied = false;
+	});
+
+	const imageLabel = (ref: string) => info?.images.find((i) => i.ref === ref)?.label ?? ref;
+	const fixVars = (fix: DiagnosisFix) => ({ size: String(fix.params?.size ?? ''), image: imageLabel(String(fix.params?.image ?? '')) });
+	const fixLabel = (fix: DiagnosisFix) => t(`diagnosis.fix.${fix.kind}` as Key, fixVars(fix));
+	const fixLinks: Partial<Record<DiagnosisFix['kind'], string>> = { open_network: 'network', open_backups: 'backups' };
+
+	// Fixes that change the server ask first, like the settings pages do.
+	async function runFix(fix: DiagnosisFix) {
+		if (fixing) return;
+		fixing = true;
+		fixError = '';
+		try {
+			const ok = await ask({
+				title: fixLabel(fix),
+				text: t(`diagnosis.confirm.${fix.kind}` as Key, fixVars(fix)),
+				link: fix.kind === 'accept_eula' ? { href: eulaLink, label: t('console.eulaLink') } : undefined,
+				action: fixLabel(fix)
+			});
+			if (!ok) return;
+			await applyFix(id, fix);
+			diag = null;
+			applied = fix.kind !== 'reinstall';
+		} catch (err) {
+			fixError = messageOf(err);
+		} finally {
+			fixing = false;
+		}
+	}
+
+	async function startAgain() {
+		if (fixing) return;
+		fixing = true;
+		fixError = '';
+		try {
+			await power(id, 'start');
+		} catch (err) {
+			fixError = messageOf(err);
+		} finally {
+			fixing = false;
 		}
 	}
 
@@ -252,6 +319,32 @@
 			<p class="text-sm text-muted">{t('console.installedText')}</p>
 		</div>
 	{/if}
+
+	{#if diag?.cause && !(eulaNeeded && diag.fix?.kind === 'accept_eula')}
+		{@const fix = diag.fix}
+		<div class="flex flex-wrap items-start gap-3 rounded-xl border border-line px-4 py-3" role="status">
+			<Stethoscope size={18} class="mt-0.5 shrink-0 text-muted" />
+			<div class="min-w-0 flex-1 basis-56">
+				<p class="text-sm font-medium">{t('diagnosis.title')}</p>
+				<p class="text-sm text-muted">{say(diag.cause)}</p>
+			</div>
+			{#if fix && fixLinks[fix.kind]}
+				<a
+					href="{base}/{fixLinks[fix.kind]}"
+					class="inline-flex h-10 w-full items-center justify-center rounded-full bg-selected px-5 text-[15px] font-medium text-fg transition hover:bg-line sm:w-auto"
+					>{fixLabel(fix)}</a
+				>
+			{:else if fix}
+				<Button kind="secondary" class="w-full sm:w-auto" busy={fixing} onclick={() => runFix(fix)}>{fixLabel(fix)}</Button>
+			{/if}
+		</div>
+	{:else if applied && phase !== 'running' && phase !== 'starting' && phase !== 'installing'}
+		<div class="flex flex-wrap items-center gap-3 rounded-xl border border-line px-4 py-3" role="status">
+			<p class="min-w-0 flex-1 basis-56 text-sm font-medium text-ok">{t('diagnosis.done')}</p>
+			<Button class="w-full sm:w-auto" busy={fixing} onclick={startAgain}>{t('game.start')}</Button>
+		</div>
+	{/if}
+	{#if fixError}<p role="alert" class="text-sm text-danger">{fixError}</p>{/if}
 
 	<div class="relative">
 		<div

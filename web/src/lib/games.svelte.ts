@@ -96,6 +96,26 @@ export function gameState(g: Game): string {
 	return game.live && game.live !== 'unknown' ? game.live : g.state;
 }
 
+// What the crash doctor found: the likely cause, and a fix when there is one.
+// The fixes that change something are applied with applyFix; the others
+// (open_network, open_backups) are links to a page.
+export type DiagnosisFix = {
+	kind: 'raise_memory' | 'raise_disk' | 'switch_image' | 'accept_eula' | 'reinstall' | 'open_network' | 'open_backups';
+	params?: Record<string, unknown>;
+};
+export type Diagnosis = { cause?: Msg; fix?: DiagnosisFix };
+
+// Asked once when a server has crashed or its install failed.
+export async function loadDiagnosis(id: string): Promise<Diagnosis> {
+	return api<Diagnosis>('GET', `/games/${encodeURIComponent(id)}/diagnosis`);
+}
+
+// Does what the diagnosis offers. It does not start the server.
+export async function applyFix(id: string, fix: DiagnosisFix): Promise<void> {
+	await api('POST', `/games/${encodeURIComponent(id)}/diagnosis/fix`, { kind: fix.kind, params: fix.params });
+	await Promise.all([loadGame(id), reloadList()]);
+}
+
 export const eulaLink = 'https://aka.ms/MinecraftEULA';
 
 // Records the acceptance of the game's EULA, which is what lets it start.

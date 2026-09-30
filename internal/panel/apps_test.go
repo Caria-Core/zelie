@@ -69,6 +69,7 @@ type appCore struct {
 	// take being stopped.
 	games       map[string]engine.Spec
 	gameLog     map[string]string
+	gameExit    map[string]int // what Wait says a game's process exited with
 	consoles    map[string][]string
 	signals     map[string][]string
 	prepares    []preparedVolume
@@ -395,7 +396,9 @@ func (c *appCore) Wait(ctx context.Context, id string) (int, error) {
 				return 0, &core.Error{Status: http.StatusNotFound, Message: "container not found"}
 			}
 			if st.State != "running" {
-				return 0, nil
+				c.mu.Lock()
+				defer c.mu.Unlock()
+				return c.gameExit[id], nil
 			}
 			select {
 			case <-ctx.Done():

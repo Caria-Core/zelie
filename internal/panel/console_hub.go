@@ -207,6 +207,8 @@ type consoleHub struct {
 	loaded    bool               // there is a console to show, or none is to be looked for
 	lines     []string
 	eula      bool // the container's console said it wants the EULA accepted
+	exit      int  // how the container's process ended, when exited is set
+	exited    bool
 	install   []string
 	state     string
 	subs      map[*consoleSub]struct{}
@@ -286,7 +288,17 @@ func (h *consoleHub) replace(container string, cancel context.CancelFunc) {
 	if h.cancel != nil {
 		h.cancel()
 	}
-	h.container, h.cancel, h.lines, h.loaded, h.eula = container, cancel, nil, true, false
+	h.container, h.cancel, h.lines, h.loaded, h.eula, h.exited = container, cancel, nil, true, false, false
+}
+
+// setExit records the exit code of container's process, for the crash
+// doctor to read.
+func (h *consoleHub) setExit(container string, code int) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.container == container {
+		h.exit, h.exited = code, true
+	}
 }
 
 // refusesEULA recognises what Minecraft servers print when eula.txt does
@@ -494,7 +506,11 @@ func (s *Server) watchGame(a store.App, container string, e *egg.Egg) {
 			defer s.watchers.Done()
 			// An error other than "gone" is the core being busy; the
 			// console is still worth reading.
-			if _, err := s.Core.Wait(ctx, container); err == nil || isNotFound(err) {
+			code, err := s.Core.Wait(ctx, container)
+			if err == nil {
+				h.setExit(container, code)
+			}
+			if err == nil || isNotFound(err) {
 				select {
 				case <-ctx.Done():
 				case <-time.After(consoleDrain):
