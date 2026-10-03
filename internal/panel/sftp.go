@@ -7,6 +7,8 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"net"
 	"net/http"
@@ -350,6 +352,7 @@ func (s *Server) removeGameSFTPPassword(w http.ResponseWriter, r *http.Request) 
 func (s *Server) sftpRoutes() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /local/sftp/auth", s.sftpAuth)
+	mux.HandleFunc("POST /local/sftp/check", s.sftpCheck)
 	mux.HandleFunc("POST /local/sftp/room", s.sftpRoom)
 	return mux
 }
@@ -362,6 +365,29 @@ func decodeSmall(w http.ResponseWriter, r *http.Request, v any) bool {
 // mayManageGame says whether an account may work on a game server's files.
 // It follows managesGame: for now, administrators.
 func mayManageGame(a store.Account) bool { return a.Admin }
+
+// credOf is what a grant remembers of the password it was given for. A
+// fingerprint of the hash is enough to see that the password was changed or
+// removed, and cannot be used to log in.
+func credOf(hash string) string {
+	sum := sha256.Sum256([]byte(hash))
+	return "p:" + hex.EncodeToString(sum[:12])
+}
+
+// gameGrant is the grant for a server and the credential it was made from,
+// or false when the server has no game volume.
+func (s *Server) gameGrant(ctx context.Context, app store.App, account int64, cred string) (sftpd.Grant, bool, error) {
+	vols, err := s.Store.Volumes(ctx, app.ID)
+	if err != nil {
+		return sftpd.Grant{}, false, err
+	}
+	for _, v := range vols {
+		if v.Path == gameVolumePath {
+			return sftpd.Grant{Server: app.ID, Volume: v.Name, UID: gameUID, GID: gameGID, Account: account, Cred: cred}, true, nil
+		}
+	}
+	return sftpd.Grant{}, false, nil
+}
 
 // sftpGrant works out what a login may use, or that it may use nothing.
 func (s *Server) sftpGrant(ctx context.Context, req sftpd.AuthRequest) (sftpd.Grant, bool, error) {
@@ -376,19 +402,21 @@ func (s *Server) sftpGrant(ctx context.Context, req sftpd.AuthRequest) (sftpd.Gr
 	}
 	switch {
 	case errors.Is(err, store.ErrNotFound):
-		auth.DummyCheck(req.Password)
+		auth.DummySFTPCheck(req.Password)
 		return none, false, nil
 	case err != nil:
 		return none, false, err
 	}
 
-	g := sftpd.Grant{Server: app.ID}
+	var account int64
+	var cred string
 	if req.Key != nil {
 		pub, err := ssh.ParsePublicKey(req.Key)
 		if err != nil {
 			return none, false, nil
 		}
-		acct, key, err := s.Store.SSHKeyOwner(ctx, ssh.FingerprintSHA256(pub))
+		fp := ssh.FingerprintSHA256(pub)
+		acct, key, err := s.Store.SSHKeyOwner(ctx, fp)
 		switch {
 		case errors.Is(err, store.ErrNotFound):
 			return none, false, nil
@@ -398,25 +426,69 @@ func (s *Server) sftpGrant(ctx context.Context, req sftpd.AuthRequest) (sftpd.Gr
 		if !bytes.Equal(key.PublicKey, pub.Marshal()) || !mayManageGame(acct) {
 			return none, false, nil
 		}
-		g.Account = acct.ID
+		account, cred = acct.ID, "k:"+fp
 	} else if hash == "" {
-		auth.DummyCheck(req.Password)
+		auth.DummySFTPCheck(req.Password)
 		return none, false, nil
-	} else if !auth.CheckPassword(hash, req.Password) {
+	} else if !auth.CheckSFTPPassword(hash, req.Password) {
 		return none, false, nil
+	} else {
+		cred = credOf(hash)
 	}
+	return s.gameGrant(ctx, app, account, cred)
+}
 
-	vols, err := s.Store.Volumes(ctx, app.ID)
+// sftpStillGranted asks the same questions as a login, without a password:
+// the grant is whole only if what it was made from is still there.
+func (s *Server) sftpStillGranted(ctx context.Context, g sftpd.Grant) (bool, error) {
+	app, err := s.Store.App(ctx, g.Server)
+	if err == nil && !app.RunsEgg() {
+		err = store.ErrNotFound
+	}
 	if err != nil {
-		return none, false, err
-	}
-	for _, v := range vols {
-		if v.Path == gameVolumePath {
-			g.Volume, g.UID, g.GID = v.Name, gameUID, gameGID
-			return g, true, nil
+		if errors.Is(err, store.ErrNotFound) {
+			return false, nil
 		}
+		return false, err
 	}
-	return none, false, nil
+	switch {
+	case strings.HasPrefix(g.Cred, "p:"):
+		hash, err := s.Store.SFTPPassword(ctx, app.ID)
+		if err != nil || hash == "" || credOf(hash) != g.Cred {
+			return false, err
+		}
+	case strings.HasPrefix(g.Cred, "k:"):
+		acct, key, err := s.Store.SSHKeyOwner(ctx, strings.TrimPrefix(g.Cred, "k:"))
+		if errors.Is(err, store.ErrNotFound) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		if acct.ID != g.Account || key.UserID != g.Account || !mayManageGame(acct) {
+			return false, nil
+		}
+	default:
+		return false, nil
+	}
+	now, ok, err := s.gameGrant(ctx, app, g.Account, g.Cred)
+	return ok && now == g, err
+}
+
+func (s *Server) sftpCheck(w http.ResponseWriter, r *http.Request) {
+	var g sftpd.Grant
+	if !decodeSmall(w, r, &g) {
+		return
+	}
+	ok, err := s.sftpStillGranted(r.Context(), g)
+	switch {
+	case err != nil:
+		s.fail(w, "check an sftp grant", err)
+	case !ok:
+		writeError(w, errSFTPDenied.Err())
+	default:
+		writeJSON(w, http.StatusOK, struct{}{})
+	}
 }
 
 func (s *Server) sftpAuth(w http.ResponseWriter, r *http.Request) {
@@ -430,10 +502,15 @@ func (s *Server) sftpAuth(w http.ResponseWriter, r *http.Request) {
 	}
 	lim, now := s.sftpLimits(), s.now()
 	password := req.Key == nil
-	if password && (lim.byIP.Wait(ip, now) > 0 || lim.byGame.Wait(req.Server, now) > 0) {
+	// One /64 is one client, as in the service.
+	ipKey := sftpd.LimitKey(ip)
+	if password && lim.byIP.Wait(ipKey, now) > 0 {
 		writeError(w, errSFTPWait.Err())
 		return
 	}
+	// Past the server's limit the password is still checked, so strangers
+	// guessing cannot lock out the owner. A wrong one is told to wait.
+	serverBusy := password && lim.byGame.Wait(req.Server, now) > 0
 	g, ok, err := s.sftpGrant(r.Context(), req)
 	switch {
 	case err != nil:
@@ -441,10 +518,14 @@ func (s *Server) sftpAuth(w http.ResponseWriter, r *http.Request) {
 		return
 	case !ok:
 		if password {
-			lim.byIP.Add(ip, now)
+			lim.byIP.Add(ipKey, now)
 			lim.byGame.Add(req.Server, now)
 		}
 		s.Log.Info("sftp login refused", "server", truncate(req.Server, 64), "ip", ip, "key", !password)
+		if serverBusy {
+			writeError(w, errSFTPWait.Err())
+			return
+		}
 		writeError(w, errSFTPDenied.Err())
 		return
 	}
@@ -514,6 +595,17 @@ func (s *Server) syncSFTPPort(ctx context.Context) {
 	if err != nil {
 		s.Log.Error("sftp port: read", "err", err)
 		return
+	}
+	// Nothing is moved here: that would take a port from a running game.
+	// The core refuses to listen on a forwarded port anyway, so SFTP stays
+	// where it is until the administrator frees the port or picks another.
+	if pool, err := s.Store.Allocations(ctx, store.ThisNode); err == nil {
+		for _, a := range pool {
+			if a.Port == port && a.AppID != "" {
+				s.Log.Error("sftp port: the stored port is held by a game server; change one of them", "port", port, "server", a.AppID)
+				return
+			}
+		}
 	}
 	if err := s.Core.SetSFTPPort(ctx, port); err != nil {
 		s.Log.Error("sftp port: sync", "err", err)

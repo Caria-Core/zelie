@@ -1,19 +1,68 @@
 package main
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"os"
+	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
+	"github.com/Caria-Core/zelie/internal/hostkey"
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
 )
+
+// oldStateDir is where releases up to 0.7.3 kept the SFTP host key, in the
+// SFTP user's own folder.
+const oldStateDir = "/var/lib/zelie-sftp"
+
+// oldHostKey returns the fingerprint of the old release's SFTP host key,
+// making one where that release would have if the panel never asked for it
+// yet, or "" when the release has no SFTP.
+func oldHostKey() (string, error) {
+	u, err := user.Lookup("zelie-sftp")
+	if err != nil {
+		return "", nil
+	}
+	path := filepath.Join(oldStateDir, hostkey.File)
+	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+		_, priv, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			return "", err
+		}
+		block, err := ssh.MarshalPrivateKey(priv, "")
+		if err != nil {
+			return "", err
+		}
+		if err := os.MkdirAll(oldStateDir, 0o700); err != nil {
+			return "", err
+		}
+		if err := os.WriteFile(path, pem.EncodeToMemory(block), 0o600); err != nil {
+			return "", err
+		}
+		uid, _ := strconv.Atoi(u.Uid)
+		gid, _ := strconv.Atoi(u.Gid)
+		for _, p := range []string{oldStateDir, path} {
+			if err := os.Chown(p, uid, gid); err != nil {
+				return "", err
+			}
+		}
+	}
+	key, err := hostkey.Load(path)
+	if err != nil {
+		return "", err
+	}
+	return ssh.FingerprintSHA256(key.PublicKey()), nil
+}
 
 // sftpCheck logs in to the game server over SFTP, as a person's program
 // would: with the server's own password, which the panel shows once, to the
@@ -69,6 +118,9 @@ func sftpCheck(c *client) error {
 	}
 	defer conn.Close()
 	fmt.Println("host key", info.HostKey)
+	if c.st.HostKey != "" && c.st.HostKey != info.HostKey {
+		return fmt.Errorf("the host key changed in the update: it was %s and is now %s", c.st.HostKey, info.HostKey)
+	}
 
 	step("refuse a wrong password")
 	if bad, err := ssh.Dial("tcp", net.JoinHostPort("127.0.0.1", fmt.Sprint(info.Port)), &ssh.ClientConfig{

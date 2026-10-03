@@ -144,6 +144,18 @@ RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 StateDirectory=zelie-sftp
 StateDirectoryMode=0700
 UMask=0077
+SystemCallFilter=@system-service
+SystemCallArchitectures=native
+RestrictNamespaces=yes
+MemoryDenyWriteExecute=yes
+ProtectProc=invisible
+ProcSubset=pid
+ProtectClock=yes
+ProtectKernelLogs=yes
+ProtectHostname=yes
+RestrictRealtime=yes
+MemoryMax=512M
+TasksMax=256
 ` + hardening
 }
 

@@ -22,15 +22,64 @@ import (
 // maxPending is how much of a file may arrive ahead of the part before it.
 const maxPending = 32 << 20
 
+// Across one connection, all open files together hold at most this much
+// out-of-order data, and at most this many are open for writing.
+const (
+	maxPendingConn = 64 << 20
+	maxWriteFiles  = 64
+)
+
+// budget is what the open uploads of one connection share.
+type budget struct {
+	mu                 sync.Mutex
+	bytes, files       int64
+	maxBytes, maxFiles int64
+}
+
+func newBudget() *budget { return &budget{maxBytes: maxPendingConn, maxFiles: maxWriteFiles} }
+
+func (b *budget) openFile() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.files >= b.maxFiles {
+		return false
+	}
+	b.files++
+	return true
+}
+
+func (b *budget) closeFile() {
+	b.mu.Lock()
+	b.files--
+	b.mu.Unlock()
+}
+
+func (b *budget) hold(n int64) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.bytes+n > b.maxBytes {
+		return false
+	}
+	b.bytes += n
+	return true
+}
+
+func (b *budget) release(n int64) {
+	b.mu.Lock()
+	b.bytes -= n
+	b.mu.Unlock()
+}
+
 type handler struct {
 	s     *Server
 	ctx   context.Context
 	grant Grant
 	ref   core.FileRef
+	b     *budget
 }
 
-func (s *Server) handlers(ctx context.Context, g Grant) sftp.Handlers {
-	h := &handler{s: s, ctx: ctx, grant: g, ref: core.FileRef{Volume: g.Volume, FileOwner: core.FileOwner{UID: g.UID, GID: g.GID}}}
+func (s *Server) handlers(ctx context.Context, g Grant, b *budget) sftp.Handlers {
+	h := &handler{s: s, ctx: ctx, grant: g, b: b, ref: core.FileRef{Volume: g.Volume, FileOwner: core.FileOwner{UID: g.UID, GID: g.GID}}}
 	return sftp.Handlers{FileGet: h, FilePut: h, FileCmd: h, FileList: h}
 }
 
@@ -123,6 +172,9 @@ func (h *handler) Filewrite(r *sftp.Request) (io.WriterAt, error) {
 			return nil, &failure{r.Filepath + " does not exist", sftp.ErrSSHFxNoSuchFile}
 		}
 	}
+	if !h.b.openFile() {
+		return nil, &failure{"too many files are open for writing", sftp.ErrSSHFxFailure}
+	}
 	ref := h.ref
 	room, err := h.s.Panel.Room(h.ctx, h.grant.Server)
 	if err != nil {
@@ -130,7 +182,7 @@ func (h *handler) Filewrite(r *sftp.Request) (io.WriterAt, error) {
 		h.s.Log.Warn("ask the panel for the disk room", "server", h.grant.Server, "err", err)
 	}
 	ref.Room = room
-	return newUpload(h.ctx, h.s.Files, ref, r.Filepath), nil
+	return newUpload(h.ctx, h.s.Files, ref, r.Filepath, h.b), nil
 }
 
 // upload streams a file to the core as it arrives. SFTP clients send
@@ -139,6 +191,7 @@ func (h *handler) Filewrite(r *sftp.Request) (io.WriterAt, error) {
 type upload struct {
 	pw   *io.PipeWriter
 	done chan error
+	b    *budget
 
 	mu      sync.Mutex
 	next    int64
@@ -148,9 +201,9 @@ type upload struct {
 	closed  bool
 }
 
-func newUpload(ctx context.Context, files Files, ref core.FileRef, path string) *upload {
+func newUpload(ctx context.Context, files Files, ref core.FileRef, path string, b *budget) *upload {
 	pr, pw := io.Pipe()
-	u := &upload{pw: pw, done: make(chan error, 1), pending: map[int64][]byte{}}
+	u := &upload{pw: pw, done: make(chan error, 1), b: b, pending: map[int64][]byte{}}
 	go func() {
 		err := files.UploadFile(ctx, ref, path, -1, pr)
 		pr.CloseWithError(errors.New("the upload ended"))
@@ -169,7 +222,10 @@ func (u *upload) WriteAt(p []byte, off int64) (int, error) {
 	case off < u.next:
 		return 0, u.fail(&failure{"a file can only be written from start to end", sftp.ErrSSHFxOpUnsupported})
 	case off > u.next:
-		if u.held+len(p) > maxPending {
+		if len(p) == 0 {
+			return 0, nil
+		}
+		if u.held+len(p) > maxPending || !u.b.hold(int64(len(p))) {
 			return 0, u.fail(&failure{"the file's blocks arrived too far out of order", sftp.ErrSSHFxFailure})
 		}
 		if _, dup := u.pending[off]; dup {
@@ -189,6 +245,7 @@ func (u *upload) WriteAt(p []byte, off int64) (int, error) {
 		}
 		delete(u.pending, u.next)
 		u.held -= len(b)
+		u.b.release(int64(len(b)))
 		if err := u.push(b); err != nil {
 			return 0, err
 		}
@@ -206,6 +263,9 @@ func (u *upload) push(b []byte) error {
 }
 
 func (u *upload) fail(err error) error {
+	u.b.release(int64(u.held))
+	u.held = 0
+	clear(u.pending)
 	u.err = err
 	u.pw.CloseWithError(err)
 	return err
@@ -230,6 +290,7 @@ func (u *upload) Close() error {
 		return u.err
 	}
 	u.closed = true
+	defer u.b.closeFile()
 	if u.err == nil && len(u.pending) > 0 {
 		u.fail(&failure{"the file has a gap in it", sftp.ErrSSHFxFailure})
 	}

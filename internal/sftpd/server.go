@@ -12,6 +12,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/netip"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -47,11 +48,21 @@ type Server struct {
 	Panel Panel
 	Files Files
 	Log   *slog.Logger
-	// HostKeyPath is where the host key is kept; it is made on first use.
+	// HostKeyPath is where the host key is kept. The core makes it; this
+	// server only reads it.
 	HostKeyPath string
 	// MaxPerIP is how many connections one address may hold open. Zero
 	// means the default of 8.
 	MaxPerIP int
+	// MaxHandshakes is how many connections may be logging in at once,
+	// whatever their addresses. Zero means 64.
+	MaxHandshakes int
+	// CheckEvery is how often a live connection's grant is put to the panel
+	// again. Zero means a minute.
+	CheckEvery time.Duration
+	// IdleTimeout closes a logged-in connection that has carried no SFTP
+	// traffic for this long. Zero means 15 minutes.
+	IdleTimeout time.Duration
 	// IdleExit is how long the server stays up with no connection open.
 	// Zero means five minutes.
 	IdleExit time.Duration
@@ -59,16 +70,18 @@ type Server struct {
 	hostKey ssh.Signer
 	conf    *ssh.ServerConfig
 
-	mu    sync.Mutex
-	perIP map[string]int
+	mu         sync.Mutex
+	perIP      map[string]int
+	handshakes int
 }
 
 // Fingerprint is the SHA-256 fingerprint of the host key, as ssh shows it.
 func (s *Server) Fingerprint() string { return ssh.FingerprintSHA256(s.hostKey.PublicKey()) }
 
-// LoadHostKey reads the host key, or makes one if there is none yet.
+// LoadHostKey reads the host key. A missing key is an error: the socket
+// starts the server again once the core has made it.
 func (s *Server) LoadHostKey() error {
-	key, _, err := hostkey.LoadOrCreate(s.HostKeyPath)
+	key, err := hostkey.Load(s.HostKeyPath)
 	if err != nil {
 		return err
 	}
@@ -112,6 +125,21 @@ func (s *Server) grant(conn ssh.ConnMetadata, ask func(ctx context.Context, serv
 	}
 	b, _ := json.Marshal(g)
 	return &ssh.Permissions{Extensions: map[string]string{grantKey: string(b)}}, nil
+}
+
+// LimitKey is the address a per-address limit counts under. A whole /64
+// shares one, since that is what a single IPv6 customer gets to rotate
+// through; IPv4, and IPv6 written as IPv4, is kept as it is.
+func LimitKey(ip string) string {
+	a, err := netip.ParseAddr(ip)
+	if err != nil {
+		return ip
+	}
+	a = a.WithZone("").Unmap()
+	if a.Is4() {
+		return a.String()
+	}
+	return netip.PrefixFrom(a, 64).Masked().String()
 }
 
 func ipOf(a net.Addr) string {
@@ -197,6 +225,7 @@ func (s *Server) Serve(ctx context.Context, l net.Listener) error {
 }
 
 func (s *Server) hold(ip string) bool {
+	ip = LimitKey(ip)
 	limit := s.MaxPerIP
 	if limit == 0 {
 		limit = 8
@@ -214,11 +243,34 @@ func (s *Server) hold(ip string) bool {
 }
 
 func (s *Server) release(ip string) {
+	ip = LimitKey(ip)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.perIP[ip]--; s.perIP[ip] <= 0 {
 		delete(s.perIP, ip)
 	}
+}
+
+// startHandshake counts a connection that has not logged in yet. Addresses
+// are cheap to change, so the number of them is capped as a whole.
+func (s *Server) startHandshake() bool {
+	limit := s.MaxHandshakes
+	if limit == 0 {
+		limit = 64
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.handshakes >= limit {
+		return false
+	}
+	s.handshakes++
+	return true
+}
+
+func (s *Server) endHandshake() {
+	s.mu.Lock()
+	s.handshakes--
+	s.mu.Unlock()
 }
 
 func (s *Server) handle(ctx context.Context, c net.Conn) {
@@ -230,8 +282,12 @@ func (s *Server) handle(ctx context.Context, c net.Conn) {
 	defer s.release(ip)
 	defer c.Close()
 
+	if !s.startHandshake() {
+		return
+	}
 	c.SetDeadline(time.Now().Add(handshakeTimeout))
 	sconn, chans, reqs, err := ssh.NewServerConn(c, s.conf)
+	s.endHandshake()
 	if err != nil {
 		return
 	}
@@ -252,6 +308,12 @@ func (s *Server) handle(ctx context.Context, c net.Conn) {
 	// Nothing is forwarded, so every global request is refused.
 	go ssh.DiscardRequests(reqs)
 
+	var active activity
+	active.touch()
+	go s.recheck(ctx, sconn, g)
+	go s.expireIdle(ctx, sconn, &active)
+	budget := newBudget()
+
 	var sessions atomic.Int32
 	var wg sync.WaitGroup
 	defer wg.Wait()
@@ -269,7 +331,7 @@ func (s *Server) handle(ctx context.Context, c net.Conn) {
 		go func() {
 			defer wg.Done()
 			defer sessions.Add(-1)
-			s.session(ctx, ch, g)
+			s.session(ctx, ch, g, budget, &active)
 		}()
 	}
 }
@@ -277,7 +339,7 @@ func (s *Server) handle(ctx context.Context, c net.Conn) {
 // session answers the requests of one channel. The only one it accepts is
 // the sftp subsystem; a shell, a command, a terminal or anything else is
 // refused.
-func (s *Server) session(ctx context.Context, nc ssh.NewChannel, g Grant) {
+func (s *Server) session(ctx context.Context, nc ssh.NewChannel, g Grant, b *budget, active *activity) {
 	ch, reqs, err := nc.Accept()
 	if err != nil {
 		return
@@ -295,8 +357,8 @@ func (s *Server) session(ctx context.Context, nc ssh.NewChannel, g Grant) {
 		started = true
 		req.Reply(true, nil)
 		go func() {
-			h := s.handlers(ctx, g)
-			rs := sftp.NewRequestServer(ch, h)
+			h := s.handlers(ctx, g, b)
+			rs := sftp.NewRequestServer(&watched{ch, active}, h)
 			if err := rs.Serve(); err != nil && !errors.Is(err, io.EOF) {
 				s.Log.Debug("SFTP session ended", "server", g.Server, "err", err)
 			}
@@ -304,4 +366,88 @@ func (s *Server) session(ctx context.Context, nc ssh.NewChannel, g Grant) {
 			ch.Close()
 		}()
 	}
+}
+
+// recheck puts the grant to the panel every CheckEvery and closes the
+// connection when the panel refuses it: the password changed or went, the key
+// was removed, the account lost its rights, or the server is gone. When the
+// panel cannot be reached the connection stays: a restart of the panel
+// should not cut off uploads, and a refusal is the only answer that says the
+// access is over. New logins need the panel anyway.
+func (s *Server) recheck(ctx context.Context, sconn *ssh.ServerConn, g Grant) {
+	every := s.CheckEvery
+	if every == 0 {
+		every = time.Minute
+	}
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		cctx, cancel := context.WithTimeout(ctx, panelTimeout)
+		err := s.Panel.Check(cctx, g)
+		cancel()
+		switch {
+		case err == nil:
+		case errors.Is(err, ErrDenied):
+			s.Log.Info("SFTP login ended, the panel no longer grants it", "server", g.Server, "account", g.Account)
+			sconn.Close()
+			return
+		case ctx.Err() == nil:
+			s.Log.Warn("ask the panel whether a login still holds", "server", g.Server, "err", err)
+		}
+	}
+}
+
+// expireIdle closes the connection once no SFTP traffic has passed for
+// IdleTimeout, so a forgotten client does not hold a login open.
+func (s *Server) expireIdle(ctx context.Context, sconn *ssh.ServerConn, a *activity) {
+	idle := s.IdleTimeout
+	if idle == 0 {
+		idle = 15 * time.Minute
+	}
+	for {
+		wait := time.Until(a.last().Add(idle))
+		if wait <= 0 {
+			s.Log.Info("SFTP login ended, idle", "user", sconn.User())
+			sconn.Close()
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(wait):
+		}
+	}
+}
+
+// activity remembers when an SFTP channel last carried data.
+type activity struct{ at atomic.Int64 }
+
+func (a *activity) touch()          { a.at.Store(time.Now().UnixNano()) }
+func (a *activity) last() time.Time { return time.Unix(0, a.at.Load()) }
+
+// watched is a channel that records every read and write in activity.
+type watched struct {
+	ssh.Channel
+	a *activity
+}
+
+func (w *watched) Read(p []byte) (int, error) {
+	n, err := w.Channel.Read(p)
+	if n > 0 {
+		w.a.touch()
+	}
+	return n, err
+}
+
+func (w *watched) Write(p []byte) (int, error) {
+	n, err := w.Channel.Write(p)
+	if n > 0 {
+		w.a.touch()
+	}
+	return n, err
 }

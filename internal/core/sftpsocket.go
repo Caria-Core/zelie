@@ -29,10 +29,12 @@ const sftpSocketUnit = "zelie-sftp.socket"
 type SFTPSocket struct {
 	// DropIn is the file that holds the port.
 	DropIn string
-	// HostKey is the SFTP server's host key, and User the account that
-	// reads it.
-	HostKey string
-	User    string
+	// HostKeyDir is the root-owned folder with the SFTP server's host key,
+	// and User the account whose group may read it. OldKeyDir is where
+	// earlier versions kept the key, in the SFTP user's own folder.
+	HostKeyDir string
+	OldKeyDir  string
+	User       string
 	// Run runs a command and returns what it printed.
 	Run func(ctx context.Context, name string, args ...string) (string, error)
 
@@ -104,36 +106,30 @@ func (c *SFTPSocket) apply(ctx context.Context, content []byte, keep bool) error
 	return nil
 }
 
+// EnsureHostKey makes the host key if there is none and returns it. The
+// core calls it at start, so a fresh install has the key before the first
+// connection, and Status calls it again in case the key went missing.
+func (c *SFTPSocket) EnsureHostKey() (ssh.Signer, error) {
+	u, err := user.Lookup(c.User)
+	if err != nil {
+		return nil, fmt.Errorf("find the SFTP user: %w", err)
+	}
+	gid, err := strconv.Atoi(u.Gid)
+	if err != nil {
+		return nil, errors.New("the SFTP user has no numeric ID")
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return hostkey.Ensure(c.HostKeyDir, gid, c.OldKeyDir)
+}
+
 // Status reports whether the socket is up and the host key's fingerprint.
 // It makes the host key if there is none, so the fingerprint can be shown
 // before anyone has connected.
 func (c *SFTPSocket) Status(ctx context.Context) (SFTPStatus, error) {
-	u, err := user.Lookup(c.User)
-	if err != nil {
-		return SFTPStatus{}, fmt.Errorf("find the SFTP user: %w", err)
-	}
-	uid, uerr := strconv.Atoi(u.Uid)
-	gid, gerr := strconv.Atoi(u.Gid)
-	if uerr != nil || gerr != nil {
-		return SFTPStatus{}, errors.New("the SFTP user has no numeric ID")
-	}
-	dir := filepath.Dir(c.HostKey)
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return SFTPStatus{}, err
-	}
-	if err := os.Chown(dir, uid, gid); err != nil {
-		return SFTPStatus{}, err
-	}
-	key, created, err := hostkey.LoadOrCreate(c.HostKey)
+	key, err := c.EnsureHostKey()
 	if err != nil {
 		return SFTPStatus{}, err
-	}
-	if created {
-		if err := os.Chown(c.HostKey, uid, gid); err != nil {
-			return SFTPStatus{}, err
-		}
 	}
 	out, _ := c.Run(ctx, "systemctl", "is-active", sftpSocketUnit)
 	return SFTPStatus{Listening: strings.TrimSpace(out) == "active", HostKey: ssh.FingerprintSHA256(key.PublicKey())}, nil
@@ -153,6 +149,11 @@ func (s *Server) setSFTPPort(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, errors.New("this core does not manage the SFTP socket"))
 		return
 	}
+	unlock, ok := s.guardSFTPPort(w, req.Port)
+	if !ok {
+		return
+	}
+	defer unlock()
 	if err := s.SFTPSocket.SetPort(r.Context(), req.Port); err != nil {
 		s.Log.Error("set the SFTP port", "port", req.Port, "err", err)
 		writeError(w, http.StatusInternalServerError, errors.New("could not change the SFTP port"))

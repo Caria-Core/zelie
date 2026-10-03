@@ -243,8 +243,16 @@ func TestWrongSFTPPasswordsAreLimited(t *testing.T) {
 			t.Fatalf("attempt %d: %d", i, code)
 		}
 	}
-	if code, out := e.login(t, sftpd.AuthRequest{Password: pw}); code != http.StatusTooManyRequests || out["code"] != "sftp.wait" {
+	// Strangers cannot lock the owner out: the right password still works
+	// past the server's limit, and a wrong one is told to wait.
+	if code, out := e.login(t, sftpd.AuthRequest{Password: "wrong again"}); code != http.StatusTooManyRequests || out["code"] != "sftp.wait" {
+		t.Errorf("a wrong password after ten wrong ones: %d %v", code, out)
+	}
+	if code, out := e.login(t, sftpd.AuthRequest{Password: pw}); code != http.StatusOK {
 		t.Errorf("the right password after ten wrong ones: %d %v", code, out)
+	}
+	if code, _ := e.login(t, sftpd.AuthRequest{Password: "wrong once more"}); code != http.StatusForbidden {
+		t.Errorf("a wrong password after the owner got in: %d", code)
 	}
 	// Keys cannot be guessed, so they are not held up.
 	if code, _ := e.login(t, sftpd.AuthRequest{Key: pub.Marshal()}); code != http.StatusOK {
@@ -478,4 +486,111 @@ func TestFilesAppOverSFTP(t *testing.T) {
 
 func sameSet(a, b []string) bool {
 	return slices.Equal(slices.Sorted(slices.Values(a)), slices.Sorted(slices.Values(b)))
+}
+
+func TestSFTPLimitsCountAnIPv6PrefixAsOne(t *testing.T) {
+	e := newSFTPEnv(t)
+	for i := range 30 {
+		req := sftpd.AuthRequest{Server: "nope" + strconv.Itoa(i), Password: "wrong", IP: "2001:db8:5:6::" + strconv.Itoa(i+1)}
+		if code, _ := sftpAsk(e, sftpUID, "POST", "/local/sftp/auth", req); code != http.StatusForbidden {
+			t.Fatalf("attempt %d: %d", i, code)
+		}
+	}
+	// A different address of the same /64 is out of tries on any server.
+	req := sftpd.AuthRequest{Server: "elsewhere", Password: "wrong", IP: "2001:db8:5:6:ffff::9"}
+	if code, _ := sftpAsk(e, sftpUID, "POST", "/local/sftp/auth", req); code != http.StatusTooManyRequests {
+		t.Errorf("the same /64: %d", code)
+	}
+	req.IP = "2001:db8:5:7::1"
+	if code, _ := sftpAsk(e, sftpUID, "POST", "/local/sftp/auth", req); code != http.StatusForbidden {
+		t.Errorf("another /64: %d", code)
+	}
+}
+
+func TestSFTPGrantIsCheckedAgain(t *testing.T) {
+	e := newSFTPEnv(t)
+	ctx := context.Background()
+	check := func(g map[string]any) int {
+		code, _ := sftpAsk(e, sftpUID, "POST", "/local/sftp/check", g)
+		return code
+	}
+
+	_, out := e.b.do("POST", "/api/games/survival/sftp/password", nil)
+	pw := out["password"].(string)
+	_, byPassword := e.login(t, sftpd.AuthRequest{Password: pw})
+	if check(byPassword) != http.StatusOK {
+		t.Fatal("a fresh password grant is refused")
+	}
+	if strings.Contains(strings.ToLower(jsonOf(byPassword)), pw) {
+		t.Error("the grant holds the password")
+	}
+	forged := map[string]any{}
+	for k, v := range byPassword {
+		forged[k] = v
+	}
+	forged["cred"] = "p:000000000000000000000000"
+	if check(forged) != http.StatusForbidden {
+		t.Error("a grant with another credential")
+	}
+	forged["cred"] = byPassword["cred"]
+	forged["volume"] = "other-volume"
+	if check(forged) != http.StatusForbidden {
+		t.Error("a grant for another volume")
+	}
+	delete(forged, "cred")
+	if check(forged) != http.StatusForbidden {
+		t.Error("a grant with no credential")
+	}
+
+	line, pub := ed25519Key(t, "k")
+	e.b.do("POST", "/api/account/ssh-keys", map[string]string{"name": "k", "key": line})
+	_, byKey := e.login(t, sftpd.AuthRequest{Key: pub.Marshal()})
+	if check(byKey) != http.StatusOK {
+		t.Fatal("a fresh key grant is refused")
+	}
+
+	// A new password ends the old grant, and so does removing it.
+	e.b.do("POST", "/api/games/survival/sftp/password", nil)
+	if check(byPassword) != http.StatusForbidden {
+		t.Error("the grant of a replaced password")
+	}
+	_, byPassword = e.login(t, sftpd.AuthRequest{Password: e.newSFTPPassword(t)})
+	if check(byPassword) != http.StatusOK {
+		t.Fatal("the grant of the new password")
+	}
+	e.b.do("DELETE", "/api/games/survival/sftp/password", nil)
+	if check(byPassword) != http.StatusForbidden {
+		t.Error("the grant of a removed password")
+	}
+
+	id := loginID(t, e)
+	keys, _ := e.s.Store.SSHKeys(ctx, id)
+	if err := e.s.Store.DeleteSSHKey(ctx, id, keys[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	if check(byKey) != http.StatusForbidden {
+		t.Error("the grant of a removed key")
+	}
+
+	// Only the service may ask.
+	if code, _ := sftpAsk(e, 1000, "POST", "/local/sftp/check", byPassword); code != http.StatusForbidden {
+		t.Errorf("someone else: %d", code)
+	}
+	if code, _ := sftpAsk(e, proxyUID, "POST", "/local/sftp/check", byPassword); code != http.StatusMethodNotAllowed {
+		t.Errorf("the proxy: %d", code)
+	}
+}
+
+func (e *appEnv) newSFTPPassword(t *testing.T) string {
+	t.Helper()
+	code, out := e.b.do("POST", "/api/games/survival/sftp/password", nil)
+	if code != http.StatusOK {
+		t.Fatalf("make a password: %d", code)
+	}
+	return out["password"].(string)
+}
+
+func jsonOf(v any) string {
+	b, _ := json.Marshal(v)
+	return string(b)
 }

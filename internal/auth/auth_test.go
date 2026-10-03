@@ -91,3 +91,30 @@ func TestTOTPURI(t *testing.T) {
 		t.Errorf("got  %s\nwant %s", uri, want)
 	}
 }
+
+func TestSFTPChecksHaveTheirOwnPool(t *testing.T) {
+	h := HashPassword("correct horse battery")
+	// Hold the only SFTP slot: a web check must not wait for it.
+	sftpPool.slots <- struct{}{}
+	done := make(chan bool)
+	go func() { done <- CheckPassword(h, "correct horse battery") }()
+	select {
+	case ok := <-done:
+		if !ok {
+			t.Error("right password rejected")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("a web check waited for the SFTP pool")
+	}
+	sftpDone := make(chan bool)
+	go func() { sftpDone <- CheckSFTPPassword(h, "correct horse battery") }()
+	select {
+	case <-sftpDone:
+		t.Fatal("an SFTP check ran with the pool full")
+	case <-time.After(200 * time.Millisecond):
+	}
+	<-sftpPool.slots
+	if !<-sftpDone {
+		t.Error("right password rejected by the SFTP pool")
+	}
+}

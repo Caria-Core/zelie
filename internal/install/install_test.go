@@ -85,7 +85,7 @@ func TestUnits(t *testing.T) {
 	// nothing else, whichever way the panel is reached.
 	for _, u := range []map[string]string{tunnel, domain} {
 		sftp := u["zelie-sftp.service"]
-		for _, want := range []string{"User=zelie-sftp\n", "ExecStart=" + Binary + " sftp\n", "CapabilityBoundingSet=\n", "NoNewPrivileges=yes", "ProtectSystem=strict", "StateDirectory=zelie-sftp", "Requires=zelie-sftp.socket\n", "Restart=on-failure\n"} {
+		for _, want := range []string{"User=zelie-sftp\n", "ExecStart=" + Binary + " sftp\n", "CapabilityBoundingSet=\n", "NoNewPrivileges=yes", "ProtectSystem=strict", "StateDirectory=zelie-sftp", "Requires=zelie-sftp.socket\n", "Restart=on-failure\n", "SystemCallFilter=@system-service\n", "MemoryDenyWriteExecute=yes\n", "MemoryMax=512M\n"} {
 			if !strings.Contains(sftp, want) {
 				t.Errorf("SFTP unit lacks %q:\n%s", want, sftp)
 			}

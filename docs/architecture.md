@@ -168,11 +168,17 @@ argon2id hash. The password of an account is never accepted, so SFTP is no way a
 second step. The user name is the server's name, for keys and passwords alike, since a key
 belongs to one account only and says who is logging in. The server speaks only the `sftp`
 subsystem: no shell, no commands, no port forwarding. Wrong passwords are counted per
-address and per server, as on the login page, and one address may hold only a few
-connections open. Files are written whole, through a temporary file in the core, so an
-upload that breaks halfway leaves the old file as it was; for the same reason a file can
-only be written from start to end, which every common SFTP program does. The core makes
-the host key, so its fingerprint is on the Server page before anyone has connected.
+address and per server, as on the login page, but the right password still gets in, so
+strangers guessing cannot lock the owner out. An IPv6 /64 counts as one address, and one
+address may hold only a few connections open. Every minute an open connection is checked
+with the panel again, so changing the password, removing a key or deleting the server ends
+it; after 15 minutes without traffic it is closed. Files are written whole, through a
+temporary file in the core, so an upload that breaks halfway leaves the old file as it was;
+for the same reason a file can only be written from start to end, which every common SFTP
+program does. The core makes the host key in `/etc/zelie-sftp`, a folder only root can
+write, so its fingerprint is on the Server page before anyone has connected. The SFTP
+server can read the key but not change anything next to it. The SFTP port can never be
+given to a game server, or SFTP logins would be forwarded to it.
 
 Players connect straight to the game server, not through the proxy. The administrator
 gives Zelie a pool of ports, as in Pterodactyl and Pelican, and each server takes some of

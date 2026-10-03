@@ -47,6 +47,19 @@ func runCore(stderr io.Writer) int {
 		log.Warn("SFTP user not found, SFTP cannot reach the core", "user", install.SFTPUser)
 	}
 
+	sftpSocket := &core.SFTPSocket{
+		DropIn:     filepath.Join(install.UnitDir, install.SFTPSocket+".d", "port.conf"),
+		HostKeyDir: sftpKeyDir,
+		OldKeyDir:  sftpOldState,
+		User:       install.SFTPUser,
+		Run:        runCmd,
+	}
+	// The server only reads its host key, so it has to exist before the
+	// first connection.
+	if _, err := sftpSocket.EnsureHostKey(); err != nil {
+		log.Error("make the SFTP host key", "err", err)
+	}
+
 	e, err := engine.Connect(ctx, engine.DefaultPaths)
 	if err != nil {
 		log.Error("start core", "err", err)
@@ -102,13 +115,8 @@ func runCore(stderr io.Writer) int {
 
 	s := &core.Server{
 		SFTPUID: sftpUID, SFTPVolumes: sftpVolumes,
-		SFTPSocket: &core.SFTPSocket{
-			DropIn:  filepath.Join(install.UnitDir, install.SFTPSocket+".d", "port.conf"),
-			HostKey: filepath.Join(sftpState, "host_key"),
-			User:    install.SFTPUser,
-			Run:     runCmd,
-		},
-		Engine: e, Paths: engine.DefaultPaths, Log: log, Allowed: policy,
+		SFTPSocket: sftpSocket,
+		Engine:     e, Paths: engine.DefaultPaths, Log: log, Allowed: policy,
 		Builder:  build.New(e, engine.DefaultPaths, "/var/lib/zelie/build"),
 		Secrets:  keys,
 		Backups:  &backup.Dir{Root: "/var/lib/zelie/backups", Key: backupKey},

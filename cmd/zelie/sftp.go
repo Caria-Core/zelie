@@ -16,11 +16,18 @@ import (
 	"time"
 
 	"github.com/Caria-Core/zelie/internal/core"
+	"github.com/Caria-Core/zelie/internal/hostkey"
 	"github.com/Caria-Core/zelie/internal/install"
 	"github.com/Caria-Core/zelie/internal/sftpd"
 )
 
-const sftpState = "/var/lib/zelie-sftp"
+// The host key is in a folder only root can write: the SFTP user must not be
+// able to plant links where the core writes. sftpOldState is where earlier
+// versions kept it.
+const (
+	sftpKeyDir   = "/etc/zelie-sftp"
+	sftpOldState = "/var/lib/zelie-sftp"
+)
 
 func runSFTP(args []string, stderr io.Writer) int {
 	// The unit asks this before starting the server; see install.SFTPUnit.
@@ -50,7 +57,7 @@ func runSFTP(args []string, stderr io.Writer) int {
 		Panel:       sftpd.NewPanelClient(panelSocket),
 		Files:       core.NewClient(core.DefaultSocket),
 		Log:         log,
-		HostKeyPath: filepath.Join(sftpState, "host_key"),
+		HostKeyPath: filepath.Join(sftpKeyDir, hostkey.File),
 	}
 	if err := s.Serve(ctx, l); err != nil {
 		log.Error("SFTP server stopped", "err", err)

@@ -29,6 +29,11 @@ type Grant struct {
 	// Account is who logged in, for the log. It is 0 for a password, which
 	// belongs to the server and not to a person.
 	Account int64 `json:"account,omitempty"`
+	// Cred names the credential the login used: a fingerprint of the
+	// password hash, or of the key. The panel compares it again later, so a
+	// changed password or a removed key ends the connection. It is opaque
+	// here and holds nothing that can log in.
+	Cred string `json:"cred"`
 }
 
 // Panel is what the SFTP service asks of the panel. The panel decides who
@@ -39,6 +44,10 @@ type Panel interface {
 	// Key checks that the key belongs to an account that may use the
 	// server. The caller has not seen the client sign anything yet.
 	Key(ctx context.Context, server string, key ssh.PublicKey, ip string) (Grant, error)
+	// Check asks whether a grant still holds, with no password. It returns
+	// ErrDenied when it does not, and another error when the panel could
+	// not say.
+	Check(ctx context.Context, g Grant) error
 	// Room is how many more bytes the server's disk limit leaves, or nil
 	// when that is not known.
 	Room(ctx context.Context, server string) (*int64, error)
@@ -116,6 +125,20 @@ func (c *PanelClient) Password(ctx context.Context, server, password, ip string)
 
 func (c *PanelClient) Key(ctx context.Context, server string, key ssh.PublicKey, ip string) (Grant, error) {
 	return c.login(ctx, AuthRequest{Server: server, Key: key.Marshal(), IP: ip})
+}
+
+func (c *PanelClient) Check(ctx context.Context, g Grant) error {
+	var out struct{}
+	status, err := c.post(ctx, "/local/sftp/check", g, &out)
+	switch {
+	case err != nil:
+		return err
+	case status == http.StatusForbidden:
+		return ErrDenied
+	case status != http.StatusOK:
+		return fmt.Errorf("the panel answered %d", status)
+	}
+	return nil
 }
 
 func (c *PanelClient) Room(ctx context.Context, server string) (*int64, error) {

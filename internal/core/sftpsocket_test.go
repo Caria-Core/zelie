@@ -11,6 +11,9 @@ import (
 	"strings"
 	"testing"
 
+	"golang.org/x/crypto/ssh"
+
+	"github.com/Caria-Core/zelie/internal/hostkey"
 	"github.com/Caria-Core/zelie/internal/peer"
 )
 
@@ -23,9 +26,9 @@ func newSFTPSocket(t *testing.T) (*Server, *SFTPSocket, *[]string) {
 	var ran []string
 	dir := t.TempDir()
 	sock := &SFTPSocket{
-		DropIn:  filepath.Join(dir, "zelie-sftp.socket.d", "port.conf"),
-		HostKey: filepath.Join(dir, "state", "host_key"),
-		User:    me.Username,
+		DropIn:     filepath.Join(dir, "zelie-sftp.socket.d", "port.conf"),
+		HostKeyDir: filepath.Join(dir, "etc", "zelie-sftp"),
+		User:       me.Username,
 		Run: func(_ context.Context, name string, args ...string) (string, error) {
 			ran = append(ran, name+" "+strings.Join(args, " "))
 			if len(args) > 0 && args[0] == "is-active" {
@@ -91,10 +94,10 @@ func TestSFTPStatusMakesTheHostKey(t *testing.T) {
 	if !first.Listening || !strings.HasPrefix(first.HostKey, "SHA256:") {
 		t.Fatalf("first: %+v", first)
 	}
-	if fi, err := os.Stat(sock.HostKey); err != nil || fi.Mode().Perm() != 0o600 {
+	if fi, err := os.Stat(filepath.Join(sock.HostKeyDir, "host_key")); err != nil || fi.Mode().Perm() != 0o640 {
 		t.Errorf("host key file: %v %v", fi, err)
 	}
-	if fi, err := os.Stat(filepath.Dir(sock.HostKey)); err != nil || fi.Mode().Perm() != 0o700 {
+	if fi, err := os.Stat(sock.HostKeyDir); err != nil || fi.Mode().Perm() != 0o750 {
 		t.Errorf("host key folder: %v %v", fi, err)
 	}
 	if again := get(); again.HostKey != first.HostKey {
@@ -149,5 +152,21 @@ func TestSFTPPortGoesBackWhenTheNewOneWillNotOpen(t *testing.T) {
 	}
 	if _, err := os.Stat(sock.DropIn); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("the drop-in is still there: %v", err)
+	}
+}
+
+func TestSFTPHostKeyMovesFromTheOldFolder(t *testing.T) {
+	_, sock, _ := newSFTPSocket(t)
+	sock.OldKeyDir = filepath.Join(t.TempDir(), "old")
+	old, err := hostkey.Ensure(sock.OldKeyDir, os.Getgid(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := sock.EnsureHostKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ssh.FingerprintSHA256(key.PublicKey()) != ssh.FingerprintSHA256(old.PublicKey()) {
+		t.Error("the fingerprint changed")
 	}
 }

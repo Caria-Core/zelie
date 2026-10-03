@@ -33,7 +33,16 @@ const MinPasswordLength = 10
 // maxPasswordLength keeps a huge request body from turning into a huge hash.
 const maxPasswordLength = 512
 
-var hashSlots = make(chan struct{}, 2)
+// Pool limits how many hashes run at once. SFTP checks have a pool of their
+// own, so guessing at SFTP passwords cannot hold up logging in to the panel.
+type Pool struct{ slots chan struct{} }
+
+func NewPool(n int) *Pool { return &Pool{slots: make(chan struct{}, n)} }
+
+var (
+	webPool  = NewPool(2)
+	sftpPool = NewPool(1)
+)
 
 // CheckPasswordRules reports why a new password is not acceptable.
 var (
@@ -55,14 +64,19 @@ func CheckPasswordRules(pw string) *msg.Error {
 func HashPassword(pw string) string {
 	salt := make([]byte, saltLen)
 	rand.Read(salt)
-	key := derive([]byte(pw), salt, argonTime, argonMemory, argonThreads)
+	key := derive(webPool, []byte(pw), salt, argonTime, argonMemory, argonThreads)
 	return fmt.Sprintf("$argon2id$v=%d$m=%d,t=%d,p=%d$%s$%s", argon2.Version, argonMemory, argonTime, argonThreads,
 		b64.EncodeToString(salt), b64.EncodeToString(key))
 }
 
 // CheckPassword reports whether pw matches the hash. It reads the parameters
 // from the hash, so older hashes keep working if the defaults change.
-func CheckPassword(hash, pw string) bool {
+func CheckPassword(hash, pw string) bool { return checkPassword(webPool, hash, pw) }
+
+// CheckSFTPPassword is CheckPassword on the pool kept for SFTP.
+func CheckSFTPPassword(hash, pw string) bool { return checkPassword(sftpPool, hash, pw) }
+
+func checkPassword(pool *Pool, hash, pw string) bool {
 	if len(pw) > maxPasswordLength {
 		return false
 	}
@@ -80,7 +94,7 @@ func CheckPassword(hash, pw string) bool {
 	if err1 != nil || err2 != nil {
 		return false
 	}
-	got := derive([]byte(pw), salt, t, m, p)
+	got := derive(pool, []byte(pw), salt, t, m, p)
 	return subtle.ConstantTimeCompare(got, want) == 1
 }
 
@@ -90,17 +104,22 @@ func DummyCheck(pw string) {
 	CheckPassword(dummyHash(), pw)
 }
 
+// DummySFTPCheck is DummyCheck on the pool kept for SFTP.
+func DummySFTPCheck(pw string) {
+	CheckSFTPPassword(dummyHash(), pw)
+}
+
 // dummyHash is made on first use so other zelie commands do not pay for it.
 var dummyHash = sync.OnceValue(func() string { return HashPassword("not a real password") })
 
-func derive(pw, salt []byte, t, m uint32, p uint8) []byte {
-	hashSlots <- struct{}{}
+func derive(pool *Pool, pw, salt []byte, t, m uint32, p uint8) []byte {
+	pool.slots <- struct{}{}
 	key := argon2.IDKey(pw, salt, t, m, p, argonKeyLen)
-	<-hashSlots
+	<-pool.slots
 	// The memory argon2id just used would otherwise stay with the process
 	// until the next garbage collection, which an idle panel rarely needs.
 	// Logins are rare enough that handing it back at once costs nothing.
-	if len(hashSlots) == 0 {
+	if len(webPool.slots) == 0 && len(sftpPool.slots) == 0 {
 		debug.FreeOSMemory()
 	}
 	return key

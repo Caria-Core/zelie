@@ -25,6 +25,7 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/Caria-Core/zelie/internal/core"
+	"github.com/Caria-Core/zelie/internal/hostkey"
 )
 
 // fakeFiles stands in for the core: each volume is a folder, and every path
@@ -193,6 +194,33 @@ type fakePanel struct {
 	passwords map[string]string
 	keys      map[string][]byte // server -> public key
 	seenIPs   []string
+
+	mu       sync.Mutex
+	revoked  map[string]bool
+	checkErr error
+	checks   int
+}
+
+func (p *fakePanel) revoke(server string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.revoked == nil {
+		p.revoked = map[string]bool{}
+	}
+	p.revoked[server] = true
+}
+
+func (p *fakePanel) Check(_ context.Context, g Grant) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.checks++
+	if p.checkErr != nil {
+		return p.checkErr
+	}
+	if p.revoked[g.Server] {
+		return ErrDenied
+	}
+	return nil
 }
 
 func (p *fakePanel) grant(server string) Grant {
@@ -236,7 +264,9 @@ func newEnv(t *testing.T) *env { return newEnvIdle(t, 0) }
 
 // newEnvIdle is newEnv with a server that leaves after idle with no
 // connection open; zero means the default.
-func newEnvIdle(t *testing.T, idle time.Duration) *env {
+func newEnvIdle(t *testing.T, idle time.Duration) *env { return newEnvIdleWith(t, idle, nil) }
+
+func newEnvIdleWith(t *testing.T, idle time.Duration, set func(*Server)) *env {
 	t.Helper()
 	base := t.TempDir()
 	e := &env{alpha: filepath.Join(base, "alpha"), beta: filepath.Join(base, "beta"), outside: filepath.Join(base, "outside")}
@@ -262,7 +292,14 @@ func newEnvIdle(t *testing.T, idle time.Duration) *env {
 		passwords: map[string]string{"alpha": "alpha-secret", "beta": "beta-secret"},
 		keys:      map[string][]byte{"alpha": e.key.PublicKey().Marshal()},
 	}
-	e.server = &Server{Panel: e.panel, Files: e.files, Log: slog.New(slog.NewTextHandler(io.Discard, nil)), HostKeyPath: filepath.Join(base, "state", "host_key"), MaxPerIP: 6, IdleExit: idle}
+	keyDir := filepath.Join(base, "state")
+	if _, err := hostkey.Ensure(keyDir, os.Getgid(), ""); err != nil {
+		t.Fatal(err)
+	}
+	e.server = &Server{Panel: e.panel, Files: e.files, Log: slog.New(slog.NewTextHandler(io.Discard, nil)), HostKeyPath: filepath.Join(keyDir, hostkey.File), MaxPerIP: 6, IdleExit: idle}
+	if set != nil {
+		set(e.server)
+	}
 	if err := e.server.LoadHostKey(); err != nil {
 		t.Fatal(err)
 	}
@@ -309,7 +346,7 @@ func TestHostKeyIsKept(t *testing.T) {
 	if again.Fingerprint() != e.server.Fingerprint() || !strings.HasPrefix(again.Fingerprint(), "SHA256:") {
 		t.Errorf("the host key changed: %s and %s", again.Fingerprint(), e.server.Fingerprint())
 	}
-	if st, err := os.Stat(e.server.HostKeyPath); err != nil || st.Mode().Perm() != 0o600 {
+	if st, err := os.Stat(e.server.HostKeyPath); err != nil || st.Mode().Perm() != 0o640 {
 		t.Errorf("host key file: %v %v", st, err)
 	}
 }
@@ -674,5 +711,163 @@ func TestConnectionsPerAddress(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 	if _, err := e.dial("alpha", ssh.Password("alpha-secret")); err != nil {
 		t.Errorf("after one closed: %v", err)
+	}
+}
+
+// newEnvWith is newEnv with the server's settings changed before it starts.
+func newEnvWith(t *testing.T, set func(*Server)) *env {
+	t.Helper()
+	return newEnvIdleWith(t, 0, set)
+}
+
+func waitClosed(t *testing.T, c *ssh.Client, within time.Duration) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() { c.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(within):
+		t.Fatal("the connection was not closed")
+	}
+}
+
+func TestRevokedLoginIsClosed(t *testing.T) {
+	e := newEnvWith(t, func(s *Server) { s.CheckEvery = 50 * time.Millisecond })
+	c, err := e.dial("alpha", ssh.Password("alpha-secret"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	sc, err := sftp.NewClient(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sc.ReadDir("/"); err != nil {
+		t.Fatal(err)
+	}
+	e.panel.revoke("alpha")
+	waitClosed(t, c, 5*time.Second)
+}
+
+func TestLoginStaysWhenThePanelCannotAnswer(t *testing.T) {
+	e := newEnvWith(t, func(s *Server) { s.CheckEvery = 20 * time.Millisecond })
+	e.panel.mu.Lock()
+	e.panel.checkErr = errors.New("panel is restarting")
+	e.panel.mu.Unlock()
+	sc := e.sftpAs(t, "alpha", ssh.Password("alpha-secret"))
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		e.panel.mu.Lock()
+		n := e.panel.checks
+		e.panel.mu.Unlock()
+		if n >= 3 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the grant was not checked")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if _, err := sc.ReadDir("/"); err != nil {
+		t.Errorf("the connection was cut over a panel error: %v", err)
+	}
+}
+
+func TestIdleLoginIsClosed(t *testing.T) {
+	e := newEnvWith(t, func(s *Server) { s.IdleTimeout = 300 * time.Millisecond })
+	c, err := e.dial("alpha", ssh.Password("alpha-secret"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	sc, err := sftp.NewClient(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Traffic keeps it open past the timeout.
+	for range 6 {
+		if _, err := sc.ReadDir("/"); err != nil {
+			t.Fatalf("a busy connection was closed: %v", err)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	waitClosed(t, c, 5*time.Second)
+}
+
+func TestLimitKey(t *testing.T) {
+	for in, want := range map[string]string{
+		"203.0.113.7":               "203.0.113.7",
+		"::ffff:203.0.113.7":        "203.0.113.7",
+		"2001:db8:1:2:3:4:5:6":      "2001:db8:1:2::/64",
+		"2001:db8:1:2:ffff:ffff::1": "2001:db8:1:2::/64",
+		"2001:db8:1:3::1":           "2001:db8:1:3::/64",
+		"fe80::1%eth0":              "fe80::/64",
+		"unknown":                   "unknown",
+	} {
+		if got := LimitKey(in); got != want {
+			t.Errorf("LimitKey(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestIPv6AddressesShareALimit(t *testing.T) {
+	s := &Server{MaxPerIP: 2}
+	for _, ip := range []string{"2001:db8::1", "2001:db8::2"} {
+		if !s.hold(ip) {
+			t.Fatalf("%s refused too early", ip)
+		}
+	}
+	if s.hold("2001:db8::ffff") {
+		t.Error("a third address of the same /64 was let in")
+	}
+	if !s.hold("2001:db8:0:1::1") {
+		t.Error("another /64 was refused")
+	}
+	s.release("2001:db8::9")
+	if !s.hold("2001:db8::3") {
+		t.Error("a slot was not freed")
+	}
+}
+
+func TestHandshakesAreCapped(t *testing.T) {
+	s := &Server{MaxHandshakes: 2}
+	if !s.startHandshake() || !s.startHandshake() {
+		t.Fatal("refused under the cap")
+	}
+	if s.startHandshake() {
+		t.Error("a third handshake was let in")
+	}
+	s.endHandshake()
+	if !s.startHandshake() {
+		t.Error("a freed handshake slot was not reusable")
+	}
+}
+
+func TestHandshakeCapOverTheWire(t *testing.T) {
+	e := newEnvWith(t, func(s *Server) { s.MaxHandshakes = 2; s.MaxPerIP = 10 })
+	var open []net.Conn
+	defer func() {
+		for _, c := range open {
+			c.Close()
+		}
+	}()
+	// Two connections that say nothing hold both slots.
+	for range 2 {
+		c, err := net.Dial("tcp", e.addr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		open = append(open, c)
+	}
+	time.Sleep(200 * time.Millisecond)
+	c, err := net.Dial("tcp", e.addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	c.SetReadDeadline(time.Now().Add(3 * time.Second))
+	buf := make([]byte, 4)
+	if n, err := c.Read(buf); n != 0 || !errors.Is(err, io.EOF) {
+		t.Errorf("a connection over the handshake cap got %q, %v", buf[:n], err)
 	}
 }

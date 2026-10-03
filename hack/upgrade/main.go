@@ -52,6 +52,9 @@ type state struct {
 	DBUser     string `json:"db_user"`
 	DBName     string `json:"db_name"`
 	DBPassword string `json:"db_password"`
+	// HostKey is the fingerprint of the SFTP host key before the update,
+	// when the old release had SFTP. Clients trusted it, so it must stay.
+	HostKey string `json:"host_key,omitempty"`
 }
 
 func main() {
@@ -205,6 +208,9 @@ func seed(c *client, stateFile string) error {
 		return err
 	}
 
+	if st.HostKey, err = oldHostKey(); err != nil {
+		return err
+	}
 	b, _ := json.MarshalIndent(st, "", "  ")
 	return os.WriteFile(stateFile, b, 0o600)
 }

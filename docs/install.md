@@ -147,7 +147,7 @@ The panel is empty at first. A few things are worth doing early:
   and the game ports it forwards. Other rules, such as ufw's or Docker's, are left as
   they are.
 - Data under `/var/lib/zelie`, `/var/lib/zelie-panel`, `/var/lib/zelie-proxy` and
-  `/var/lib/zelie-sftp`.
+  `/var/lib/zelie-sftp`, and the SFTP host key in `/etc/zelie-sftp`.
 
 Running the install again is safe. It finishes an install that stopped halfway, leaves
 alone what is already done, and updates an older version.
