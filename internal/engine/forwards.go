@@ -151,3 +151,23 @@ func forwardRule(f portMap) []string {
 		"-m", "conntrack", "--ctstate", "DNAT", "-j", "ACCEPT",
 	}
 }
+
+// ForwardedPorts lists the host ports any app forwards, whatever the
+// protocol or address.
+func (e *Engine) ForwardedPorts() ([]uint16, error) {
+	e.peers.mu.Lock()
+	defer e.peers.mu.Unlock()
+	m, err := e.loadForwards()
+	if err != nil {
+		return nil, err
+	}
+	var ports []uint16
+	for _, list := range m {
+		for _, f := range list {
+			if !slices.Contains(ports, f.Port) {
+				ports = append(ports, f.Port)
+			}
+		}
+	}
+	return ports, nil
+}

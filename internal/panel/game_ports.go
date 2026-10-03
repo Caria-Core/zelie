@@ -275,6 +275,11 @@ func (s *Server) updateGamePorts(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, "list allocations", err)
 		return
 	}
+	sftp, err := s.Store.SFTPPort(ctx, store.ThisNode)
+	if err != nil {
+		s.fail(w, "read sftp port", err)
+		return
+	}
 	held := map[int64]store.Allocation{}
 	byPort := map[int]int64{}
 	for _, p := range pool {
@@ -348,6 +353,9 @@ func (s *Server) updateGamePorts(w http.ResponseWriter, r *http.Request) {
 		case i < 0:
 			writeError(w, errNoAllocation.Err())
 			return
+		case pool[i].Port == sftp:
+			writeError(w, errPortIsSFTP.Err("port", sftp))
+			return
 		case pool[i].AppID != "" && pool[i].AppID != a.ID:
 			writeError(w, errPortNotFree.Err("port", pool[i].Port))
 			return
@@ -385,6 +393,12 @@ func (s *Server) updateGamePorts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.Port = chosen[primary].Port
+	// The core still forwards the old ports to this server, and a server
+	// that is given one of them could not start. The next start sets the
+	// forwards again. The change is saved, so a failure here is only logged.
+	if err := s.Core.ClearForwards(ctx, a.ID); err != nil {
+		s.Log.Error("clear forwards after a port change", "server", a.ID, "err", err)
+	}
 	s.Log.Info("game ports changed", "server", a.ID, "user", loginFrom(ctx).account.ID, "count", len(ids))
 	out, err := s.gameOut(ctx, a)
 	if err != nil {

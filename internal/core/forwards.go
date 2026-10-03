@@ -60,6 +60,11 @@ func (s *Server) applyForwards(w http.ResponseWriter, r *http.Request, app strin
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	unlock, ok := s.guardForwards(w, forwards)
+	if !ok {
+		return
+	}
+	defer unlock()
 	// Once started it runs to the end: half of it would leave the
 	// firewall out of step with what was saved.
 	err := s.Engine.SetForwards(context.WithoutCancel(r.Context()), app, forwards)

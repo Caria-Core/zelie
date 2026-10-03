@@ -45,6 +45,7 @@ var (
 	errNoRange         = msg.Define(http.StatusConflict, "allocation.no_range", "No free block of {count} ports was found on this server.")
 	errNoFreePort      = msg.Define(http.StatusConflict, "allocation.none_free", "There are no free ports left. Add more to the pool first.")
 	errPortNotFree     = msg.Define(http.StatusConflict, "allocation.not_free", "Port {port} is used by another server.")
+	errPortIsSFTP      = msg.Define(http.StatusConflict, "allocation.sftp_port", "Port {port} is the SFTP port. A game server cannot use it.")
 	errPortTwice       = msg.Define(http.StatusBadRequest, "allocation.twice", "A port can be given to one role only.")
 	errAdminOnly       = msg.Define(http.StatusForbidden, "session.admin_only", "Only an administrator can do this.")
 )
@@ -199,7 +200,17 @@ func (s *Server) addAllocations(w http.ResponseWriter, r *http.Request) {
 		writeError(w, bad)
 		return
 	}
-	err := s.Store.AddAllocations(r.Context(), n.ID, ip, ports, s.now())
+	// A game on the SFTP port would receive the SFTP logins forwarded to it.
+	sftp, err := s.Store.SFTPPort(r.Context(), store.ThisNode)
+	if err != nil {
+		s.fail(w, "read sftp port", err)
+		return
+	}
+	if slices.Contains(ports, sftp) {
+		writeError(w, errPortIsSFTP.Err("port", sftp))
+		return
+	}
+	err = s.Store.AddAllocations(r.Context(), n.ID, ip, ports, s.now())
 	var taken *store.TakenError
 	if errors.As(err, &taken) {
 		writeError(w, errPortInPool.Err("port", taken.Port))
@@ -289,11 +300,20 @@ func (s *Server) place(ctx context.Context, node int64, w needs) (placement, err
 	if err != nil {
 		return placement{}, err
 	}
+	// A pool from before the check may hold the SFTP port. Leaving it out
+	// of the list also breaks any run of ports through it.
+	sftp, err := s.Store.SFTPPort(ctx, store.ThisNode)
+	if err != nil {
+		return placement{}, err
+	}
+	list = slices.DeleteFunc(slices.Clone(list), func(a store.Allocation) bool { return a.Port == sftp })
 	p := placement{Node: node}
 	picked := make(map[int64]bool, len(w.Chosen))
 	for _, id := range w.Chosen {
 		i := slices.IndexFunc(list, func(a store.Allocation) bool { return a.ID == id })
 		switch {
+		case i < 0 && sftpAllocation(ctx, s, node, id, sftp):
+			return placement{}, errPortIsSFTP.Err("port", sftp)
 		case i < 0:
 			return placement{}, errNoAllocation.Err()
 		case list[i].AppID != "":
@@ -318,6 +338,16 @@ func (s *Server) place(ctx context.Context, node int64, w needs) (placement, err
 		return placement{}, errNoFreePort.Err()
 	}
 	return p, nil
+}
+
+// sftpAllocation says whether the allocation with this id is the SFTP port,
+// so a request that picked it gets that answer and not "no such port".
+func sftpAllocation(ctx context.Context, s *Server, node, id int64, sftp int) bool {
+	all, err := s.Store.Allocations(ctx, node)
+	if err != nil {
+		return false
+	}
+	return slices.ContainsFunc(all, func(a store.Allocation) bool { return a.ID == id && a.Port == sftp })
 }
 
 // assign gives the placement's ports to the server. A port another server
