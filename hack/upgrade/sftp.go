@@ -21,17 +21,23 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-// oldStateDir is where releases up to 0.7.3 kept the SFTP host key, in the
-// SFTP user's own folder.
-const oldStateDir = "/var/lib/zelie-sftp"
+// Releases up to 0.7.3 kept the SFTP host key in the SFTP user's own
+// folder; later ones keep it in keyDir.
+const (
+	oldStateDir = "/var/lib/zelie-sftp"
+	keyDir      = "/etc/zelie-sftp"
+)
 
 // oldHostKey returns the fingerprint of the old release's SFTP host key,
-// making one where that release would have if the panel never asked for it
-// yet, or "" when the release has no SFTP.
+// making one where a release up to 0.7.3 would have if the panel never
+// asked for it yet, or "" when the release has no SFTP.
 func oldHostKey() (string, error) {
 	u, err := user.Lookup("zelie-sftp")
 	if err != nil {
 		return "", nil
+	}
+	if key, err := hostkey.Load(filepath.Join(keyDir, hostkey.File)); err == nil {
+		return ssh.FingerprintSHA256(key.PublicKey()), nil
 	}
 	path := filepath.Join(oldStateDir, hostkey.File)
 	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
