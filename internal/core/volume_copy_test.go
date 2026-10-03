@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -164,5 +165,21 @@ func TestSFTPUserMayNotCopyVolumes(t *testing.T) {
 	rec := request(t, s, &peer.Peer{UID: 4242}, "POST", "/v1/volume-copies", `{"from":"srv-a","to":"srv-b"}`)
 	if rec.Code != http.StatusForbidden {
 		t.Errorf("as the SFTP user: %d", rec.Code)
+	}
+}
+
+func TestCopyFilesStopsAtLimit(t *testing.T) {
+	src, dst := t.TempDir(), t.TempDir()
+	os.WriteFile(filepath.Join(src, "big"), []byte(strings.Repeat("x", 200<<10)), 0o644)
+	sr, _ := os.OpenRoot(src)
+	dr, _ := os.OpenRoot(dst)
+	defer sr.Close()
+	defer dr.Close()
+	err := copyFiles(context.Background(), sr, dr, 100<<10, errNoRoomCopy.Err("need", "1 KB", "free", "1 KB"))
+	if err == nil || !strings.Contains(err.Error(), "Not enough disk space") {
+		t.Fatalf("err = %v, want the no-room error", err)
+	}
+	if left, _ := os.ReadDir(dst); len(left) != 0 {
+		t.Errorf("left behind: %v", left)
 	}
 }

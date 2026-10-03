@@ -125,11 +125,23 @@ func (e *Engine) VolumeSizes() (map[string]int64, error) {
 
 // diskUsage adds up the blocks a directory tree takes, like du: sparse files
 // count what they use, and a file with several links counts once.
-func diskUsage(root string) (int64, error) {
+//
+// The tree is walked through an os.Root: a tenant can swap a folder for a
+// link to somewhere else while this runs as root, and the root refuses to
+// follow it out of the volume.
+func diskUsage(dir string) (int64, error) {
+	root, err := os.OpenRoot(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	defer root.Close()
 	type inode struct{ dev, ino uint64 }
 	seen := map[inode]bool{}
 	var total int64
-	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+	err = fs.WalkDir(root.FS(), ".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			// A file removed while walking is not an error.
 			if errors.Is(err, fs.ErrNotExist) {

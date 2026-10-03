@@ -205,6 +205,15 @@ func header(fi fs.FileInfo) *tar.Header {
 // The archive is not trusted. Every path stays inside its volume, and
 // nothing is written through a symbolic link the archive itself made.
 func RestoreTar(ctx context.Context, r io.Reader, vols []Volume) ([]string, error) {
+	return RestoreTarCapped(ctx, r, vols, -1, nil)
+}
+
+// RestoreTarCapped is RestoreTar that stops with over once it has had to
+// write more than limit bytes of file data. Holes are not written, so the
+// limit counts what lands on disk, not the sizes in the archive. A negative
+// limit means no limit.
+func RestoreTarCapped(ctx context.Context, r io.Reader, vols []Volume, limit int64, over error) ([]string, error) {
+	budget := &budget{left: limit, over: over}
 	unpacks := make([]*unpack, len(vols))
 	for i, v := range vols {
 		if err := v.Root.RemoveAll(staging); err != nil {
@@ -213,7 +222,7 @@ func RestoreTar(ctx context.Context, r io.Reader, vols []Volume) ([]string, erro
 		if err := v.Root.Mkdir(staging, 0o700); err != nil {
 			return nil, err
 		}
-		unpacks[i] = &unpack{root: v.Root, symlinks: map[string]bool{}}
+		unpacks[i] = &unpack{root: v.Root, symlinks: map[string]bool{}, budget: budget}
 	}
 	cleanUp := func() {
 		for _, v := range vols {
@@ -290,6 +299,87 @@ type unpack struct {
 	top      *tar.Header // the volume folder's own owner and mode
 	symlinks map[string]bool
 	dirs     []dirTimes
+	budget   *budget
+}
+
+// budget is the disk space the files of one restore may still take.
+type budget struct {
+	left int64
+	over error
+}
+
+func (b *budget) take(n int64) error {
+	if b.left < 0 {
+		return nil
+	}
+	if n > b.left {
+		return b.over
+	}
+	b.left -= n
+	return nil
+}
+
+// copySparse writes body to f and leaves a hole for every block of zeros, so
+// a sparse file in the archive does not grow to its full size on disk. The
+// final truncate keeps a hole at the end in the file's length.
+func copySparse(f *os.File, body io.Reader, b *budget) error {
+	buf := make([]byte, 64<<10)
+	var pos int64
+	hole := false
+	for {
+		n, rerr := fill(body, buf)
+		if n > 0 {
+			if isZero(buf[:n]) {
+				if _, err := f.Seek(int64(n), io.SeekCurrent); err != nil {
+					return err
+				}
+				hole = true
+			} else {
+				if err := b.take(int64(n)); err != nil {
+					return err
+				}
+				if _, err := f.Write(buf[:n]); err != nil {
+					return err
+				}
+				hole = false
+			}
+			pos += int64(n)
+		}
+		if rerr == io.EOF {
+			break
+		}
+		if rerr != nil {
+			return rerr
+		}
+	}
+	if hole {
+		return f.Truncate(pos)
+	}
+	return nil
+}
+
+// fill reads until buf is full or body ends. Unlike io.ReadFull it returns
+// io.EOF, not io.ErrUnexpectedEOF, for a short last block, so a body that
+// is cut short can still be told from one that ended.
+func fill(body io.Reader, buf []byte) (int, error) {
+	n := 0
+	for n < len(buf) {
+		m, err := body.Read(buf[n:])
+		n += m
+		if err != nil {
+			return n, err
+		}
+	}
+	return n, nil
+}
+
+func isZero(p []byte) bool {
+	for _, c := range p {
+		if c != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 type dirTimes struct {
@@ -327,7 +417,7 @@ func (u *unpack) entry(hdr *tar.Header, rel string, body io.Reader) error {
 		if err != nil {
 			return err
 		}
-		_, err = io.Copy(f, body)
+		err = copySparse(f, body, u.budget)
 		if cerr := f.Close(); err == nil {
 			err = cerr
 		}

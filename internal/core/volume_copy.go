@@ -82,11 +82,18 @@ func (s *Server) copyVolume(w http.ResponseWriter, r *http.Request) {
 	}
 	defer src.Close()
 
+	// The size counts blocks in use, which is what the copy writes because
+	// it keeps holes. The limit is for when the files change meanwhile.
 	need, err := s.Engine.VolumeSize(req.From)
+	limit, over := int64(-1), error(nil)
 	if err == nil && s.Paths.Volumes != "" {
 		var free int64
-		if free, err = freeAt(s.Paths.Volumes); err == nil && free-need < diskReserve {
-			err = errNoRoomCopy.Err("need", sizeLabel(need), "free", sizeLabel(free))
+		if free, err = freeAt(s.Paths.Volumes); err == nil {
+			over = errNoRoomCopy.Err("need", sizeLabel(need), "free", sizeLabel(free))
+			if free-need < diskReserve {
+				err = over
+			}
+			limit = max(free-diskReserve, 0)
 		}
 	}
 	if err != nil {
@@ -95,7 +102,7 @@ func (s *Server) copyVolume(w http.ResponseWriter, r *http.Request) {
 	}
 
 	start := time.Now()
-	if err := copyFiles(ctx, src, dst); err != nil {
+	if err := copyFiles(ctx, src, dst, limit, over); err != nil {
 		s.copyFailed(w, req, err)
 		return
 	}
@@ -114,7 +121,9 @@ func (s *Server) copyFailed(w http.ResponseWriter, req copyVolumeRequest, err er
 }
 
 // copyFiles writes src as a tar stream and unpacks it into dst.
-func copyFiles(ctx context.Context, src, dst *os.Root) error {
+// A negative limit lets it write any amount; otherwise it stops with over
+// once it has written more than limit bytes.
+func copyFiles(ctx context.Context, src, dst *os.Root, limit int64, over error) error {
 	pr, pw := io.Pipe()
 	var wg sync.WaitGroup
 	var readErr error
@@ -124,7 +133,7 @@ func copyFiles(ctx context.Context, src, dst *os.Root) error {
 		_, readErr = backup.WriteTar(ctx, pw, []backup.Volume{{Dir: copyDir, Root: src}})
 		pw.CloseWithError(readErr)
 	}()
-	_, err := backup.RestoreTar(ctx, pr, []backup.Volume{{Dir: copyDir, Root: dst}})
+	_, err := backup.RestoreTarCapped(ctx, pr, []backup.Volume{{Dir: copyDir, Root: dst}}, limit, over)
 	// Lets the reader stop if the unpacking ended first.
 	pr.CloseWithError(err)
 	wg.Wait()

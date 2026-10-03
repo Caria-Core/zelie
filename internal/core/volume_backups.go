@@ -191,7 +191,16 @@ func (s *Server) restoreVolumes(w http.ResponseWriter, r *http.Request, app, nam
 		return
 	}
 	defer closeAll()
-	restored, err := backup.RestoreTar(r.Context(), src, vols)
+	// The size in the request is the client's word, so what is written is
+	// counted too.
+	limit, over := int64(-1), error(nil)
+	if s.Paths.Volumes != "" {
+		if free, err := freeAt(s.Paths.Volumes); err == nil {
+			over = errNoRoomRestore.Err("need", sizeLabel(req.Size), "free", sizeLabel(free))
+			limit = max(free-diskReserve, 0)
+		}
+	}
+	restored, err := backup.RestoreTarCapped(r.Context(), src, vols, limit, over)
 	if err != nil {
 		s.backupFailed(w, "restore", app, err)
 		return

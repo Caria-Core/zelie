@@ -290,3 +290,71 @@ func TestRestoreSkipsBadNames(t *testing.T) {
 		t.Error("a file escaped the volume")
 	}
 }
+
+func allocated(t *testing.T, p string) int64 {
+	t.Helper()
+	fi, err := os.Stat(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return fi.Sys().(*syscall.Stat_t).Blocks * 512
+}
+
+func TestRestoreKeepsHoles(t *testing.T) {
+	const size = 256 << 20
+	src, dst := t.TempDir(), t.TempDir()
+	f, err := os.Create(filepath.Join(src, "world.dat"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.WriteAt([]byte("head"), 0)
+	f.WriteAt([]byte("tail"), size-4)
+	f.Close()
+	// A file that ends in a hole must keep its length.
+	g, _ := os.Create(filepath.Join(src, "trailing.dat"))
+	g.WriteAt([]byte("x"), 0)
+	g.Truncate(10 << 20)
+	g.Close()
+
+	var buf bytes.Buffer
+	vols := func(dir string) []Volume { return []Volume{{"data", openRoot(t, dir)}} }
+	if _, err := WriteTar(context.Background(), &buf, vols(src)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RestoreTar(context.Background(), &buf, vols(dst)); err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]int64{"world.dat": size, "trailing.dat": 10 << 20} {
+		p := filepath.Join(dst, name)
+		if fi, err := os.Stat(p); err != nil || fi.Size() != want {
+			t.Fatalf("%s: %v, %v; want %d bytes", name, fi, err, want)
+		}
+		// APFS allocates a file that is extended right after it was written,
+		// so the disk usage of the trailing hole is only checked for world.dat.
+		if a := allocated(t, p); a > 4<<20 && name == "world.dat" {
+			t.Errorf("%s takes %d bytes on disk; holes were written out", name, a)
+		}
+	}
+	b, _ := os.ReadFile(filepath.Join(dst, "world.dat"))
+	if string(b[:4]) != "head" || string(b[size-4:]) != "tail" || !bytes.Equal(b[4:size-4], make([]byte, size-8)) {
+		t.Error("content differs")
+	}
+}
+
+func TestRestoreStopsAtLimit(t *testing.T) {
+	src, dst := t.TempDir(), t.TempDir()
+	write(t, src, "a", strings.Repeat("a", 100<<10))
+	write(t, src, "b", strings.Repeat("b", 100<<10))
+	var buf bytes.Buffer
+	if _, err := WriteTar(context.Background(), &buf, []Volume{{"data", openRoot(t, src)}}); err != nil {
+		t.Fatal(err)
+	}
+	over := errors.New("no room")
+	_, err := RestoreTarCapped(context.Background(), &buf, []Volume{{"data", openRoot(t, dst)}}, 150<<10, over)
+	if !errors.Is(err, over) {
+		t.Fatalf("err = %v, want the limit error", err)
+	}
+	if left, _ := os.ReadDir(dst); len(left) != 0 {
+		t.Errorf("left behind: %v", left)
+	}
+}
