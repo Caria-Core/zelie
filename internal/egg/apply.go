@@ -132,10 +132,18 @@ func applyProperties(text string, reps []Replace) string {
 }
 
 // applyLines is the "file" parser: a line that starts with the key is
-// replaced by the value. Lines that are not there are not added.
+// replaced by the value. A line that is not there is added at the end only
+// when the replacement says Add, because most eggs list lines for the
+// game's default file and a user's own file may never have had them.
 func applyLines(text string, reps []Replace) string {
 	lines, eol, trailing := splitLines(text)
+	present := make([]bool, len(reps))
 	for i, l := range lines {
+		for j, r := range reps {
+			if strings.HasPrefix(l, r.Key) {
+				present[j] = true
+			}
+		}
 		for _, r := range reps {
 			if !strings.HasPrefix(l, r.Key) {
 				continue
@@ -145,6 +153,11 @@ func applyLines(text string, reps []Replace) string {
 			}
 			lines[i] = r.Value
 			break
+		}
+	}
+	for j, r := range reps {
+		if r.Add && r.IfValue == "" && !present[j] {
+			lines, trailing = append(lines, r.Value), true
 		}
 	}
 	return joinLines(lines, eol, trailing)

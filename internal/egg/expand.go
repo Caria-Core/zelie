@@ -31,6 +31,18 @@ func Expand(s string, vars map[string]string, port int) string {
 	})
 }
 
+// HasValue reports whether s refers to at least one placeholder that
+// resolves to a non-empty value. A string with no placeholders, or only
+// empty ones, has none.
+func HasValue(s string, vars map[string]string, port int) bool {
+	for _, m := range placeholder().FindAllStringSubmatch(s, -1) {
+		if v, ok := lookup(m[1], vars, port); ok && v != "" {
+			return true
+		}
+	}
+	return false
+}
+
 func lookup(key string, vars map[string]string, port int) (string, bool) {
 	switch key {
 	case "server.build.default.port", "server.allocations.default.port":

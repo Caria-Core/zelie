@@ -75,11 +75,14 @@ type ConfigFile struct {
 
 // Replace sets Key to Value. Value may hold placeholders. When IfValue is
 // set the key is only changed if it currently holds that value; eggs write
-// that as a nested object under the key.
+// that as a nested object under the key. Add asks the "file" parser to
+// append the line when no line starts with Key; the other parsers add
+// missing keys on their own.
 type Replace struct {
 	Key     string
 	Value   string
 	IfValue string
+	Add     bool
 }
 
 var envName = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`) })
@@ -250,7 +253,7 @@ func configFiles(files *object) ([]ConfigFile, error) {
 			for _, key := range find.keys {
 				if cond, ok := find.vals[key].(*object); ok {
 					for _, ifValue := range cond.keys {
-						f.Find = append(f.Find, Replace{key, text(cond.vals[ifValue]), ifValue})
+						f.Find = append(f.Find, Replace{Key: key, Value: text(cond.vals[ifValue]), IfValue: ifValue})
 					}
 					continue
 				}

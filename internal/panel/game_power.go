@@ -194,7 +194,10 @@ func gameConfigFiles(e *egg.Egg, g store.GameServer, vars map[string]string, por
 				fmt.Fprintf(out, "The value for %s in %s is too long, so it is left alone.\n", r.Key, f.Path)
 				continue
 			}
-			cf.Changes = append(cf.Changes, core.ConfigChange{Key: r.Key, Value: value, IfValue: r.IfValue})
+			// A line the user's file lacks is only worth adding when it
+			// carries something set for this server, not a bare "key ".
+			add := f.Parser == "file" && r.IfValue == "" && egg.HasValue(r.Value, vars, port)
+			cf.Changes = append(cf.Changes, core.ConfigChange{Key: r.Key, Value: value, IfValue: r.IfValue, Add: add})
 		}
 		files = append(files, cf)
 	}

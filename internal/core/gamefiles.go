@@ -54,6 +54,8 @@ type ConfigChange struct {
 	Key     string `json:"key"`
 	Value   string `json:"value"`
 	IfValue string `json:"if_value,omitempty"`
+	// Add appends the line of a "file" parser change when it is missing.
+	Add bool `json:"add,omitempty"`
 }
 
 // PrepareResponse lists what could not be done. Nothing in it stops the
@@ -160,7 +162,7 @@ func editConfigFile(root *os.Root, f ConfigFile) (skipped []string, err error) {
 	}
 	changes := make([]egg.Replace, len(f.Changes))
 	for i, c := range f.Changes {
-		changes[i] = egg.Replace{Key: c.Key, Value: c.Value, IfValue: c.IfValue}
+		changes[i] = egg.Replace{Key: c.Key, Value: c.Value, IfValue: c.IfValue, Add: c.Add}
 	}
 	out, skipped, err := egg.ApplyFile(f.Parser, old, changes, nil)
 	if err != nil {

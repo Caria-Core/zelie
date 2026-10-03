@@ -73,6 +73,39 @@ func TestApplyFileLines(t *testing.T) {
 	}
 }
 
+func TestApplyFileLinesAdd(t *testing.T) {
+	host := Replace{Key: "server.hostname ", Value: `server.hostname "My Rust"`, Add: true}
+	seed := Replace{Key: "server.seed ", Value: "server.seed 7", Add: true}
+	tags := Replace{Key: "server.tags ", Value: `server.tags "x"`}
+
+	got, _ := apply(t, "file", "fps.limit 60\n", host, seed, tags)
+	if want := "fps.limit 60\nserver.hostname \"My Rust\"\nserver.seed 7\n"; got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+	got, _ = apply(t, "file", "fps.limit 60\r\nserver.seed 1\r\n", host, seed)
+	if want := "fps.limit 60\r\nserver.seed 7\r\nserver.hostname \"My Rust\"\r\n"; got != want {
+		t.Errorf("CRLF: got %q, want %q", got, want)
+	}
+	got, _ = apply(t, "file", "fps.limit 60", host)
+	if want := "fps.limit 60\nserver.hostname \"My Rust\"\n"; got != want {
+		t.Errorf("no final newline: got %q, want %q", got, want)
+	}
+	got, _ = apply(t, "file", "", host)
+	if want := "server.hostname \"My Rust\"\n"; got != want {
+		t.Errorf("empty file: got %q, want %q", got, want)
+	}
+	// An existing line is replaced, even by an empty value, and not added twice.
+	got, _ = apply(t, "file", "server.seed 1\n", Replace{Key: "server.seed ", Value: "server.seed ", Add: true})
+	if want := "server.seed \n"; got != want {
+		t.Errorf("existing: got %q, want %q", got, want)
+	}
+	// A condition on the old value means the line is only ever edited.
+	got, _ = apply(t, "file", "a 1\n", Replace{Key: "b ", Value: "b 2", IfValue: "9", Add: true})
+	if got != "a 1\n" {
+		t.Errorf("IfValue: got %q", got)
+	}
+}
+
 func TestApplyFileINI(t *testing.T) {
 	in := `; Ark settings
 ServerName=old
@@ -347,5 +380,42 @@ func TestDoneMatcher(t *testing.T) {
 	}
 	if d.Empty() || !(&Egg{}).DoneMatcher().Empty() {
 		t.Error("Empty")
+	}
+}
+
+func TestHasValue(t *testing.T) {
+	vars := map[string]string{"NAME": "x", "SEED": ""}
+	for _, c := range []struct {
+		in   string
+		port int
+		want bool
+	}{
+		{`a "{{server.environment.NAME}}"`, 0, true},
+		{"a {{env.SEED}}", 0, false},
+		{"a {{SEED}} {{NAME}}", 0, true},
+		{"a 1", 0, false},
+		{"a {{server.build.default.port}}", 25565, true},
+		{"a {{server.build.default.port}}", 0, false},
+		{"a {{MISSING}}", 0, false},
+	} {
+		if got := HasValue(c.in, vars, c.port); got != c.want {
+			t.Errorf("HasValue(%q, port %d) = %v, want %v", c.in, c.port, got, c.want)
+		}
+	}
+}
+
+func TestApplyFileLinesAddOnlyWhenNoLineHasTheKey(t *testing.T) {
+	// The first replacement takes the line, but the second one's key is on
+	// it too, so the second is not missing.
+	reps := []Replace{
+		{Key: "server.level", Value: `server.level "a"`, Add: true},
+		{Key: "server.levelurl", Value: `server.levelurl "b"`, Add: true},
+	}
+	out, _, err := ApplyFile("file", []byte("server.levelurl \"old\"\n"), reps, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(out), "server.level \"a\"\n"; got != want {
+		t.Errorf("got %q, want %q", got, want)
 	}
 }

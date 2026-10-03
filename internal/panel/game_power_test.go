@@ -3,6 +3,7 @@ package panel
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"slices"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/Caria-Core/zelie/internal/core"
+	"github.com/Caria-Core/zelie/internal/egg"
 	"github.com/Caria-Core/zelie/internal/store"
 )
 
@@ -805,5 +807,35 @@ func TestFilesAppsKeepTheirOwnSettings(t *testing.T) {
 		if code, out := e.b.do("PUT", "/api/games/site/"+path, map[string]any{}); code != http.StatusConflict || out["code"] != "game.not_for_files" {
 			t.Errorf("%s: %d %v", path, code, out)
 		}
+	}
+}
+
+func TestGameConfigFilesAddOnlySetLines(t *testing.T) {
+	e := &egg.Egg{Files: []egg.ConfigFile{{
+		Path: "server/rust/cfg/server.cfg", Parser: "file",
+		Find: []egg.Replace{
+			{Key: "server.hostname ", Value: `server.hostname "{{server.environment.SERVER_HOSTNAME}}"`},
+			{Key: "server.seed ", Value: "server.seed {{server.environment.WORLD_SEED}}"},
+			{Key: "server.secure ", Value: "server.secure 1"},
+			{Key: "server.level ", Value: "server.level {{env.LEVEL}}", IfValue: "Procedural Map"},
+		},
+	}, {
+		Path: "server.properties", Parser: "properties",
+		Find: []egg.Replace{{Key: "motd", Value: "{{env.SERVER_HOSTNAME}}"}},
+	}}}
+	vars := map[string]string{"SERVER_HOSTNAME": "Mine", "WORLD_SEED": "", "LEVEL": "Barren"}
+	files := gameConfigFiles(e, store.GameServer{}, vars, 28015, io.Discard)
+	if len(files) != 2 {
+		t.Fatalf("%d files", len(files))
+	}
+	var got []bool
+	for _, c := range files[0].Changes {
+		got = append(got, c.Add)
+	}
+	if want := []bool{true, false, false, false}; !slices.Equal(got, want) {
+		t.Errorf("Add flags %v, want %v", got, want)
+	}
+	if files[1].Changes[0].Add {
+		t.Error("a properties change was marked Add")
 	}
 }

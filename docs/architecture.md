@@ -198,8 +198,10 @@ address with a name or IP of their own on the Server page.
 
 A game server runs as an ordinary user, 988 inside its container as in Wings. Before
 each start the core gives that user every file of the server's volume and edits the
-config files the egg lists, staying inside the volume however a link in it points. The
-image's own entrypoint starts the game with its console open. To stop it Zelie sends the
+config files the egg lists, staying inside the volume however a link in it points. A
+setting the file lacks is added, as long as it carries a value set for this server, so a
+server's own config file still gets the name, description and the like from the panel.
+The image's own entrypoint starts the game with its console open. To stop it Zelie sends the
 egg's stop command or signal, and kills the game only if it is still running a minute
 later. A server that exits by itself is started again like a crashing app, with a
 growing delay.

@@ -315,3 +315,33 @@ func TestRunTakesAGameSpec(t *testing.T) {
 		}
 	}
 }
+
+func TestConfigFileIsMadeForAddedLines(t *testing.T) {
+	dir := t.TempDir()
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+
+	add := ConfigFile{Path: "server/rust/cfg/server.cfg", Parser: "file", Changes: []ConfigChange{
+		{Key: "server.hostname ", Value: `server.hostname "Mine"`, Add: true},
+	}}
+	if _, err := editConfigFile(root, add); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(filepath.Join(dir, add.Path))
+	if want := "server.hostname \"Mine\"\n"; string(got) != want {
+		t.Errorf("server.cfg: %q, want %q", got, want)
+	}
+
+	none := ConfigFile{Path: "other/dir/server.cfg", Parser: "file", Changes: []ConfigChange{
+		{Key: "server.hostname ", Value: `server.hostname "Mine"`},
+	}}
+	if _, err := editConfigFile(root, none); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "other")); err == nil {
+		t.Error("a file with nothing to add was made")
+	}
+}
