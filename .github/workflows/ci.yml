@@ -149,13 +149,14 @@ jobs:
           measure() {
             ps -C zelie -o pid=,rss=,args=
             for p in $(pgrep -x zelie); do
-              sudo awk -v p="$p" '/^(Pss|Private_Dirty|Private_Clean):/ {v[$1]=$2} END {printf "%s pss=%d private=%d kB\n", p, v["Pss:"], v["Private_Dirty:"]+v["Private_Clean:"]}' /proc/$p/smaps_rollup
+              sudo awk -v p="$p" '/^(Pss|Private_Dirty|Private_Clean|AnonHugePages):/ {v[$1]=$2} END {printf "%s pss=%d private=%d hugepages=%d kB\n", p, v["Pss:"], v["Private_Dirty:"]+v["Private_Clean:"], v["AnonHugePages:"]}' /proc/$p/smaps_rollup
             done
           }
           # The processes hand free memory back every half minute, so a single
           # reading lands before or after that at random: the same commit read
           # 80 and 91 MB. Five readings over 90 seconds are printed and the
           # limit applies to the lowest, which is the idle footprint.
+          cat /sys/kernel/mm/transparent_hugepage/enabled
           sleep 20
           best=
           for i in 1 2 3 4 5; do
