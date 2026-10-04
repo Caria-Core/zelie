@@ -252,7 +252,8 @@ func (s *Server) startGame(ctx context.Context, app store.App, d store.Deploymen
 	startup := egg.Expand(g.Startup, vars, app.Port)
 	vars["STARTUP"] = startup
 	vars["HOME"] = gameVolumePath
-	fmt.Fprintf(out, "Startup command: %s\n", startup)
+	// The deployment log is shown like the console, so it hides the same secrets.
+	fmt.Fprintf(out, "Startup command: %s\n", secretMasker(consoleSecrets(vars))(startup))
 
 	// The volume may only be touched while nothing runs on it, which the
 	// stop above made sure of.
@@ -310,7 +311,7 @@ func (s *Server) startGame(ctx context.Context, app store.App, d store.Deploymen
 		}
 	}
 	s.gameRuns.set(app.ID, container, stateStarting)
-	s.watchGame(app, container, e)
+	s.watchGame(app, container, e, g, false)
 	if err := s.Store.GoLive(ctx, d, s.now()); err != nil {
 		undo()
 		fail(err)
@@ -413,6 +414,17 @@ func (s *Server) resumeGames(ctx context.Context) {
 		s.Log.Error("resume game servers", "err", err)
 		return
 	}
+	// Players whose server is not running left with it; if the panel was
+	// down when that happened, nothing recorded it.
+	var running []string
+	for _, c := range list {
+		if c.State == "running" && !isInstallContainer(c) {
+			running = append(running, c.App)
+		}
+	}
+	if err := s.Store.CloseStaleSessions(ctx, running, store.ReasonPanelRestarted); err != nil {
+		s.Log.Error("close player sessions", "err", err)
+	}
 	for _, a := range apps {
 		if !a.RunsEgg() {
 			continue
@@ -421,13 +433,13 @@ func (s *Server) resumeGames(ctx context.Context) {
 			if c.App != a.ID || c.State != "running" || isInstallContainer(c) {
 				continue
 			}
-			_, e, _, err := s.gameParts(ctx, a.ID)
+			g, e, _, err := s.gameParts(ctx, a.ID)
 			if err != nil {
 				s.Log.Error("resume game server", "server", a.ID, "err", err)
 				continue
 			}
 			s.gameRuns.set(a.ID, c.ID, stateStarting)
-			s.watchGame(a, c.ID, e)
+			s.watchGame(a, c.ID, e, g, true)
 		}
 	}
 }

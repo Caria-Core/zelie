@@ -4,12 +4,16 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/netip"
 	"os"
+	"slices"
+	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Caria-Core/zelie/internal/egg"
@@ -472,7 +476,10 @@ func (c *consoleHistory) forget(app string) {
 // watchGame follows a server's console from its start: to see when the
 // game says it is ready, and to keep the lines for whoever opens the
 // console. It stops when the container has exited and its output is read.
-func (s *Server) watchGame(a store.App, container string, e *egg.Egg) {
+//
+// resumed says the container was already running when the panel started,
+// so the players in it are not new.
+func (s *Server) watchGame(a store.App, container string, e *egg.Egg, g store.GameServer, resumed bool) {
 	app := a.ID
 	if a.IsFiles() {
 		// Generic eggs keep a placeholder where a game's ready line goes.
@@ -486,6 +493,10 @@ func (s *Server) watchGame(a store.App, container string, e *egg.Egg) {
 	ctx, cancel := context.WithCancel(s.baseContext())
 	h.replace(container, cancel)
 	matched := done.Empty()
+	mask := secretMasker(consoleSecrets(g.Variables))
+	rec := s.newPlayerRecorder(app, g)
+	var exited atomic.Bool
+	var exitAt atomic.Int64
 	answers := a.IsFiles() && a.Domain != ""
 	if matched && !answers {
 		// The egg says nothing to wait for.
@@ -511,6 +522,10 @@ func (s *Server) watchGame(a store.App, container string, e *egg.Egg) {
 				h.setExit(container, code)
 			}
 			if err == nil || isNotFound(err) {
+				if rec != nil {
+					exitAt.Store(s.now().UnixNano())
+				}
+				exited.Store(true)
 				select {
 				case <-ctx.Done():
 				case <-time.After(consoleDrain):
@@ -518,6 +533,11 @@ func (s *Server) watchGame(a store.App, container string, e *egg.Egg) {
 				cancel()
 			}
 		}()
+		skip := 0
+		if rec != nil {
+			skip = rec.begin(ctx, s.Core, container, resumed)
+			defer func() { rec.finish(exited.Load(), time.Unix(0, exitAt.Load())) }()
+		}
 		// A dropped stream is read again from its start; the lines already
 		// passed on are skipped.
 		delivered := 0
@@ -528,8 +548,14 @@ func (s *Server) watchGame(a store.App, container string, e *egg.Egg) {
 					return
 				}
 				delivered++
+				// Before anything sees the line: the egg's entrypoint prints
+				// the startup command, passwords and all.
+				line = mask(line)
 				h.push(container, "line", line)
 				plain := ansi().ReplaceAllString(line, "")
+				if rec != nil && delivered > skip {
+					rec.feed(plain)
+				}
 				if !matched && done.Match(plain) {
 					matched = true
 					s.gameRuns.advance(app, container)
@@ -545,6 +571,44 @@ func (s *Server) watchGame(a store.App, container string, e *egg.Egg) {
 			}
 		}
 	}()
+}
+
+// secretMask replaces a secret in the console.
+const secretMask = "••••••"
+
+// consoleSecrets are the values of a server's variables that the console
+// must not show: passwords, tokens and keys, judged by the variable's name.
+// A short value would blank out ordinary words, so it is left alone.
+func consoleSecrets(vars map[string]string) []string {
+	var out []string
+	for name, v := range vars {
+		if len(v) < 6 || slices.Contains(out, v) {
+			continue
+		}
+		name = strings.ToUpper(name)
+		for _, word := range []string{"PASS", "SECRET", "TOKEN", "KEY"} {
+			if strings.Contains(name, word) {
+				out = append(out, v)
+				break
+			}
+		}
+	}
+	return out
+}
+
+// secretMasker returns a function that blanks the secrets in a line. The
+// longest goes first, so a secret that contains another is hidden whole.
+func secretMasker(secrets []string) func(string) string {
+	if len(secrets) == 0 {
+		return func(line string) string { return line }
+	}
+	sort.Slice(secrets, func(i, j int) bool { return len(secrets[i]) > len(secrets[j]) })
+	pairs := make([]string, 0, 2*len(secrets))
+	for _, s := range secrets {
+		pairs = append(pairs, s, secretMask)
+	}
+	r := strings.NewReplacer(pairs...)
+	return r.Replace
 }
 
 // consoleTail is how much of a stopped server's last console is read for
@@ -576,6 +640,16 @@ func (s *Server) loadStoppedConsole(ctx context.Context, h *consoleHub) {
 	if counted.n >= consoleTail && len(lines) > 0 {
 		// The tail starts in the middle of a line.
 		lines = lines[1:]
+	}
+	g, err := s.Store.GameServer(ctx, h.app)
+	switch {
+	case err == nil:
+		mask := secretMasker(consoleSecrets(g.Variables))
+		for i := range lines {
+			lines[i] = mask(lines[i])
+		}
+	case !errors.Is(err, store.ErrNotFound):
+		return
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()

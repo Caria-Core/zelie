@@ -67,15 +67,25 @@ func runCore(stderr io.Writer) int {
 	// Updates only swap the binary, so containerd's unit changes reach old
 	// installs here. A restart also restarts this core (Requires=), and the
 	// second start finds nothing to change.
-	switch changed, err := engine.RefreshUnit(ctx, engine.DefaultPaths, nil); {
+	changed, err := engine.RefreshUnit(ctx, engine.DefaultPaths, nil)
+	// With the restart queued, systemd stops this process at once. What
+	// fails after that is the stop, not a fault.
+	stopping := func() bool { return changed && ctx.Err() != nil }
+	switch {
+	case stopping():
+		log.Info("containerd unit updated, restarting containerd (the core restarts with it)")
+		return 0
 	case err != nil:
 		log.Error("refresh the containerd unit", "err", err)
 	case changed:
-		log.Info("containerd unit updated, restarted containerd")
+		log.Info("containerd unit updated, restarting containerd (the core restarts with it)")
 	}
 
 	e, err := engine.Connect(ctx, engine.DefaultPaths)
 	if err != nil {
+		if stopping() {
+			return 0
+		}
 		log.Error("start core", "err", err)
 		return 1
 	}

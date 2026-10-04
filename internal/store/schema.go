@@ -452,5 +452,102 @@ CREATE TABLE file_favorites (
 	created_at INTEGER NOT NULL,
 	PRIMARY KEY (user_id, app_id, path)
 ) STRICT;
+`, `
+-- What the panel learned about the players of a game server from its
+-- console. A player is one id in one server: a SteamID64 for Rust, a UUID
+-- for Minecraft (or name:<name> before the log showed the UUID). play_seconds
+-- only counts sessions that have ended.
+CREATE TABLE players (
+	app_id       TEXT NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
+	player_id    TEXT NOT NULL,
+	name         TEXT NOT NULL,
+	first_seen   INTEGER NOT NULL,
+	last_seen    INTEGER NOT NULL,
+	last_ip      TEXT NOT NULL DEFAULT '',
+	play_seconds INTEGER NOT NULL DEFAULT 0,
+	PRIMARY KEY (app_id, player_id)
+) STRICT;
+CREATE INDEX players_seen ON players(app_id, last_seen);
+
+-- left_at is null while the player is in. The same player is never in twice.
+CREATE TABLE player_sessions (
+	id        INTEGER PRIMARY KEY,
+	app_id    TEXT NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
+	player_id TEXT NOT NULL,
+	name      TEXT NOT NULL,
+	ip        TEXT NOT NULL DEFAULT '',
+	joined_at INTEGER NOT NULL,
+	left_at   INTEGER,
+	reason    TEXT NOT NULL DEFAULT ''
+) STRICT;
+CREATE INDEX player_sessions_time ON player_sessions(app_id, joined_at);
+CREATE INDEX player_sessions_ip ON player_sessions(app_id, ip);
+CREATE INDEX player_sessions_player ON player_sessions(app_id, player_id, joined_at);
+
+CREATE TABLE player_chat (
+	id        INTEGER PRIMARY KEY,
+	app_id    TEXT NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
+	player_id TEXT NOT NULL,
+	name      TEXT NOT NULL,
+	channel   TEXT NOT NULL,
+	text      TEXT NOT NULL,
+	at        INTEGER NOT NULL
+) STRICT;
+CREATE INDEX player_chat_time ON player_chat(app_id, at);
+CREATE INDEX player_chat_player ON player_chat(app_id, player_id, at);
+
+CREATE TABLE player_reports (
+	id            INTEGER PRIMARY KEY,
+	app_id        TEXT NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
+	reporter_id   TEXT NOT NULL,
+	reporter_name TEXT NOT NULL DEFAULT '',
+	target_id     TEXT NOT NULL,
+	target_name   TEXT NOT NULL DEFAULT '',
+	subject       TEXT NOT NULL DEFAULT '',
+	message       TEXT NOT NULL DEFAULT '',
+	at            INTEGER NOT NULL
+) STRICT;
+CREATE INDEX player_reports_time ON player_reports(app_id, at);
+CREATE INDEX player_reports_target ON player_reports(app_id, target_id, at);
+
+-- A ban stands until expires_at (null: for good) or until it is lifted.
+CREATE TABLE player_bans (
+	id         INTEGER PRIMARY KEY,
+	app_id     TEXT NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
+	player_id  TEXT NOT NULL,
+	name       TEXT NOT NULL DEFAULT '',
+	reason     TEXT NOT NULL DEFAULT '',
+	created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+	created_at INTEGER NOT NULL,
+	expires_at INTEGER,
+	lifted_at  INTEGER,
+	lifted_by  INTEGER REFERENCES users(id) ON DELETE SET NULL
+) STRICT;
+CREATE INDEX player_bans_player ON player_bans(app_id, player_id);
+
+CREATE TABLE player_notes (
+	id         INTEGER PRIMARY KEY,
+	app_id     TEXT NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
+	player_id  TEXT NOT NULL,
+	tag        TEXT NOT NULL DEFAULT '',
+	note       TEXT NOT NULL DEFAULT '',
+	created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+	created_at INTEGER NOT NULL
+) STRICT;
+CREATE INDEX player_notes_player ON player_notes(app_id, player_id);
+
+-- Who did what in the panel. app_id is plain text, not a reference: the
+-- record of a deleted server stays.
+CREATE TABLE audit_log (
+	id         INTEGER PRIMARY KEY,
+	at         INTEGER NOT NULL,
+	account_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+	app_id     TEXT,
+	action     TEXT NOT NULL,
+	target     TEXT NOT NULL DEFAULT '',
+	detail     TEXT NOT NULL DEFAULT ''
+) STRICT;
+CREATE INDEX audit_log_app ON audit_log(app_id, at);
+CREATE INDEX audit_log_time ON audit_log(at);
 `,
 }
