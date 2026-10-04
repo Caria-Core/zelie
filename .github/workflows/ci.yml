@@ -167,6 +167,11 @@ jobs:
             if [ "$i" -lt 5 ]; then sleep 18; fi
           done
           echo "lowest of five: $best MB (limit $MAX_PSS_MB MB)"
+          # Where huge pages are left, by mapping.
+          for p in $(pgrep -x zelie); do
+            echo "== $(ps -o args= -p $p | cut -c1-30): $(sudo grep THP_enabled /proc/$p/status)"
+            sudo awk '/^[0-9a-f]+-[0-9a-f]+ / {m=$0} /^AnonHugePages:/ && $2 > 0 {print "  " $2 " kB " m}' /proc/$p/smaps
+          done
           ls -l /usr/local/bin/zelie
           for u in zelie-core zelie-panel zelie-proxy; do
             echo "== $u"
