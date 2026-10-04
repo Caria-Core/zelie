@@ -496,3 +496,36 @@ func TestVolumes(t *testing.T) {
 		}
 	}
 }
+
+func TestRevealOpensDatabasePasswordsOnly(t *testing.T) {
+	s, _ := newServer()
+	keys, err := secret.LoadOrCreate(filepath.Join(t.TempDir(), "secrets.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Secrets = keys
+	s.Allowed.Routes = map[uint32][]string{4242: SFTPRoutes}
+	panel := &peer.Peer{UID: 999}
+	ask := func(p *peer.Peer, app, sealedFor, name string) *httptest.ResponseRecorder {
+		sealed, _ := secret.Seal(keys.Public(), sealedFor, name, "hunter2")
+		return request(t, s, p, "POST", "/v1/secrets/reveal", `{"app":"`+app+`","sealed":"`+sealed+`"}`)
+	}
+
+	rec := ask(panel, "pg", "pg", "POSTGRES_PASSWORD")
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"value":"hunter2"`) {
+		t.Errorf("a database password: %d %s", rec.Code, rec.Body)
+	}
+	for _, name := range []string{"MARIADB_ROOT_PASSWORD", "TOKEN", "ZELIE_EXTERNAL_PASSWORD"} {
+		if rec := ask(panel, "pg", "pg", name); rec.Code != http.StatusForbidden || strings.Contains(rec.Body.String(), "hunter2") {
+			t.Errorf("%s: %d %s", name, rec.Code, rec.Body)
+		}
+	}
+	if rec := ask(panel, "other", "pg", "POSTGRES_PASSWORD"); rec.Code != http.StatusBadRequest || strings.Contains(rec.Body.String(), "hunter2") {
+		t.Errorf("another app's value: %d %s", rec.Code, rec.Body)
+	}
+	for _, p := range []*peer.Peer{{UID: 4242}, {UID: 1234}, nil} {
+		if rec := ask(p, "pg", "pg", "POSTGRES_PASSWORD"); rec.Code != http.StatusForbidden || strings.Contains(rec.Body.String(), "hunter2") {
+			t.Errorf("peer %v: %d %s", p, rec.Code, rec.Body)
+		}
+	}
+}

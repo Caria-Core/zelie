@@ -139,6 +139,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /v1/external/{app}", s.setExternal)
 	mux.HandleFunc("DELETE /v1/external/{app}", s.removeExternal)
 	mux.HandleFunc("GET /v1/secrets/key", s.secretKey)
+	mux.HandleFunc("POST /v1/secrets/reveal", s.reveal)
 	mux.HandleFunc("POST /v1/backups", s.createBackup)
 	mux.HandleFunc("GET /v1/backups/{app}", s.listBackups)
 	mux.HandleFunc("GET /v1/backups/{app}/{name}", s.downloadBackup)

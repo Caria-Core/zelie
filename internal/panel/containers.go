@@ -47,6 +47,7 @@ type Core interface {
 	Build(ctx context.Context, app, version string, env, sealedEnv []string, source io.Reader, out io.Writer) (build.Result, error)
 	Wait(ctx context.Context, id string) (int, error)
 	SecretKey(ctx context.Context) (secret.PublicKey, error)
+	Reveal(ctx context.Context, app, sealed string) (string, error)
 	Stop(ctx context.Context, id string, graceSeconds int) error
 	Remove(ctx context.Context, id string) error
 	Logs(ctx context.Context, id string, follow bool, tail int64, w io.Writer) error

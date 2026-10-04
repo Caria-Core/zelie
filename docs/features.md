@@ -67,9 +67,10 @@ page shows its memory and CPU as they are now.
 
 - PostgreSQL 18 and 17, MariaDB 11.8 and 10.11, and Redis 8, each in its own container
   with its own volume.
-- No port opens to the internet. Link a database to an app and the app reaches it by
-  name and gets `DATABASE_URL` or `REDIS_URL`, along with the engine's usual variables.
-  The password is sealed; nobody reads it in the panel.
+- No port opens to the internet. Link a database to an app or a game server and it
+  reaches the database by name and gets `DATABASE_URL` or `REDIS_URL`, along with the
+  engine's usual variables. The password is sealed. An administrator can have it shown,
+  for a game plugin's config file, after confirming it is them; each time is logged.
 - **Updates.** When a new patch release of the image is out, the panel offers it, and
   backs up before it switches. Moving to a new major version, such as PostgreSQL 17 to
   18, dumps the data, loads it into the new version on a new volume, and goes back to the

@@ -587,6 +587,15 @@ func (c *appCore) VolumeSizes(context.Context) (map[string]int64, error) {
 
 func (c *appCore) SecretKey(context.Context) (secret.PublicKey, error) { return c.keys.Public(), nil }
 
+func (c *appCore) Reveal(_ context.Context, app, sealed string) (string, error) {
+	opened, err := c.keys.Open(sealed, app)
+	if err != nil {
+		return "", err
+	}
+	_, value, _ := strings.Cut(opened, "=")
+	return value, nil
+}
+
 type fakeProxy struct {
 	mu    sync.Mutex
 	cfg   proxy.Config

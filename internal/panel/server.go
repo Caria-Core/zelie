@@ -193,6 +193,7 @@ func (s *Server) Handler() http.Handler {
 	web.HandleFunc("POST /api/apps/{app}/links", s.signedIn(s.addLink))
 	web.HandleFunc("PATCH /api/apps/{app}/links/{db}", s.signedIn(s.updateLink))
 	web.HandleFunc("DELETE /api/apps/{app}/links/{db}", s.signedIn(s.deleteLink))
+	web.HandleFunc("POST /api/apps/{app}/password", s.confirmed(requireAdmin(s.showPassword)))
 	web.HandleFunc("GET /api/databases/engines", s.signedIn(s.listEngines))
 	web.HandleFunc("POST /api/databases", s.signedIn(s.createDatabase))
 	web.HandleFunc("GET /api/apps/{app}/backups", s.signedIn(s.listBackups))

@@ -229,20 +229,24 @@ func (s *Server) startGame(ctx context.Context, app store.App, d store.Deploymen
 
 	vars := gameVars(app, g, node)
 	// A files app also gets what any app does: its own variables, PORT, and
-	// its databases' variables. The egg's values win where a name is in both.
+	// its databases' variables. A game server gets its databases' variables
+	// only. The egg's values win where a name is in both.
 	var sealed []string
 	var linked []core.LinkedVar
+	var plain []string
 	if app.IsFiles() {
-		var plain []string
-		if plain, sealed, linked, err = s.appEnv(ctx, app); err != nil {
-			fail(err)
-			return
-		}
-		for _, kv := range plain {
-			k, v, _ := strings.Cut(kv, "=")
-			if _, set := vars[k]; !set {
-				vars[k] = v
-			}
+		plain, sealed, linked, err = s.appEnv(ctx, app)
+	} else {
+		plain, linked, err = s.linkedEnv(ctx, app)
+	}
+	if err != nil {
+		fail(err)
+		return
+	}
+	for _, kv := range plain {
+		k, v, _ := strings.Cut(kv, "=")
+		if _, set := vars[k]; !set {
+			vars[k] = v
 		}
 	}
 	startup := egg.Expand(g.Startup, vars, app.Port)

@@ -127,10 +127,13 @@ address, or through a Cloudflare Tunnel with no open web ports at all.
 MariaDB, PostgreSQL and Redis each run in a container of their own, with a volume for
 their files. A database never gets a public port. Each app is on a network of its own and the
 firewall drops traffic between them; linking a database to an app opens one way through,
-to the database's one port, so the app reaches it by name. The app also gets variables to
-connect with. The
-password is sealed for the core: the panel stores it but cannot read it, and only the
-core opens it, when it starts the database or a linked app.
+to the database's one port, so the app reaches it by name. Game servers link the same
+way. The app also gets variables to connect with. The password is sealed for the core:
+the panel stores it but cannot read it, and the core opens it when it starts the database
+or a linked app. Game plugins read it from their own config files, so an administrator
+may also have it shown, after a second step from the last 15 minutes; the core opens only
+the passwords of the databases' app users for this, never a root password, and every time
+it is shown is logged.
 
 Anything that reads a database, such as a backup or the Data tab, runs the engine's own
 client inside the database's container, started by the core. The panel asks for what it

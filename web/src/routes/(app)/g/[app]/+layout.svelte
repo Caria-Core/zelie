@@ -134,6 +134,7 @@
 		{ href: `/g/${id}/schedules`, label: t('game.tab.schedules') },
 		{ href: `/g/${id}/metrics`, label: t('game.tab.metrics') },
 		{ href: `/g/${id}/network`, label: t('game.tab.network') },
+		{ href: `/g/${id}/database`, label: t('game.tab.database') },
 		{ href: `/g/${id}/settings`, label: t('game.tab.settings') }
 	]);
 </script>

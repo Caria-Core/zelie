@@ -95,6 +95,7 @@ export default {
 	'msg.db.bad_version': '{engine} comes in versions {versions}.',
 	'msg.db.fixed': 'Only a database\'s memory and CPU can change.',
 	'msg.db.name_taken': 'An app or database with that name already exists.',
+	'msg.db.no_password': 'This database has no password to show.',
 	'msg.deploy.bad_answer': 'The app answered {status} at {path} on port {port}. It has to answer with a status below 500 within {seconds} seconds.',
 	'msg.deploy.database_no_answer': 'The database did not accept connections on port {port} within {seconds} seconds.',
 	'msg.deploy.never_live': 'Only a version that was live can be rolled back to.',

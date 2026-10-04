@@ -316,10 +316,21 @@ func (s *Server) linksOut(ctx context.Context, a store.App) ([]linkJSON, error) 
 	return out, nil
 }
 
+// linkedAppFrom is appFrom for changing links. Game servers are managed by
+// administrators, so changing what they connect to is too.
+func (s *Server) linkedAppFrom(w http.ResponseWriter, r *http.Request) (store.App, bool) {
+	a, ok := s.appFrom(w, r)
+	if ok && a.IsGame() && !loginFrom(r.Context()).account.Admin {
+		writeError(w, errAdminOnly.Err())
+		return a, false
+	}
+	return a, ok
+}
+
 // addLink links an app to a database. The app can reach it at once; its
 // variables arrive with the app's next start.
 func (s *Server) addLink(w http.ResponseWriter, r *http.Request) {
-	a, ok := s.appFrom(w, r)
+	a, ok := s.linkedAppFrom(w, r)
 	if !ok {
 		return
 	}
@@ -355,7 +366,7 @@ func (s *Server) addLink(w http.ResponseWriter, r *http.Request) {
 
 // updateLink changes the prefix of a link's variables.
 func (s *Server) updateLink(w http.ResponseWriter, r *http.Request) {
-	a, ok := s.appFrom(w, r)
+	a, ok := s.linkedAppFrom(w, r)
 	if !ok {
 		return
 	}
@@ -384,7 +395,7 @@ func (s *Server) updateLink(w http.ResponseWriter, r *http.Request) {
 // deleteLink unlinks. The app cannot reach the database from then on,
 // running or not.
 func (s *Server) deleteLink(w http.ResponseWriter, r *http.Request) {
-	a, ok := s.appFrom(w, r)
+	a, ok := s.linkedAppFrom(w, r)
 	if !ok {
 		return
 	}
@@ -584,4 +595,44 @@ func (s *Server) syncAllLinks(ctx context.Context) {
 			s.Log.Error("links: sync", "app", a.ID, "err", err)
 		}
 	}
+}
+
+var errNoPassword = msg.Define(http.StatusConflict, "db.no_password", "This database has no password to show.")
+
+type passwordJSON struct {
+	Password string `json:"password"`
+}
+
+// showPassword gives an administrator a database's password. It sits behind
+// a recent second step and is logged, since the password opens everything in
+// the database.
+func (s *Server) showPassword(w http.ResponseWriter, r *http.Request) {
+	a, e, ok := s.databaseFrom(w, r)
+	if !ok {
+		return
+	}
+	ctx := r.Context()
+	vars, err := s.Store.Env(ctx, a.ID)
+	if err != nil {
+		s.fail(w, "read variables", err)
+		return
+	}
+	sealed := ""
+	for _, v := range vars {
+		if v.Name == e.PasswordVar && v.Secret {
+			sealed = v.Value
+		}
+	}
+	if sealed == "" {
+		writeError(w, errNoPassword.Err())
+		return
+	}
+	password, err := s.Core.Reveal(ctx, a.ID, sealed)
+	if err != nil {
+		s.coreFailed(w, "open the password", err)
+		return
+	}
+	s.Log.Info("database password shown", "db", a.ID, "user", loginFrom(ctx).account.ID)
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, passwordJSON{Password: password})
 }

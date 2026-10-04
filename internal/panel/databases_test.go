@@ -7,7 +7,9 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/Caria-Core/zelie/internal/core"
 	"github.com/Caria-Core/zelie/internal/engine"
 	"github.com/Caria-Core/zelie/internal/store"
 )
@@ -182,4 +184,86 @@ func value(env []string, name string) string {
 		}
 	}
 	return ""
+}
+
+func TestShowPassword(t *testing.T) {
+	e := newAppEnv(t)
+	e.b.do("POST", "/api/databases", map[string]any{"id": "pg", "engine": "postgres"})
+	d := e.settle(t, "pg")
+	password := value(e.core.env[fmt.Sprintf("pg-%d", d.ID)], "POSTGRES_PASSWORD")
+	e.b.do("POST", "/api/apps", map[string]any{"id": "web", "source": "image", "image": "nginx"})
+	e.settle(t, "web")
+
+	code, out := e.b.do("POST", "/api/apps/pg/password", nil)
+	if code != http.StatusOK || out["password"] != password {
+		t.Fatalf("show: %d %v", code, out)
+	}
+	if code, out := e.b.do("POST", "/api/apps/web/password", nil); code != http.StatusConflict || out["code"] != "external.not_database" {
+		t.Errorf("an app: %d %v", code, out)
+	}
+	if code, out := e.asCustomer(t, requireAdmin(e.s.showPassword), "POST", "pg", nil); code != http.StatusForbidden || out["password"] != nil {
+		t.Errorf("not an administrator: %d %v", code, out)
+	}
+	// Without a recent second step it asks for one first.
+	confirmedAt := e.s.now()
+	e.s.Now = func() time.Time { return confirmedAt.Add(time.Hour) }
+	if code, out := e.b.do("POST", "/api/apps/pg/password", nil); code != http.StatusForbidden || out["confirm"] != true || out["password"] != nil {
+		t.Errorf("without confirming: %d %v", code, out)
+	}
+}
+
+// The core opens only the passwords it is told may be shown.
+func TestEnginePasswordsAreRevealable(t *testing.T) {
+	for _, e := range dbEngines {
+		if !slices.Contains(core.RevealableNames, e.PasswordVar) {
+			t.Errorf("%s: the core would not show %s", e.Name, e.PasswordVar)
+		}
+		if e.RootPasswordVar != "" && slices.Contains(core.RevealableNames, e.RootPasswordVar) {
+			t.Errorf("%s: the core would show the root password", e.Name)
+		}
+	}
+}
+
+func TestGameServersLinkToDatabases(t *testing.T) {
+	e, _ := newGameEnv(t)
+	e.b.do("POST", "/api/databases", map[string]any{"id": "pg", "engine": "postgres"})
+	d := e.settle(t, "pg")
+	password := value(e.core.env[fmt.Sprintf("pg-%d", d.ID)], "POSTGRES_PASSWORD")
+	if code, out := e.b.do("POST", "/api/games", map[string]any{"name": "survival", "egg": "minecraft-paper"}); code != http.StatusCreated {
+		t.Fatalf("create: %d %v", code, out)
+	}
+	e.install(t, "survival")
+
+	for _, c := range []struct {
+		h    http.HandlerFunc
+		verb string
+	}{{e.s.addLink, "POST"}, {e.s.updateLink, "PATCH"}, {e.s.deleteLink, "DELETE"}} {
+		if code, out := e.asCustomer(t, c.h, c.verb, "survival", map[string]any{"db": "pg"}); code != http.StatusForbidden || out["code"] != "session.admin_only" {
+			t.Errorf("%s as a customer: %d %v", c.verb, code, out)
+		}
+	}
+	if links, _ := e.s.Store.Links(context.Background(), "survival", ""); len(links) != 0 {
+		t.Fatalf("a refused link was saved: %v", links)
+	}
+	if code, out := e.b.do("POST", "/api/apps/survival/links", map[string]any{"db": "pg"}); code != http.StatusCreated {
+		t.Fatalf("link: %d %v", code, out)
+	}
+	if got := e.core.links["survival"]; len(got) != 1 || got[0].To != "pg" {
+		t.Errorf("core links %v", got)
+	}
+
+	if code, out := e.b.do("POST", "/api/games/survival/power", map[string]any{"action": "start"}); code != http.StatusAccepted {
+		t.Fatalf("start: %d %v", code, out)
+	}
+	e.settle(t, "survival")
+	var env []string
+	for _, spec := range e.core.games {
+		env = spec.Env
+	}
+	if value(env, "PGHOST") != "pg" || value(env, "DATABASE_URL") != "postgresql://app:"+password+"@pg:5432/app" {
+		t.Errorf("game env %v", env)
+	}
+	if value(env, "PORT") != "" {
+		t.Errorf("a game server got PORT: %v", env)
+	}
 }

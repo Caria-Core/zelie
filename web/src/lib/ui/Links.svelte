@@ -5,14 +5,15 @@
 	import { apps, engineLabel, isDatabase, isGame, reload, type App, type Link } from '$lib/apps.svelte';
 	import { restart } from '$lib/current.svelte';
 	import { messageOf } from '$lib/errors';
+	import { power } from '$lib/games.svelte';
 	import { t } from '$lib/i18n';
 	import AppIcon from './AppIcon.svelte';
 	import Button from './Button.svelte';
 	import ErrorText from './ErrorText.svelte';
 
-	// The links of an app to its databases, or of a database to its apps:
-	// the same links seen from either end.
-	let { app }: { app: App } = $props();
+	// The links of an app or game server to its databases, or of a database to
+	// the apps and servers linked to it: the same links seen from either end.
+	let { app, onchange }: { app: App; onchange?: (links: Link[]) => void } = $props();
 	const fromDatabase = $derived(isDatabase(app));
 
 	let links = $state<Link[] | null>(null);
@@ -28,6 +29,7 @@
 			error = messageOf(err);
 			return [];
 		});
+		onchange?.(links);
 	}
 	$effect(() => {
 		app.id;
@@ -37,7 +39,7 @@
 
 	// What can still be linked: databases for an app, apps for a database.
 	const options = $derived(
-		apps.list.filter((a) => !isGame(a) && isDatabase(a) !== fromDatabase && !links?.some((l) => l.db === a.id))
+		apps.list.filter((a) => isDatabase(a) !== fromDatabase && !links?.some((l) => l.db === a.id))
 	);
 	$effect(() => {
 		if (!options.some((o) => o.id === choice)) choice = options[0]?.id ?? '';
@@ -79,7 +81,10 @@
 	async function apply(id: string) {
 		busy = true;
 		try {
-			await restart(id);
+			// A game server restarts through its power controls.
+			const target = appNamed(id);
+			if (target && isGame(target)) await power(id, 'restart');
+			else await restart(id);
 			await reload();
 			pending = pending.filter((p) => p !== id);
 		} catch (err) {
@@ -97,7 +102,7 @@
 <section class="flex flex-col gap-4">
 	<div>
 		<h2 class="font-medium">{fromDatabase ? t('links.appsTitle') : t('links.dbTitle')}</h2>
-		<p class="text-sm text-muted">{fromDatabase ? t('links.appsLead') : t('links.dbLead')}</p>
+		<p class="text-sm text-muted">{fromDatabase ? t('links.appsLead') : isGame(app) ? t('links.gameLead') : t('links.dbLead')}</p>
 	</div>
 
 	{#if links && links.length > 0}
@@ -106,12 +111,12 @@
 				{@const other = appNamed(l.db)}
 				<li class="flex flex-col gap-3 rounded-2xl border border-line p-4">
 					<div class="flex items-center justify-between gap-3">
-						<a href="/a/{l.db}" class="flex min-w-0 items-center gap-3 hover:underline">
-							<AppIcon source={other?.source ?? 'image'} database={!fromDatabase} />
+						<a href="{other && isGame(other) ? '/g' : '/a'}/{l.db}" class="flex min-w-0 items-center gap-3 hover:underline">
+							<AppIcon source={other?.source ?? 'image'} database={!fromDatabase} game={!!other && isGame(other)} />
 							<span class="min-w-0">
 								<span class="block truncate font-medium">{l.db}</span>
 								<span class="block text-sm text-muted"
-									>{fromDatabase ? t('links.app') : `${engineLabel[l.engine]} ${other?.engine_version ?? ''}`}{l.prefix
+									>{fromDatabase ? (other && isGame(other) ? t('links.game') : t('links.app')) : `${engineLabel[l.engine]} ${other?.engine_version ?? ''}`}{l.prefix
 										? ' · ' + t('links.prefix', { prefix: l.prefix })
 										: ''}</span
 								>
@@ -143,7 +148,7 @@
 			<div class="flex min-w-40 flex-1 flex-col gap-1.5 text-sm font-medium">
 				<label for="{uid}-choice">{fromDatabase ? t('links.chooseApp') : t('links.chooseDatabase')}</label>
 				<select id="{uid}-choice" class="h-10 rounded-xl border border-line bg-bg px-3 text-[15px] font-normal" bind:value={choice}>
-					{#each options as o (o.id)}<option value={o.id}>{o.id}{o.engine ? ` (${engineLabel[o.engine]})` : ''}</option>{/each}
+					{#each options as o (o.id)}<option value={o.id}>{o.id}{o.engine ? ` (${engineLabel[o.engine]})` : isGame(o) ? ` (${t('links.game')})` : ''}</option>{/each}
 				</select>
 			</div>
 			<label class="flex w-40 flex-col gap-1.5 text-sm font-medium">

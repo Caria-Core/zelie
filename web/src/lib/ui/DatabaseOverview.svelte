@@ -7,9 +7,10 @@
 	import { t } from '$lib/i18n';
 	import Links from './Links.svelte';
 	import OutsideAccess from './OutsideAccess.svelte';
+	import PasswordRow from './PasswordRow.svelte';
 
-	// How apps reach a database. The password is never shown: Zelie hands
-	// it to the apps linked to the database, and to nobody else.
+	// How apps reach a database. Zelie hands the password to the apps linked
+	// to it; an administrator can also have it shown, after a fresh confirmation.
 	let { app }: { app: App } = $props();
 	const user = 'app';
 	const rows = $derived([
@@ -47,6 +48,7 @@
 				</div>
 			{/each}
 		</dl>
+		<PasswordRow db={app.id} />
 		<ul class="flex flex-col gap-2 text-sm text-muted">
 			<li class="flex gap-2.5"><ShieldCheck size={16} strokeWidth={1.75} class="mt-0.5 shrink-0 text-fg" />{t('db.private')}</li>
 			<li class="flex gap-2.5"><KeyRound size={16} strokeWidth={1.75} class="mt-0.5 shrink-0 text-fg" />{t('db.passwordShort')}</li>
