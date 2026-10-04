@@ -142,18 +142,21 @@ jobs:
               sudo awk -v p="$p" '/^(Pss|Private_Dirty|Private_Clean):/ {v[$1]=$2} END {printf "%s pss=%d private=%d kB\n", p, v["Pss:"], v["Private_Dirty:"]+v["Private_Clean:"]}' /proc/$p/smaps_rollup
             done
           }
-          # The processes hand free memory back every half minute, so the
-          # first reading may catch start-up work not yet handed back. The
-          # limit applies to the second, a minute after the update.
+          # The processes hand free memory back every half minute, so a single
+          # reading lands before or after that at random: the same commit read
+          # 80 and 91 MB. Five readings over 90 seconds are printed and the
+          # limit applies to the lowest, which is the idle footprint.
           sleep 20
-          echo "== after 20 s"
-          measure | awk '{print} /pss=/ {split($2,a,"="); t+=a[2]} END {printf "zelie total pss: %.1f MB\n", t/1024}'
-          sleep 40
-          echo "== after 60 s"
-          measure | awk -v max="$MAX_PSS_MB" '{print} /pss=/ {split($2,a,"="); t+=a[2]} END {
-            printf "zelie total pss: %.1f MB (limit %d MB)\n", t/1024, max
-            if (t/1024 > max) { print "zelie uses more memory than its limit"; exit 1 }
-          }'
+          best=
+          for i in 1 2 3 4 5; do
+            echo "== reading $i"
+            total=$(measure | tee /dev/stderr | awk '/pss=/ {split($2,a,"="); t+=a[2]} END {printf "%.1f", t/1024}')
+            echo "zelie total pss: $total MB"
+            best=$(awk -v a="$best" -v b="$total" 'BEGIN {print (a == "" || b < a) ? b : a}')
+            if [ "$i" -lt 5 ]; then sleep 18; fi
+          done
+          echo "lowest of five: $best MB (limit $MAX_PSS_MB MB)"
+          awk -v t="$best" -v max="$MAX_PSS_MB" 'BEGIN { if (t > max) { print "zelie uses more memory than its limit"; exit 1 } }'
           ls -l /usr/local/bin/zelie
       - name: Game server
         if: matrix.from == 'latest'

@@ -3,13 +3,16 @@ package players
 import (
 	"regexp"
 	"strings"
+	"sync"
 )
 
 var (
 	// "There are 1 of a max of 20 players online: Steve" is vanilla's,
 	// "There are 1/20 players online:" is Spigot's and Paper's.
-	mcListHead = regexp.MustCompile(`^There are (\d+)(?: of a max of |/)(\d+) players online:\s*(.*)$`)
-	mcUUIDTail = regexp.MustCompile(` \([0-9a-fA-F-]{32,36}\)$`)
+	mcListHead = sync.OnceValue(func() *regexp.Regexp {
+		return regexp.MustCompile(`^There are (\d+)(?: of a max of |/)(\d+) players online:\s*(.*)$`)
+	})
+	mcUUIDTail = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(` \([0-9a-fA-F-]{32,36}\)$`) })
 )
 
 // MinecraftList reads the server's answer to the list command from its
@@ -24,7 +27,7 @@ type MinecraftList struct {
 
 // Feed takes one console line and reports whether the answer is complete.
 func (l *MinecraftList) Feed(line string) (done bool) {
-	sub := mcPrefix.FindStringSubmatch(strings.TrimRight(line, " \t\r"))
+	sub := mcPrefix().FindStringSubmatch(strings.TrimRight(line, " \t\r"))
 	if sub == nil {
 		return false
 	}
@@ -33,7 +36,7 @@ func (l *MinecraftList) Feed(line string) (done bool) {
 		l.Names = mcNames(text)
 		return true
 	}
-	h := mcListHead.FindStringSubmatch(text)
+	h := mcListHead().FindStringSubmatch(text)
 	if h == nil {
 		return false
 	}
@@ -55,7 +58,7 @@ func (l *MinecraftList) Pending() bool { return l.head && l.waiting }
 func mcNames(s string) []string {
 	var out []string
 	for _, n := range strings.Split(s, ",") {
-		n = mcUUIDTail.ReplaceAllString(strings.TrimSpace(n), "")
+		n = mcUUIDTail().ReplaceAllString(strings.TrimSpace(n), "")
 		// Paper can prefix a group, "default: Steve".
 		if i := strings.LastIndex(n, ": "); i >= 0 {
 			n = n[i+2:]

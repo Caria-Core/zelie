@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -19,10 +20,12 @@ const (
 var (
 	// Both start the line: a player's chat can contain anything, but it
 	// never starts a line of its own.
-	rustJoin       = regexp.MustCompile(`^([^/\s]+)/(\d{17})/(.*) joined \[[^\]/]*/(\d{17})\]\s*$`)
-	rustLeaveAddr  = regexp.MustCompile(`^([^/\s]+)/(\d{17})/(.*) disconnecting: (.*)$`)
-	rustLeaveID    = regexp.MustCompile(`^(.*)\[(\d{17})\] disconnecting: (.*)$`)
-	steamID        = regexp.MustCompile(`\b\d{17}\b`)
+	rustJoin = sync.OnceValue(func() *regexp.Regexp {
+		return regexp.MustCompile(`^([^/\s]+)/(\d{17})/(.*) joined \[[^\]/]*/(\d{17})\]\s*$`)
+	})
+	rustLeaveAddr  = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^([^/\s]+)/(\d{17})/(.*) disconnecting: (.*)$`) })
+	rustLeaveID    = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^(.*)\[(\d{17})\] disconnecting: (.*)$`) })
+	steamID        = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`\b\d{17}\b`) })
 	betterChatLine = "[Better Chat]"
 )
 
@@ -84,13 +87,13 @@ func rustLine(line string) []Event {
 		// What a player typed must not be able to fill the log with near misses.
 		return nil
 	}
-	if m := rustJoin.FindStringSubmatch(line); m != nil {
+	if m := rustJoin().FindStringSubmatch(line); m != nil {
 		return []Event{{Kind: Join, PlayerID: m[2], Name: m[3], IP: stripPort(m[1])}}
 	}
-	if m := rustLeaveAddr.FindStringSubmatch(line); m != nil {
+	if m := rustLeaveAddr().FindStringSubmatch(line); m != nil {
 		return []Event{{Kind: Leave, PlayerID: m[2], Name: m[3], IP: stripPort(m[1]), Reason: m[4]}}
 	}
-	if m := rustLeaveID.FindStringSubmatch(line); m != nil {
+	if m := rustLeaveID().FindStringSubmatch(line); m != nil {
 		return []Event{{Kind: Leave, PlayerID: m[2], Name: m[1], Reason: m[3]}}
 	}
 	switch {
@@ -145,7 +148,7 @@ func rustBlock(text string) []Event {
 }
 
 func looksLikeReport(s string) bool {
-	return strings.Contains(strings.ToLower(s), "report") && len(steamID.FindAllString(s, 2)) >= 2
+	return strings.Contains(strings.ToLower(s), "report") && len(steamID().FindAllString(s, 2)) >= 2
 }
 
 func nearMiss(what, text string) []Event {
