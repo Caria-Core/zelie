@@ -141,9 +141,9 @@ jobs:
         # counted; and the size of the binary.
         env:
           # Idle, with a few apps and databases running. The runner measured
-          # 82 MB before the memory work; this keeps it from creeping back up.
-          # Tighten it once a run here shows the new number.
-          MAX_PSS_MB: 90
+          # 70 MB once huge pages were kept out (85 to 89 MB before); this
+          # keeps it from creeping back up.
+          MAX_PSS_MB: 78
         run: |
           # RSS counts the binary's shared pages once per process; PSS splits them.
           measure() {
