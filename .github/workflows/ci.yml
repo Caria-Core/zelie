@@ -115,6 +115,16 @@ jobs:
           go build -o upgrade ./hack/upgrade
       - name: Seed
         run: sudo ./upgrade seed
+      - name: Trace the collector
+        # Each collection logs the live heap, its goal, stacks and globals,
+        # which the footprint alone does not show.
+        run: |
+          for u in zelie-core zelie-panel zelie-proxy; do
+            sudo mkdir -p /etc/systemd/system/$u.service.d
+            printf '[Service]\nEnvironment=GODEBUG=gctrace=1\n' |
+              sudo tee /etc/systemd/system/$u.service.d/gctrace.conf
+          done
+          sudo systemctl daemon-reload
       - name: Update
         # What the running version's core does once it has checked a release.
         run: |
@@ -156,8 +166,12 @@ jobs:
             if [ "$i" -lt 5 ]; then sleep 18; fi
           done
           echo "lowest of five: $best MB (limit $MAX_PSS_MB MB)"
-          awk -v t="$best" -v max="$MAX_PSS_MB" 'BEGIN { if (t > max) { print "zelie uses more memory than its limit"; exit 1 } }'
           ls -l /usr/local/bin/zelie
+          for u in zelie-core zelie-panel zelie-proxy; do
+            echo "== $u"
+            sudo journalctl -u $u --since "-100s" --no-pager -o cat | grep '^gc ' || true
+          done
+          awk -v t="$best" -v max="$MAX_PSS_MB" 'BEGIN { if (t > max) { print "zelie uses more memory than its limit"; exit 1 } }'
       - name: Game server
         if: matrix.from == 'latest'
         run: sudo ./upgrade game
