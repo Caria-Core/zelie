@@ -263,3 +263,46 @@ func (in *Installer) logf(format string, args ...any) {
 		fmt.Fprintf(in.Log, format+"\n", args...)
 	}
 }
+
+// RefreshUnit rewrites containerd's unit and config when this binary renders
+// them differently, so changes reach servers that were installed by an older
+// version. Updates swap the binary but never run the installer. Nothing
+// happens when the unit does not exist: the engine was never installed here.
+//
+// The restart is safe for running containers, see UnitFile. It uses
+// --no-block because zelie-core.service requires containerd: restarting
+// containerd restarts the core too, and waiting for that job from inside the
+// core would wait on our own stop. The core comes back, finds the files
+// unchanged and carries on.
+func RefreshUnit(ctx context.Context, p Paths, systemctl func(ctx context.Context, args ...string) error) (bool, error) {
+	if systemctl == nil {
+		systemctl = runSystemctl
+	}
+	if _, err := os.Stat(p.Unit); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, err
+	}
+	changed := false
+	for file, content := range map[string]string{
+		p.Config: ConfigFile(p),
+		p.Unit:   UnitFile(p),
+	} {
+		c, err := writeIfChanged(file, []byte(content), 0o644)
+		if err != nil {
+			return changed, err
+		}
+		changed = changed || c
+	}
+	if !changed {
+		return false, nil
+	}
+	if err := systemctl(ctx, "daemon-reload"); err != nil {
+		return true, err
+	}
+	if err := systemctl(ctx, "restart", "--no-block", filepath.Base(p.Unit)); err != nil {
+		return true, err
+	}
+	return true, nil
+}

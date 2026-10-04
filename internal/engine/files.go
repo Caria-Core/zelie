@@ -31,7 +31,10 @@ disabled_plugins = [
 // containerd stops or restarts, systemd kills only containerd itself and
 // leaves the shims, and therefore every running container, alone.
 // LimitNOFILE is the ceiling for what containers can ask for: see
-// Engine.openFiles.
+// Engine.openFiles. containerd looks for unpigz and igzip once and keeps
+// using the path it found, so a package manager removing one, as happens
+// when Docker is uninstalled, broke every pull until a restart; Go's own
+// gzip is used instead.
 func UnitFile(p Paths) string {
 	path := strings.Join([]string{p.Bin, "/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"}, ":")
 	return fmt.Sprintf(`# Managed by Zelie. Changes are overwritten on upgrade.
@@ -44,6 +47,7 @@ After=network.target local-fs.target
 ExecStartPre=-/sbin/modprobe overlay
 ExecStart=%s --config %s
 Environment=PATH=%s
+Environment=CONTAINERD_DISABLE_PIGZ=1 CONTAINERD_DISABLE_IGZIP=1
 Type=notify
 Delegate=yes
 KillMode=process

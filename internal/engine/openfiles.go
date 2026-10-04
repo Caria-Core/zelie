@@ -21,9 +21,8 @@ const MaxOpenFiles = 1 << 20
 // A process cannot raise its hard limit above the one it inherited, and a
 // container's limit is set by runc, which inherits from containerd. So the
 // limit a container gets is what was asked for, but no more than the hard
-// limit containerd runs with (the unit sets it to MaxOpenFiles, and a
-// machine that has not restarted containerd since an update still has the
-// old one) and no more than the kernel's fs.nr_open.
+// limit containerd runs with (the unit sets it to MaxOpenFiles, and the
+// core refreshes the unit at start, but a hand-edited unit may differ) and no more than the kernel's fs.nr_open.
 func (e *Engine) openFiles(want uint64) uint64 {
 	if want == 0 {
 		return 0

@@ -178,7 +178,7 @@ func TestExtractMissingBinary(t *testing.T) {
 
 func TestUnitKeepsContainersOnRestart(t *testing.T) {
 	unit := UnitFile(DefaultPaths)
-	for _, want := range []string{"KillMode=process", "Delegate=yes", "--config /etc/zelie/containerd.toml", "LimitNOFILE=1048576"} {
+	for _, want := range []string{"KillMode=process", "Delegate=yes", "--config /etc/zelie/containerd.toml", "LimitNOFILE=1048576", "CONTAINERD_DISABLE_PIGZ=1"} {
 		if !strings.Contains(unit, want) {
 			t.Errorf("unit file lacks %q", want)
 		}
@@ -197,5 +197,51 @@ func TestArtifactsCoverSupportedArchitectures(t *testing.T) {
 				t.Errorf("%s/%s artifact looks wrong: %+v", name, arch, a)
 			}
 		}
+	}
+}
+
+func TestRefreshUnit(t *testing.T) {
+	dir := t.TempDir()
+	p := Paths{Config: filepath.Join(dir, "etc", "config.toml"), Unit: filepath.Join(dir, "unit", "zelie-containerd.service")}
+	var calls []string
+	fake := func(_ context.Context, args ...string) error {
+		calls = append(calls, strings.Join(args, " "))
+		return nil
+	}
+
+	changed, err := RefreshUnit(context.Background(), p, fake)
+	if err != nil || changed || len(calls) != 0 {
+		t.Fatalf("no unit: changed=%v err=%v calls=%v", changed, err, calls)
+	}
+	if _, err := os.Stat(p.Config); err == nil {
+		t.Fatal("config written although the engine is not installed")
+	}
+
+	if err := os.MkdirAll(filepath.Dir(p.Unit), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p.Unit, []byte("[Service]\nold\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	changed, err = RefreshUnit(context.Background(), p, fake)
+	if err != nil || !changed {
+		t.Fatalf("old unit: changed=%v err=%v", changed, err)
+	}
+	want := []string{"daemon-reload", "restart --no-block zelie-containerd.service"}
+	if !slices.Equal(calls, want) {
+		t.Fatalf("calls = %v, want %v", calls, want)
+	}
+	got, _ := os.ReadFile(p.Unit)
+	if string(got) != UnitFile(p) {
+		t.Fatal("unit was not rewritten")
+	}
+	if got, _ := os.ReadFile(p.Config); string(got) != ConfigFile(p) {
+		t.Fatal("config was not written")
+	}
+
+	calls = nil
+	changed, err = RefreshUnit(context.Background(), p, fake)
+	if err != nil || changed || len(calls) != 0 {
+		t.Fatalf("unchanged: changed=%v err=%v calls=%v", changed, err, calls)
 	}
 }

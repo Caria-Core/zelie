@@ -30,6 +30,10 @@ func runCore(stderr io.Writer) int {
 		fmt.Fprintln(stderr, "zelie: the core needs root")
 		return 1
 	}
+	// The containerd client unpacks some layers in this process too; see
+	// engine.UnitFile for why it must not depend on unpigz.
+	os.Setenv("CONTAINERD_DISABLE_PIGZ", "1")
+	os.Setenv("CONTAINERD_DISABLE_IGZIP", "1")
 	log := slog.New(slog.NewTextHandler(stderr, nil))
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -58,6 +62,16 @@ func runCore(stderr io.Writer) int {
 	// first connection.
 	if _, err := sftpSocket.EnsureHostKey(); err != nil {
 		log.Error("make the SFTP host key", "err", err)
+	}
+
+	// Updates only swap the binary, so containerd's unit changes reach old
+	// installs here. A restart also restarts this core (Requires=), and the
+	// second start finds nothing to change.
+	switch changed, err := engine.RefreshUnit(ctx, engine.DefaultPaths, nil); {
+	case err != nil:
+		log.Error("refresh the containerd unit", "err", err)
+	case changed:
+		log.Info("containerd unit updated, restarted containerd")
 	}
 
 	e, err := engine.Connect(ctx, engine.DefaultPaths)
