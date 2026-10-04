@@ -161,7 +161,8 @@ jobs:
           best=
           for i in 1 2 3 4 5; do
             echo "== reading $i"
-            total=$(measure | tee /dev/stderr | awk '/pss=/ {split($2,a,"="); t+=a[2]} END {printf "%.1f", t/1024}')
+            total=$(measure | tee /dev/stderr | awk '/pss=/ {split($2,a,"="); t+=a[2]; n++} END {if (n >= 3) printf "%.1f", t/1024}')
+            if [ -z "$total" ]; then echo "expected the core, proxy and panel"; exit 1; fi
             echo "zelie total pss: $total MB"
             best=$(awk -v a="$best" -v b="$total" 'BEGIN {print (a == "" || b < a) ? b : a}')
             if [ "$i" -lt 5 ]; then sleep 18; fi

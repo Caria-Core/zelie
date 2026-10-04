@@ -21,6 +21,9 @@ func noHugePages() {
 	if unix.Prctl(unix.PR_SET_THP_DISABLE, 1, 0, 0, 0) != nil {
 		return
 	}
-	// If exec fails, carry on as is.
-	_ = unix.Exec("/proc/self/exe", os.Args, os.Environ())
+	// By its own path rather than /proc/self/exe, which would rename the
+	// process to "exe". If exec fails, carry on as is.
+	if exe, err := os.Executable(); err == nil {
+		_ = unix.Exec(exe, os.Args, os.Environ())
+	}
 }
