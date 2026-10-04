@@ -299,7 +299,8 @@
 							<Play size={16} strokeWidth={1.75} />{t('app.start')}
 						</Button>
 					{/if}
-				{:else if a.stopped}
+				{:else if a.stopped || a.state === 'none'}
+					<!-- Never started, or the first start failed: start deploys it. -->
 					<Button kind="secondary" onclick={() => run(start)} busy={starting || busy()} disabled={!!a.volume_full} title={a.volume_full ? say(a.volume_full) : undefined}>
 						<Play size={16} strokeWidth={1.75} />{t('app.start')}
 					</Button>
