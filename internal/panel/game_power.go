@@ -91,14 +91,17 @@ func (g *gameRuns) set(app, container, state string) {
 	g.byApp[app] = gameRun{container, state}
 }
 
-// advance moves a container from starting to running. It does nothing for a
-// container that has been replaced or is being stopped.
-func (g *gameRuns) advance(app, container string) {
+// advance moves a container from starting to running and says whether it
+// did. It does nothing for a container that has been replaced or is being
+// stopped.
+func (g *gameRuns) advance(app, container string) bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if r, ok := g.byApp[app]; ok && r.container == container && r.state == stateStarting {
 		g.byApp[app] = gameRun{container, stateRunning}
+		return true
 	}
+	return false
 }
 
 func (g *gameRuns) get(app string) (gameRun, bool) {

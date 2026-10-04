@@ -500,7 +500,9 @@ func (s *Server) watchGame(a store.App, container string, e *egg.Egg, g store.Ga
 	answers := a.IsFiles() && a.Domain != ""
 	if matched && !answers {
 		// The egg says nothing to wait for.
-		s.gameRuns.advance(app, container)
+		if s.gameRuns.advance(app, container) {
+			s.gameReady(app, container)
+		}
 	}
 	if answers {
 		s.watchers.Add(1)
@@ -558,7 +560,9 @@ func (s *Server) watchGame(a store.App, container string, e *egg.Egg, g store.Ga
 				}
 				if !matched && done.Match(plain) {
 					matched = true
-					s.gameRuns.advance(app, container)
+					if s.gameRuns.advance(app, container) {
+						s.gameReady(app, container)
+					}
 				}
 				if eula && refusesEULA(plain) {
 					h.eulaNeeded(container)

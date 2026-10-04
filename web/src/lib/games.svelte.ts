@@ -62,6 +62,10 @@ export type Game = {
 	state: string;
 	crashing?: Msg;
 	steam?: GameSteam;
+	// What the Players tab can do: everything, only the online list, or nothing.
+	players?: 'full' | 'list' | '';
+	// Which game's commands the Players tab can use.
+	players_game?: 'rust' | 'minecraft' | '';
 };
 
 export type EggPreview = {

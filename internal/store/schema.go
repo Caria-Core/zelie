@@ -549,5 +549,12 @@ CREATE TABLE audit_log (
 ) STRICT;
 CREATE INDEX audit_log_app ON audit_log(app_id, at);
 CREATE INDEX audit_log_time ON audit_log(at);
+`, `
+-- The Steam Web API key an administrator gave, encrypted with the panel
+-- key. It is only used to look up the profiles of players.
+CREATE TABLE steam_web_key (
+	one INTEGER PRIMARY KEY CHECK (one = 1),
+	sealed BLOB NOT NULL
+) STRICT;
 `,
 }

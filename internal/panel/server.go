@@ -25,6 +25,7 @@ import (
 	"github.com/Caria-Core/zelie/internal/core"
 	"github.com/Caria-Core/zelie/internal/msg"
 	"github.com/Caria-Core/zelie/internal/peer"
+	"github.com/Caria-Core/zelie/internal/players"
 	"github.com/Caria-Core/zelie/internal/store"
 	"github.com/Caria-Core/zelie/internal/version"
 	"github.com/Caria-Core/zelie/internal/webui"
@@ -66,6 +67,11 @@ type Server struct {
 	Eggs EggFetcher
 	// PortCheck replaces the connection a database's health check makes.
 	PortCheck func(ctx context.Context, ip netip.Addr, port int) bool
+	// SteamWebAPI is where Steam's Web API is; empty means the real one.
+	SteamWebAPI string
+	// PlayerAddr makes the address the panel asks a game server's query
+	// and remote console at; nil uses the container's own. Tests set it.
+	PlayerAddr func(ip netip.Addr, port int) string
 	// PlayerCount replaces the query that counts the players of a game
 	// server; nil asks the server itself.
 	PlayerCount func(ctx context.Context, steamGame bool, addr netip.AddrPort) (int, error)
@@ -90,6 +96,12 @@ type Server struct {
 	// steam is what Steam last said the newest builds of games are.
 	steam steamTracker
 	sftp  sftpState
+
+	// steamProfiles looks up players on Steam; banKeepers lift bans that
+	// run out.
+	steamProfiles players.Steam
+	steamOnce     sync.Once
+	banKeepers    banKeepers
 
 	// externalMu keeps two requests from picking the same port.
 	externalMu sync.Mutex
@@ -279,6 +291,22 @@ func (s *Server) Handler() http.Handler {
 	web.HandleFunc("POST /api/games/{app}/diagnosis/fix", s.managesGame(s.applyDiagnosisFix))
 	web.HandleFunc("POST /api/games/{app}/reinstall", s.adminOnly(s.reinstallGame))
 	web.HandleFunc("POST /api/games/{app}/clone", s.managesGame(s.cloneGame))
+	web.HandleFunc("GET /api/games/{app}/players/online", s.managesGame(s.onlinePlayers))
+	web.HandleFunc("GET /api/games/{app}/players", s.managesGame(s.listPlayers))
+	web.HandleFunc("GET /api/games/{app}/players/{id}", s.managesGame(s.getPlayer))
+	web.HandleFunc("POST /api/games/{app}/players/{id}/kick", s.managesGame(s.kickPlayer))
+	web.HandleFunc("POST /api/games/{app}/players/{id}/ban", s.managesGame(s.banPlayer))
+	web.HandleFunc("POST /api/games/{app}/players/{id}/notes", s.managesGame(s.addPlayerNote))
+	web.HandleFunc("DELETE /api/games/{app}/players/{id}/notes/{note}", s.managesGame(s.deletePlayerNote))
+	web.HandleFunc("POST /api/games/{app}/players/{id}/op", s.managesGame(s.opPlayer))
+	web.HandleFunc("POST /api/games/{app}/players/{id}/whitelist", s.managesGame(s.whitelistPlayer))
+	web.HandleFunc("GET /api/games/{app}/chat", s.managesGame(s.playerChat))
+	web.HandleFunc("GET /api/games/{app}/reports", s.managesGame(s.playerReports))
+	web.HandleFunc("GET /api/games/{app}/bans", s.managesGame(s.listBans))
+	web.HandleFunc("DELETE /api/games/{app}/bans/{ban}", s.managesGame(s.unbanPlayer))
+	web.HandleFunc("GET /api/games/{app}/audit", s.managesGame(s.gameAudit))
+	web.HandleFunc("PUT /api/server/steam-key", s.confirmed(requireAdmin(s.setSteamKey)))
+	web.HandleFunc("DELETE /api/server/steam-key", s.confirmed(requireAdmin(s.removeSteamKey)))
 	web.HandleFunc("PUT /api/games/{app}/steam", s.adminOnly(s.setSteam))
 	web.HandleFunc("POST /api/games/{app}/steam/update", s.adminOnly(s.updateSteam))
 	web.HandleFunc("POST /api/games/{app}/power", s.adminOnly(s.gamePower))

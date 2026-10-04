@@ -25,12 +25,15 @@ const passwordEgg = `{
 }`
 
 // A server whose egg has a parser, started and stopped through the panel.
-func newPlayerGame(t *testing.T) (*appEnv, string) {
+func newPlayerGame(t *testing.T, before ...func(*appEnv)) (*appEnv, string) {
 	t.Helper()
 	old := playerFlushEvery
 	playerFlushEvery = 20 * time.Millisecond
 	t.Cleanup(func() { playerFlushEvery = old })
 	e := newPowerEnv(t)
+	for _, f := range before {
+		f(e)
+	}
 	e.s.Eggs.(*fakeEggs).files["minecraft-paper"] = passwordEgg
 	code, out := e.b.do("POST", "/api/games", map[string]any{"name": "survival", "egg": "minecraft-paper", "memory_mb": 2048, "ports": 2})
 	if code != http.StatusCreated {

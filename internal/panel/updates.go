@@ -110,6 +110,8 @@ type serverJSON struct {
 	Host      *hostJSON      `json:"host,omitempty"`
 	Access    string         `json:"access,omitempty"` // how the panel is reached: acme, self-signed or tunnel
 	Address   string         `json:"address,omitempty"`
+	// SteamKeySet says a Steam Web API key is saved, for the players pages.
+	SteamKeySet bool `json:"steam_key_set"`
 }
 
 type hostJSON struct {
@@ -127,6 +129,9 @@ func (s *Server) serverInfo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out := serverJSON{Version: st.Version, Last: st.Last}
+	if _, err := s.Store.SteamKey(ctx); err == nil {
+		out.SteamKeySet = true
+	}
 	s.releases.mu.Lock()
 	if l := s.releases.latest; l != nil && update.Newer(l.Version, st.Version) {
 		rel := *l

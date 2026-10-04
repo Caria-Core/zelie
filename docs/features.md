@@ -136,6 +136,25 @@ supports run here too.
 Minecraft runs end to end in Zelie's tests on every change, including a console command
 and a player's ping. Rust and the Steam update check have run against stand-ins only.
 
+## Players
+
+For Rust and Minecraft servers, and as a plain list for some other Steam games.
+
+- **Online.** Who is on now, with ping, time online and address (hidden until you show
+  it). Rust is asked over its WebRCON with the server's own password, only while the tab
+  is open; Minecraft through its console; other games through the Steam query.
+- **History.** Joins and leaves are read from the console while the server runs, so a
+  player's visits, play time and first and last time seen are kept for 30 days. Accounts
+  seen on the same address are listed together.
+- **Chat** is kept for 7 days, global and team apart, searchable.
+- **Kick, ban and unban**, with a reason. A ban can be for a time; Zelie lifts it when it
+  ends. Minecraft servers also get op and the whitelist.
+- **Notes** on a player, and a list of what admins did and when.
+- **Steam.** With a free Steam Web API key on the Server page, players show their VAC and
+  game bans and how old their account is.
+- **Reports.** F7 reports are read from the console once their format is confirmed on a
+  live server; until then the section stays empty and says so.
+
 ## SFTP
 
 - One SFTP server for all game servers and files apps, on port 2222 unless you choose

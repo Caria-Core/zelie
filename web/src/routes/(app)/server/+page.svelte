@@ -53,6 +53,42 @@
 		}
 	}
 
+	let steamKey = $state('');
+	let steamBusy = $state(false);
+	let steamError = $state('');
+	let steamSaved = $state(false);
+
+	async function saveSteamKey(e: SubmitEvent) {
+		e.preventDefault();
+		steamBusy = true;
+		steamError = '';
+		steamSaved = false;
+		try {
+			await sensitive(() => api('PUT', '/server/steam-key', { key: steamKey.trim() }));
+			steamKey = '';
+			steamSaved = true;
+			await loadServer();
+		} catch (err) {
+			steamError = messageOf(err);
+		} finally {
+			steamBusy = false;
+		}
+	}
+
+	async function removeSteamKey() {
+		steamBusy = true;
+		steamError = '';
+		steamSaved = false;
+		try {
+			await sensitive(() => api('DELETE', '/server/steam-key'));
+			await loadServer();
+		} catch (err) {
+			steamError = messageOf(err);
+		} finally {
+			steamBusy = false;
+		}
+	}
+
 	async function check() {
 		busy = true;
 		error = '';
@@ -237,6 +273,32 @@
 				</form>
 			</section>
 		{/if}
+		<section class="flex flex-col gap-4">
+			<div>
+				<h2 class="font-medium">{t('server.steamKey')}</h2>
+				<p class="text-sm text-muted">{t('server.steamKeyLead')}</p>
+			</div>
+			<p class="text-sm text-muted">{t('server.steamKeyAdds')}</p>
+			<p class="text-sm text-muted">{t('server.steamKeyPrivacy')}</p>
+			<a href="https://steamcommunity.com/dev/apikey" target="_blank" rel="noopener noreferrer" class="inline-flex w-fit items-center gap-1 text-sm text-muted hover:text-fg">{t('server.steamKeyGet')}<ArrowUpRight size={14} /></a>
+			<form class="flex flex-col gap-4" onsubmit={saveSteamKey}>
+				<Field
+					label={info.steam_key_set ? t('server.steamKeyReplace') : t('server.steamKeyLabel')}
+					hint={info.steam_key_set ? t('server.steamKeyIsSet') : ''}
+					type="password"
+					autocomplete="off"
+					autocapitalize="off"
+					spellcheck="false"
+					bind:value={steamKey}
+				/>
+				<div class="flex flex-wrap items-center gap-3">
+					<Button type="submit" busy={steamBusy} disabled={!steamKey.trim()}>{t('server.steamKeySave')}</Button>
+					{#if info.steam_key_set}<Button type="button" kind="quiet" busy={steamBusy} onclick={removeSteamKey}>{t('common.remove')}</Button>{/if}
+					{#if steamSaved}<CircleCheck size={16} strokeWidth={1.75} class="text-muted" />{/if}
+				</div>
+				<ErrorText message={steamError} />
+			</form>
+		</section>
 		<SFTPPort />
 	{:else}
 		<ErrorText message={error} />

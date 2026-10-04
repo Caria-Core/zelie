@@ -15,6 +15,7 @@ import (
 	"github.com/Caria-Core/zelie/internal/egg"
 	"github.com/Caria-Core/zelie/internal/engine"
 	"github.com/Caria-Core/zelie/internal/msg"
+	"github.com/Caria-Core/zelie/internal/players"
 	"github.com/Caria-Core/zelie/internal/store"
 )
 
@@ -582,6 +583,10 @@ type gameJSON struct {
 	BlockBroken bool               `json:"block_broken,omitempty"`
 	Variables   []gameVariableJSON `json:"variables"`
 	Features    []string           `json:"features"`
+	// Players is what the Players tab can show: "full", "list" or "". The
+	// game is the family of the parser behind "full".
+	Players     string `json:"players"`
+	PlayersGame string `json:"players_game"`
 	// EULANeeded is set when the egg asks for a EULA that has not been
 	// accepted, so the server will not start.
 	EULANeeded bool            `json:"eula_needed,omitempty"`
@@ -612,13 +617,15 @@ func (s *Server) gameOut(ctx context.Context, a store.App) (gameJSON, error) {
 	out := gameJSON{
 		ID: a.ID, Egg: e.Name, Description: e.Description, Image: g.Image, Startup: g.Startup, EggStartup: e.Startup,
 		MemoryMB: a.MemoryMB, CPUs: a.CPUs,
-		Images:    []gameImageJSON{},
-		Ports:     []gamePortJSON{},
-		Variables: []gameVariableJSON{},
-		Features:  featuresOut(e),
-		Install:   gameInstallJSON{State: g.InstallState, Deployment: g.InstallID},
-		State:     s.gameState(ctx, a),
-		Crashing:  s.crashes.gaveUp(a.ID),
+		Images:      []gameImageJSON{},
+		Ports:       []gamePortJSON{},
+		Variables:   []gameVariableJSON{},
+		Features:    featuresOut(e),
+		Players:     players.Capability(stored.Source),
+		PlayersGame: players.Family(stored.Source),
+		Install:     gameInstallJSON{State: g.InstallState, Deployment: g.InstallID},
+		State:       s.gameState(ctx, a),
+		Crashing:    s.crashes.gaveUp(a.ID),
 	}
 	out.EULANeeded = e.HasFeature(egg.FeatureEULA) && g.EULAAcceptedAt.IsZero()
 	if g.InstallState == store.InstallRunning {

@@ -11,6 +11,7 @@ export type ServerInfo = {
 	host?: { cpus: number; memory_bytes: number; disk_bytes: number; disk_free_bytes: number };
 	access?: 'acme' | 'self-signed' | 'tunnel';
 	address?: string;
+	steam_key_set?: boolean;
 };
 
 // The sidebar and the server page share what the panel knows about the
