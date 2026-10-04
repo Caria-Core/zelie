@@ -68,6 +68,7 @@ login, with metrics and backups for each.
 | Updates from the panel | ✅ With automatic rollback | ❌ | ❌ | ✅ |
 | Pterodactyl and Pelican eggs | ✅ | ✅ | ✅ | ❌ |
 | Console, files, SFTP, schedules | ✅ | ✅ | ✅ | ❌ |
+| Players and RCON tools | Rust and Minecraft | Not built in | Not built in | ❌ |
 | Deploys from GitHub | ✅ | ❌ | ❌ | ✅ |
 | Rollback in a click | ✅ | ❌ | ❌ | ✅ |
 | Databases | PostgreSQL, MariaDB, Redis | MySQL for game servers | MySQL for game servers | Many |
@@ -104,6 +105,27 @@ page](https://zelie.cariacore.com/compare) has the details, and a note on each m
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/console-dark.webp">
   <img src="docs/images/console.webp" alt="A Minecraft server's live console in Zelie">
+</picture>
+
+## Players
+
+For Rust and Minecraft servers, the Players tab is an RCON-style admin panel that is part
+of Zelie, with nothing to install. It shows who is online with ping, time online and
+address, and keeps everyone seen in the last 30 days. Accounts seen on the same address are
+listed together, which helps when a banned player comes back with a new one.
+
+Chat is kept for 7 days, global and team apart, and can be searched. You can kick and ban
+with a reason and an optional end, which Zelie lifts by itself while the server runs.
+Minecraft servers also get op and the whitelist. Notes on players and a log of what admins
+did are kept too. With a free Steam Web API key, players show their VAC and game bans and
+the age of their account.
+
+Rust is asked over its WebRCON with the server's own password, only while the tab is open.
+Minecraft is asked through its console. Some other Steam games get a list of who is online.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/players-dark.webp">
+  <img src="docs/images/players.webp" alt="The Players tab of a Rust server with a player's profile open: a new account with a VAC ban sharing an address with a regular, notes, sessions and recent chat">
 </picture>
 
 ## Apps and databases
