@@ -1,7 +1,6 @@
 # Contributing
 
-Thanks for your interest in Zelie. It is alpha, and for now we are not accepting pull
-requests. Issues are welcome: a bug, a problem you want solved or a design question.
+Thanks for your interest in Zelie. For now we are not accepting pull requests. Issues are welcome: a bug, a problem you want solved or a design question.
 
 ## Building
 

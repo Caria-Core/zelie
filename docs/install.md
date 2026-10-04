@@ -28,7 +28,7 @@ checks the server and asks a few questions.
 To install a given release instead of the latest, set `ZELIE_VERSION` on the `sh` side:
 
 ```sh
-curl -fsSL https://github.com/Caria-Core/zelie/releases/latest/download/install.sh | ZELIE_VERSION=v0.6.0 sh
+curl -fsSL https://github.com/Caria-Core/zelie/releases/latest/download/install.sh | ZELIE_VERSION=v0.7.11 sh
 ```
 
 ## The questions

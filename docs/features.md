@@ -1,7 +1,7 @@
 # Features
 
-What Zelie does today, one area at a time. It is alpha: all of this works, and some of it
-runs on a real server, but where something has only been tried in tests or against a
+What Zelie does today, one area at a time. Zelie is young and moving fast, so keep
+backups of what matters. Where something has only been tried in tests or against a
 stand-in, it says so.
 
 ## Apps
@@ -28,7 +28,10 @@ Every app has:
 - **Storage.** Volumes that outlive deployments, each with a size limit you can raise.
 - **Limits.** Memory and CPU, set against what the server has and what the other apps
   were given.
-- **Logs**, live in the browser.
+- **Logs**, live in the browser. The console and the deployment log hide the values of
+  variables whose names mark them as a password, secret, token or key.
+- **Start.** An app that has never run, such as one whose first start failed, shows a
+  Start button so you can try again. Databases do the same.
 
 ## Builds and deployments
 
@@ -112,7 +115,9 @@ supports run here too.
 - **Console.** Live output with colours, the last 500 lines on opening, and a command
   line with history. Start, stop, restart and kill. Stopping sends the egg's stop
   command and kills the server if it has not stopped after a minute.
-- **Files.** A file manager with an editor, upload by dragging, download, rename and
+- **Files.** A file manager with an editor that colours JSON, JavaScript, TypeScript,
+  C#, C and C++, Java, Python, YAML, XML, HTML, CSS, Markdown, PHP, SQL, shell, TOML, Lua
+  and config files. It has upload by dragging, download, rename and
   move. It packs files into a `.tar.gz` and unpacks `.zip` and `.tar` archives. The same
   files are reachable over SFTP.
 - **Startup.** The startup command, the image and the egg's variables, checked against
@@ -130,6 +135,8 @@ supports run here too.
   limits, every file, and new ports from the pool for the same jobs. Schedules, backups and
   the SFTP password stay behind, and passwords Zelie made up for the original, such as RCON,
   are made up again. The copy starts stopped.
+- **Database.** Link a database and the server's Database tab shows the host, port,
+  database, user and password with a copy button each, for a plugin's config file.
 - **Crashes** are handled as for apps. The header shows the server's limits, and its
   memory and CPU use while it runs.
 

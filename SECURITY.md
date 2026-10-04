@@ -15,13 +15,12 @@ until it is fixed. Once a fix is released, we are happy to credit you.
 
 ## Supported versions
 
-Zelie has not had a release yet. Once it does, security fixes will go to the latest
-release.
+Security fixes go into the latest release. The panel updates itself from the Server
+page, so staying current is one click.
 
 ## How Zelie is designed to stay safe
 
-These are commitments of the design. Zelie is still being built, and each one will be
-covered by tests before the first release.
+These are commitments of the design.
 
 - The web panel runs as an unprivileged user. Only a small core process runs as root,
   and it accepts a narrow set of commands over a local socket.

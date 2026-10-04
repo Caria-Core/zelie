@@ -25,9 +25,7 @@ Docker to install and keep up to date. One command sets it up, and the panel upd
 itself.
 
 > [!NOTE]
-> **Early development.** Zelie has only been tried on a small number of servers so far,
-> and it still changes quickly. For now, run it on a spare server rather than one that
-> hosts something important.
+> **Young and moving fast.** Zelie changes often. Keep backups of what matters.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/home-dark.webp">
@@ -36,7 +34,7 @@ itself.
 
 ## Why Zelie
 
-**Light.** Zelie's own processes use under 90 MB of memory when idle. That is checked on
+**Light.** Zelie's own processes use under 66 MB of memory when idle. That is checked on
 every change: the test run fails if it grows past the limit. On a live server we measured
 Pelican's panel, queue worker and Wings at about 230 MB, before its database and Docker.
 Coolify asks for at least 2 GB of RAM. The rest of your machine goes to your players and
@@ -64,7 +62,7 @@ login, with metrics and backups for each.
 | Install | One command | Manual guide | Manual guide | One command |
 | Runs on | One Go binary | PHP, Laravel, MySQL, Redis | PHP, Laravel | PHP, Laravel, PostgreSQL, Redis |
 | Needs Docker | No, its own containerd | Yes, for Wings | Yes, for Wings | Yes |
-| Idle memory | Under 90 MB | PHP panel, queue worker and Wings | About 230 MB, before the database | At least 2 GB of RAM asked for |
+| Idle memory | Under 66 MB | PHP panel, queue worker and Wings | About 230 MB, before the database | At least 2 GB of RAM asked for |
 | Updates from the panel | ✅ With automatic rollback | ❌ | ❌ | ✅ |
 | Pterodactyl and Pelican eggs | ✅ | ✅ | ✅ | ❌ |
 | Console, files, SFTP, schedules | ✅ | ✅ | ✅ | ❌ |

@@ -56,6 +56,13 @@ out for good runs `zelie reset-login` on the server: root can read everything an
 the link it prints may set a new password. It works once, for an hour, and removes the
 account's second steps, which it must set up again before doing anything else.
 
+## Memory
+
+Every Zelie process turns off transparent huge pages for itself. On servers where the
+kernel enables them for everything, it folded the small Go heaps into 2 MB pages that
+could not be handed back. Each process sets `PR_SET_THP_DISABLE` and runs itself again
+once at start, so pages touched before `main` begins stay small too.
+
 ## Containers
 
 Every app and game server runs in its own container. Zelie talks to containerd directly
