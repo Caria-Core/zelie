@@ -9,10 +9,10 @@
 
 <p align="center">
   A server panel for your own machine: game servers, apps and databases, in one binary.<br>
-  <a href="https://zelie.cariacore.com">Website</a> ·
+  <a href="https://cariacore.com/zelie">Website</a> ·
   <a href="docs/features.md">Features</a> ·
   <a href="docs/install.md">Install</a> ·
-  <a href="https://zelie.cariacore.com/compare">Compare</a>
+  <a href="https://cariacore.com/zelie/compare">Compare</a>
 </p>
 
 Zelie runs Minecraft, Rust and other game servers from the same eggs Pterodactyl and
@@ -78,7 +78,7 @@ login, with metrics and backups for each.
 | Sub-users | Planned | ✅ | ✅ | Teams |
 
 The other panels are described as they install by default. The [comparison
-page](https://zelie.cariacore.com/compare) has the details, and a note on each measurement.
+page](https://cariacore.com/zelie/compare) has the details, and a note on each measurement.
 
 ## Game servers
 
