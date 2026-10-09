@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -265,9 +266,20 @@ func metaKey(c OffsiteConfig, app, name string) string {
 
 // keyNote is left next to the backups, so whoever finds them later knows
 // which recovery file opens them.
-func keyNote(public string) string {
-	return "# The Zelie backups in this folder are encrypted for the key below.\n" +
-		"# The recovery file of the server that made them opens them.\n" + public + "\n"
+func keyNote(public []string) string {
+	return "# The Zelie backups in this folder are encrypted for these keys.\n" +
+		"# The recovery file of the server that made a backup opens it.\n" + strings.Join(public, "\n") + "\n"
+}
+
+// noteKeys returns the keys a note names.
+func noteKeys(note []byte) []string {
+	var keys []string
+	for line := range strings.Lines(string(note)) {
+		if line = strings.TrimSpace(line); strings.HasPrefix(line, "age1") && !slices.Contains(keys, line) {
+			keys = append(keys, line)
+		}
+	}
+	return keys
 }
 
 func (s *Server) getOffsite(w http.ResponseWriter, r *http.Request) {
@@ -347,8 +359,30 @@ func (s *Server) tryOffsite(ctx context.Context, c *s3.Client, cfg OffsiteConfig
 	if err != nil {
 		return err
 	}
-	note := []byte(keyNote(s.Backups.Key.Public()))
-	return c.Put(ctx, cfg.Prefix+"/zelie-key.txt", bytes.NewReader(note), int64(len(note)))
+	return s.noteKey(ctx, c, cfg)
+}
+
+// noteKey adds this server's key to the note in the folder. The folder may
+// already hold the backups of another server, which setting it as the
+// destination is how a new server gets to them, and its note must go on
+// naming their key.
+func (s *Server) noteKey(ctx context.Context, c *s3.Client, cfg OffsiteConfig) error {
+	name := cfg.Prefix + "/zelie-key.txt"
+	public := s.Backups.Key.Public()
+	var keys []string
+	old, err := s.readSmall(ctx, c, name)
+	var se *s3.Error
+	switch {
+	case err == nil:
+		if keys = noteKeys(old); slices.Contains(keys, public) {
+			return nil
+		}
+	case errors.As(err, &se) && (se.Status == http.StatusNotFound || se.Code == "NoSuchKey"):
+	default:
+		return err
+	}
+	note := []byte(keyNote(append(keys, public)))
+	return c.Put(ctx, name, bytes.NewReader(note), int64(len(note)))
 }
 
 // removeOffsite forgets the destination. What is in the bucket stays: it
@@ -453,9 +487,11 @@ func (s *Server) listOffsite(w http.ResponseWriter, r *http.Request) {
 		metas[o.Key] = true
 	}
 	if note, err := s.readSmall(ctx, client, cfg.Prefix+"/zelie-key.txt"); err == nil {
-		for line := range strings.Lines(string(note)) {
-			if line = strings.TrimSpace(line); strings.HasPrefix(line, "age1") {
-				out.Key, out.Opens = line, s.Backups.Key.Opens(line)
+		for _, key := range noteKeys(note) {
+			// A key no recovery file here opens is the one to ask for.
+			out.Key, out.Opens = key, s.Backups.Key.Opens(key)
+			if !out.Opens {
+				break
 			}
 		}
 	}

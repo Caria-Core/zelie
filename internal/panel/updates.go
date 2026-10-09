@@ -17,7 +17,10 @@ import (
 
 const releaseCheckEvery = 24 * time.Hour
 
-var errNoRelease = msg.Define(http.StatusNotFound, "update.none", "There is no newer version to update to.")
+var (
+	errNoRelease  = msg.Define(http.StatusNotFound, "update.none", "There is no newer version to update to.")
+	errUpdateBusy = msg.Define(http.StatusConflict, "update.busy", "A backup or restore is running, and the update would cut it off. Update when it is done.")
+)
 
 // Release is a published version of Zelie.
 type Release struct {
@@ -169,6 +172,12 @@ func (s *Server) startUpdate(w http.ResponseWriter, r *http.Request) {
 	s.releases.mu.Unlock()
 	if l == nil || !update.Newer(l.Version, st.Version) {
 		writeError(w, errNoRelease.Err())
+		return
+	}
+	// The update restarts the core and the panel, and a restore cut off
+	// after the database was emptied is not finished by anyone.
+	if s.backupBusy.any() {
+		writeError(w, errUpdateBusy.Err())
 		return
 	}
 	if err := s.Core.Update(ctx, l.Version); err != nil {

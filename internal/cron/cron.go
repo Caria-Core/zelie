@@ -17,6 +17,9 @@ type Schedule struct {
 	// a schedule that limits both the day of month and the day of week
 	// matches a day when either does; if one is a star, the other decides.
 	domStar, dowStar bool
+	// hourStar says the hour field began with "*". Such a schedule keeps its
+	// pace when the clocks change; see fires for the others.
+	hourStar bool
 }
 
 // ErrSyntax is wrapped by every error Parse returns.
@@ -58,6 +61,7 @@ func Parse(expr string) (Schedule, error) {
 	return Schedule{
 		minute: bits[0], hour: bits[1], dom: bits[2], month: bits[3], dow: bits[4],
 		domStar: strings.HasPrefix(parts[2], "*"), dowStar: strings.HasPrefix(parts[4], "*"),
+		hourStar: strings.HasPrefix(parts[1], "*"),
 	}, nil
 }
 
@@ -139,19 +143,20 @@ func (s Schedule) Matches(t time.Time) bool {
 // zone, or the zero time if there is none within eight years, as for
 // "0 0 30 2 *".
 func (s Schedule) Next(t time.Time) time.Time {
-	loc := t.Location()
 	t = t.Truncate(time.Minute).Add(time.Minute)
 	limit := t.AddDate(8, 0, 0)
 	for t.Before(limit) {
 		y, m, d := t.Date()
 		switch {
+		case s.missed(t):
+			return t
 		case !has(s.month, int(m)):
-			t = time.Date(y, m+1, 1, 0, 0, 0, 0, loc)
+			t = jump(t, y, m+1, 1, 0)
 		case !s.dayMatches(t):
-			t = time.Date(y, m, d+1, 0, 0, 0, 0, loc)
+			t = jump(t, y, m, d+1, 0)
 		case !has(s.hour, t.Hour()):
-			t = time.Date(y, m, d, t.Hour()+1, 0, 0, 0, loc)
-		case !has(s.minute, t.Minute()):
+			t = jump(t, y, m, d, t.Hour()+1)
+		case !has(s.minute, t.Minute()), s.repeat(t):
 			t = t.Add(time.Minute)
 		default:
 			return t
@@ -165,9 +170,89 @@ func (s Schedule) Next(t time.Time) time.Time {
 func (s Schedule) Last(t time.Time, window time.Duration) time.Time {
 	t = t.Truncate(time.Minute)
 	for at := t; !at.Before(t.Add(-window)); at = at.Add(-time.Minute) {
-		if s.Matches(at) {
+		if s.fires(at) {
 			return at
 		}
 	}
 	return time.Time{}
+}
+
+// fires is Matches, adjusted for the clocks being changed. When they are
+// set back, a minute is shown twice and a schedule fixed to hours runs only
+// for the first. When they are set forward, a minute that was skipped runs
+// at the first minute after the change.
+func (s Schedule) fires(t time.Time) bool {
+	return s.Matches(t) && !s.repeat(t) || s.missed(t)
+}
+
+// repeat reports whether t is the second time the clocks show its minute,
+// for a schedule that runs only once for it.
+func (s Schedule) repeat(t time.Time) bool {
+	return !s.hourStar && setBack(t) > 0
+}
+
+// missed reports whether t is the first minute after the clocks were set
+// forward, and the schedule was due in the minutes they skipped.
+func (s Schedule) missed(t time.Time) bool {
+	if s.hourStar {
+		return false
+	}
+	start, _ := t.ZoneBounds()
+	if start.IsZero() || !t.Equal(start) {
+		return false
+	}
+	_, off := t.Zone()
+	_, was := start.Add(-time.Second).Zone()
+	if off <= was {
+		return false
+	}
+	// The skipped minutes, read off the clock that now shows t.
+	wall := time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), t.Minute(), 0, 0, time.UTC)
+	for w := wall.Add(-time.Duration(off-was) * time.Second); w.Before(wall); w = w.Add(time.Minute) {
+		if s.Matches(w) {
+			return true
+		}
+	}
+	return false
+}
+
+// setBack returns by how much the clocks were set back at the start of t's
+// zone period if t lies within that much of it, so the clocks showed t's
+// minute once before.
+func setBack(t time.Time) time.Duration {
+	start, _ := t.ZoneBounds()
+	if start.IsZero() {
+		return 0
+	}
+	_, off := t.Zone()
+	_, was := start.Add(-time.Second).Zone()
+	if d := time.Duration(was-off) * time.Second; d > 0 && t.Sub(start) < d {
+		return d
+	}
+	return 0
+}
+
+// jump moves t towards the given hour of the given day on the clocks in its
+// zone, and never past a change of the clocks. Away from a change it gets
+// there. Near one time.Date cannot be trusted: it may pick either moment for
+// a time shown twice, and any for a time that is skipped. There jump only
+// goes on to the next full hour in real time, or to the change itself, and
+// Next looks at every minute from there.
+func jump(t time.Time, y int, m time.Month, d, h int) time.Time {
+	next := time.Date(y, m, d, h, 0, 0, 0, t.Location())
+	_, end := t.ZoneBounds()
+	if next.After(t) && (end.IsZero() || next.Before(end)) && shows(next, y, m, d, h) {
+		return next
+	}
+	step := t.Add(time.Duration(60-t.Minute()) * time.Minute)
+	if !end.IsZero() && end.Before(step) {
+		return end
+	}
+	return step
+}
+
+// shows reports whether the clocks at t read the hour that time.Date was
+// asked for.
+func shows(t time.Time, y int, m time.Month, d, h int) bool {
+	return time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), t.Minute(), 0, 0, time.UTC).Equal(time.Date(y, m, d, h, 0, 0, 0, time.UTC))
 }

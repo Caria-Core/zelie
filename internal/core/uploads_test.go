@@ -127,3 +127,44 @@ func TestUploadChecks(t *testing.T) {
 		t.Errorf("old upload: %v", err)
 	}
 }
+
+// A dump nobody finishes sits on disk in the clear, so it goes by itself:
+// no later upload and no restart is needed for that, but while there are
+// no uploads, nothing waits.
+func TestAbandonedUploadsGoByThemselves(t *testing.T) {
+	s, _, _ := backupServer(t)
+	root := &peer.Peer{UID: 0}
+	keep := uploadExpiry
+	uploadExpiry = 200 * time.Millisecond
+	defer func() {
+		s.uploadSweeper.mu.Lock()
+		defer s.uploadSweeper.mu.Unlock()
+		uploadExpiry = keep
+	}()
+
+	waiting := func() bool {
+		s.uploadSweeper.mu.Lock()
+		defer s.uploadSweeper.mu.Unlock()
+		return s.uploadSweeper.timer != nil
+	}
+	if waiting() {
+		t.Fatal("waiting with no upload")
+	}
+	rec := request(t, s, root, "POST", "/v1/uploads", `{"app":"db","size":5}`)
+	var u Upload
+	json.Unmarshal(rec.Body.Bytes(), &u)
+	if rec.Code != http.StatusCreated || !waiting() {
+		t.Fatalf("upload started: %d, waiting %v", rec.Code, waiting())
+	}
+	for deadline := time.Now().Add(5 * time.Second); waiting() && time.Now().Before(deadline); {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if waiting() {
+		t.Fatal("still waiting after the upload was due")
+	}
+	for _, name := range []string{u.ID, u.ID + ".json"} {
+		if _, err := os.Stat(filepath.Join(s.uploadsDir(), name)); !os.IsNotExist(err) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}

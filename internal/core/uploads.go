@@ -30,8 +30,8 @@ import (
 // MaxUploadChunk is the most one piece of an upload may carry.
 const MaxUploadChunk = 32 << 20
 
-// An upload nobody finished is deleted after this.
-const uploadExpiry = 24 * time.Hour
+// An upload nobody finished is deleted after this. Tests shorten it.
+var uploadExpiry = 24 * time.Hour
 
 var (
 	errUploadOffset     = msg.Define(http.StatusConflict, "upload.offset", "The upload has {received} bytes, not {offset}.")
@@ -96,18 +96,48 @@ func (s *Server) dropUpload(id string) {
 	}
 }
 
-// expireUploads deletes the uploads that were left unfinished.
-func (s *Server) expireUploads() {
+// expireUploads deletes the uploads that were left unfinished. It returns how
+// long until the next of the others is due, or zero when there are none.
+func (s *Server) expireUploads() time.Duration {
 	entries, _ := os.ReadDir(s.uploadsDir())
+	var next time.Duration
 	for _, e := range entries {
 		id, ok := strings.CutSuffix(e.Name(), ".json")
 		if !ok || !validUpload().MatchString(id) {
 			continue
 		}
-		if fi, err := e.Info(); err == nil && time.Since(fi.ModTime()) > uploadExpiry {
+		fi, err := e.Info()
+		if err != nil {
+			continue
+		}
+		if left := uploadExpiry - time.Since(fi.ModTime()); left <= 0 {
 			s.Log.Info("unfinished upload deleted", "upload", id)
 			s.dropUpload(id)
+		} else if next == 0 || left < next {
+			next = left
 		}
+	}
+	return next
+}
+
+// uploadSweeper looks for expired uploads when the first one is due, and then
+// again for each next one. While there are no uploads, nothing waits.
+type uploadSweeper struct {
+	mu    sync.Mutex
+	timer *time.Timer
+}
+
+// sweepUploads deletes the expired uploads and sets the next look. A timer
+// that fires early, because a piece came in since, only looks again.
+func (s *Server) sweepUploads() {
+	s.uploadSweeper.mu.Lock()
+	defer s.uploadSweeper.mu.Unlock()
+	if s.uploadSweeper.timer != nil {
+		s.uploadSweeper.timer.Stop()
+		s.uploadSweeper.timer = nil
+	}
+	if next := s.expireUploads(); next > 0 {
+		s.uploadSweeper.timer = time.AfterFunc(next, s.sweepUploads)
 	}
 }
 
@@ -124,7 +154,7 @@ func (s *Server) createUpload(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, errors.New("an upload needs an app and a size"))
 		return
 	}
-	s.expireUploads()
+	s.sweepUploads()
 	// The file itself, then the backup made from it.
 	if err := s.roomFor(2*req.Size, errNoRoomUpload); err != nil {
 		s.backupFailed(w, "start upload", req.App, err)
@@ -151,6 +181,7 @@ func (s *Server) createUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.Log.Info("upload started", "app", req.App, "upload", id, "bytes", req.Size)
+	s.sweepUploads()
 	writeJSON(w, http.StatusCreated, Upload{ID: id, App: req.App, Size: req.Size})
 }
 

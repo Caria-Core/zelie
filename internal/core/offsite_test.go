@@ -244,3 +244,62 @@ func TestOffsiteErrors(t *testing.T) {
 		}
 	}
 }
+
+// A server pointed at a folder that holds another server's backups, to get
+// at them, must leave the note that names the other server's key.
+func TestOffsiteNoteKeepsOtherKeys(t *testing.T) {
+	root := &peer.Peer{UID: 0}
+	fake := s3test.NewFake(t)
+	body := fmt.Sprintf(`{"endpoint":%q,"bucket":"bucket","prefix":"zelie","access_key":"a","secret_key":"s"}`, fake.URL)
+	server := func() *Server {
+		s, _, _ := backupServer(t)
+		o, err := LoadOffsite(filepath.Join(t.TempDir(), "offsite.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		s.Offsite = o
+		return s
+	}
+	set := func(s *Server) {
+		t.Helper()
+		if rec := request(t, s, root, "PUT", "/v1/offsite", body); rec.Code != http.StatusOK {
+			t.Fatalf("set: %d %s", rec.Code, rec.Body)
+		}
+	}
+	note := func() string { return string(fake.Objects["zelie/zelie-key.txt"]) }
+
+	first, second := server(), server()
+	one, two := first.Backups.Key.Public(), second.Backups.Key.Public()
+	set(first)
+	if got := noteKeys([]byte(note())); len(got) != 1 || got[0] != one {
+		t.Fatalf("first server's note: %q", note())
+	}
+	set(second)
+	if got := noteKeys([]byte(note())); len(got) != 2 || got[0] != one || got[1] != two {
+		t.Fatalf("both keys belong in the note: %q", note())
+	}
+	// Setting it again, from either, changes nothing.
+	before := note()
+	set(second)
+	set(first)
+	if note() != before {
+		t.Errorf("note changed from %q to %q", before, note())
+	}
+
+	// The second server cannot open the first one's backups yet, and the
+	// folder says which key to ask for.
+	rec := request(t, second, root, "GET", "/v1/offsite/backups", "")
+	var found OffsiteList
+	json.Unmarshal(rec.Body.Bytes(), &found)
+	if found.Opens || found.Key != one {
+		t.Errorf("without the first key: %s", rec.Body)
+	}
+	b, _ := json.Marshal(map[string]string{"recovery": first.Backups.Key.Recovery("a", time.Now())})
+	request(t, second, root, "POST", "/v1/backups-key/old", string(b))
+	rec = request(t, second, root, "GET", "/v1/offsite/backups", "")
+	found = OffsiteList{}
+	json.Unmarshal(rec.Body.Bytes(), &found)
+	if !found.Opens {
+		t.Errorf("with the first key: %s", rec.Body)
+	}
+}

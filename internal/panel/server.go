@@ -384,6 +384,9 @@ func (s *Server) Serve(ctx context.Context, socket string) error {
 	if err := s.Store.FailUnfinishedBackups(ctx, s.now()); err != nil {
 		return err
 	}
+	if err := s.failInterruptedRestores(ctx); err != nil {
+		return err
+	}
 	if err := s.Store.FailUnfinishedInstalls(ctx); err != nil {
 		return err
 	}
@@ -443,7 +446,24 @@ func (s *Server) Serve(ctx context.Context, socket string) error {
 	// Deployments stop with ctx; wait so none is cut off halfway through
 	// writing its state.
 	s.deploys.wg.Wait()
+	s.waitForJobs()
 	return nil
+}
+
+// waitForJobs gives the backups and restores that are running time to end.
+// A restore goes on after ctx ends, and stopping now would leave its
+// database emptied and the way back unused.
+func (s *Server) waitForJobs() {
+	finished := make(chan struct{})
+	go func() {
+		s.jobs.Wait()
+		close(finished)
+	}()
+	select {
+	case <-finished:
+	case <-time.After(jobsGrace):
+		s.Log.Warn("stopping while backups or restores are still running")
+	}
 }
 
 // setupLink makes a new one-time setup token. Only root on the server can ask

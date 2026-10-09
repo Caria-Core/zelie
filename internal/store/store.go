@@ -63,6 +63,15 @@ func (s *Store) migrate(ctx context.Context) error {
 	return nil
 }
 
+// nextID hands out an id that is never used twice, even after the row that
+// had it is gone. seq and table are fixed names: seq holds the last id
+// given, and table the rows that may already have a higher one.
+func nextID(ctx context.Context, tx *sql.Tx, seq, table string) (int64, error) {
+	var id int64
+	err := tx.QueryRowContext(ctx, "UPDATE "+seq+" SET last = max(last, (SELECT coalesce(max(id), 0) FROM "+table+")) + 1 RETURNING last").Scan(&id)
+	return id, err
+}
+
 func (s *Store) tx(ctx context.Context, fn func(*sql.Tx) error) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {

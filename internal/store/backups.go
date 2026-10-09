@@ -204,12 +204,19 @@ func timeOrZero(unix int64) time.Time {
 
 // StartBackup records a backup that is about to be made and returns its id.
 func (s *Store) StartBackup(ctx context.Context, b Backup) (int64, error) {
-	res, err := s.db.ExecContext(ctx, "INSERT INTO backups (app_id, engine, reason, state, created_at, keep_until) VALUES (?, ?, ?, ?, ?, ?)",
-		b.AppID, b.Engine, b.Reason, BackupRunning, b.CreatedAt.Unix(), b.KeepUntil.Unix())
+	var id int64
+	err := s.tx(ctx, func(tx *sql.Tx) (err error) {
+		if id, err = nextID(ctx, tx, "backup_seq", "backups"); err != nil {
+			return err
+		}
+		_, err = tx.ExecContext(ctx, "INSERT INTO backups (id, app_id, engine, reason, state, created_at, keep_until) VALUES (?, ?, ?, ?, ?, ?, ?)",
+			id, b.AppID, b.Engine, b.Reason, BackupRunning, b.CreatedAt.Unix(), b.KeepUntil.Unix())
+		return err
+	})
 	if err != nil {
 		return 0, err
 	}
-	return res.LastInsertId()
+	return id, nil
 }
 
 // FinishBackup records how a backup ended: with a file, or with why not.
@@ -319,14 +326,21 @@ func (s *Store) queryBackups(ctx context.Context, q string, args ...any) ([]Back
 // AddFoundBackup records a backup found in off-site storage, kept there
 // until offsite_until and not here.
 func (s *Store) AddFoundBackup(ctx context.Context, b Backup) (int64, error) {
-	res, err := s.db.ExecContext(ctx, `INSERT INTO backups (app_id, engine, reason, state, file, bytes, created_at, finished_at, keep_until,
-		volumes, size, offsite, offsite_at, offsite_until, local) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
-		b.AppID, b.Engine, BackupFound, BackupDone, b.File, b.Bytes, b.CreatedAt.Unix(), b.CreatedAt.Unix(), b.CreatedAt.Unix(),
-		strings.Join(b.Volumes, "\n"), b.Size, OffsiteDone, b.OffsiteAt.Unix(), b.OffsiteUntil.Unix())
+	var id int64
+	err := s.tx(ctx, func(tx *sql.Tx) (err error) {
+		if id, err = nextID(ctx, tx, "backup_seq", "backups"); err != nil {
+			return err
+		}
+		_, err = tx.ExecContext(ctx, `INSERT INTO backups (id, app_id, engine, reason, state, file, bytes, created_at, finished_at, keep_until,
+			volumes, size, offsite, offsite_at, offsite_until, local) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+			id, b.AppID, b.Engine, BackupFound, BackupDone, b.File, b.Bytes, b.CreatedAt.Unix(), b.CreatedAt.Unix(), b.CreatedAt.Unix(),
+			strings.Join(b.Volumes, "\n"), b.Size, OffsiteDone, b.OffsiteAt.Unix(), b.OffsiteUntil.Unix())
+		return err
+	})
 	if err != nil {
 		return 0, err
 	}
-	return res.LastInsertId()
+	return id, nil
 }
 
 // BackupFiles returns every backup file on record, as app/file.
@@ -388,6 +402,14 @@ func (s *Store) SetLocal(ctx context.Context, id int64, local bool, keep time.Ti
 	return oneRow(res, err)
 }
 
+// HoldBackup keeps a backup at least until the time given. The newest
+// backup of an app is kept only while it is the newest, so one that is about
+// to be restored is held, or the safety backup taken first would end that.
+func (s *Store) HoldBackup(ctx context.Context, id int64, until time.Time) error {
+	res, err := s.db.ExecContext(ctx, "UPDATE backups SET keep_until = max(keep_until, ?) WHERE id = ?", until.Unix(), id)
+	return oneRow(res, err)
+}
+
 func (s *Store) DeleteBackup(ctx context.Context, id int64) error {
 	res, err := s.db.ExecContext(ctx, "DELETE FROM backups WHERE id = ?", id)
 	return oneRow(res, err)
@@ -418,4 +440,53 @@ func (s *Store) RecoverySavedAt(ctx context.Context) (time.Time, error) {
 func (s *Store) SetRecoverySaved(ctx context.Context, at time.Time) error {
 	_, err := s.db.ExecContext(ctx, "INSERT INTO backup_key (one, saved_at) VALUES (1, ?) ON CONFLICT (one) DO UPDATE SET saved_at = excluded.saved_at", at.Unix())
 	return err
+}
+
+// RestoreRun is a restore that began and has not ended.
+type RestoreRun struct {
+	AppID     string
+	BackupID  int64
+	StartedAt time.Time
+}
+
+// BeginRestore records that a restore has started.
+func (s *Store) BeginRestore(ctx context.Context, app string, backup int64, at time.Time) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO restore_runs (app_id, backup_id, started_at) VALUES (?, ?, ?)
+		ON CONFLICT (app_id) DO UPDATE SET backup_id = excluded.backup_id, started_at = excluded.started_at`, app, backup, at.Unix())
+	return err
+}
+
+// EndRestore records that a restore has ended, however it went.
+func (s *Store) EndRestore(ctx context.Context, app string) error {
+	_, err := s.db.ExecContext(ctx, "DELETE FROM restore_runs WHERE app_id = ?", app)
+	return err
+}
+
+// TakeInterruptedRestores returns the restores that never ended, and forgets
+// them. The panel calls it on start, when none can be running.
+func (s *Store) TakeInterruptedRestores(ctx context.Context) ([]RestoreRun, error) {
+	var out []RestoreRun
+	err := s.tx(ctx, func(tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx, "SELECT app_id, backup_id, started_at FROM restore_runs ORDER BY app_id")
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var r RestoreRun
+			var at int64
+			if err := rows.Scan(&r.AppID, &r.BackupID, &at); err != nil {
+				return err
+			}
+			r.StartedAt = time.Unix(at, 0)
+			out = append(out, r)
+		}
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		rows.Close()
+		_, err = tx.ExecContext(ctx, "DELETE FROM restore_runs")
+		return err
+	})
+	return out, err
 }

@@ -2,6 +2,7 @@ package panel
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -29,6 +30,12 @@ type coreBackups struct {
 	uploads    map[string]*coreUpload // dumps being uploaded, by id
 	// The database refuses to load these files; "*" is every file.
 	failLoad map[string]bool
+	// downloadFail ends a download with this error, after the first bytes
+	// when downloadPartial is set.
+	downloadFail    error
+	downloadPartial bool
+	// duringRestore runs when a database restore reaches the core.
+	duringRestore func()
 }
 
 // running counts the app's running containers.
@@ -105,6 +112,12 @@ func (c *appCore) CreateBackup(_ context.Context, app, container, kind string) (
 }
 
 func (c *appCore) DownloadBackup(_ context.Context, app, name string, w io.Writer) error {
+	if c.bk.downloadFail != nil {
+		if c.bk.downloadPartial {
+			io.WriteString(w, "age-encryption.org/v1 ")
+		}
+		return c.bk.downloadFail
+	}
 	_, err := io.WriteString(w, "age-encryption.org/v1 "+app+"/"+name)
 	return err
 }
@@ -121,6 +134,9 @@ func (c *appCore) RemoveBackup(_ context.Context, app, name string) error {
 }
 
 func (c *appCore) RestoreBackup(_ context.Context, app, name, kind, container, volume string) error {
+	if c.bk.duringRestore != nil {
+		c.bk.duringRestore()
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if !slices.Contains(c.bk.files[app], name) {
@@ -639,4 +655,172 @@ func errText(out map[string]any) string {
 	m, _ := out["error"].(map[string]any)
 	s, _ := m["text"].(string)
 	return s
+}
+
+// A download that fails must not end as a file the browser keeps as a
+// whole backup: before the first byte it is an error, after it the
+// connection is cut.
+func TestFailedDownload(t *testing.T) {
+	e := newAppEnv(t)
+	e.b.do("POST", "/api/databases", map[string]any{"id": "pg", "engine": "postgres"})
+	e.settle(t, "pg")
+	id := int64(e.backUp(t, "pg")["id"].(float64))
+	path := fmt.Sprintf("/api/backups/%d/download", id)
+
+	e.core.bk.downloadFail = &core.Error{Status: http.StatusNotFound, Message: "backup, container or volume not found"}
+	code, body, h := e.raw("GET", path)
+	if code != http.StatusNotFound || h.Get("Content-Disposition") != "" || strings.HasPrefix(body, "age-encryption") {
+		t.Errorf("download of a file that is gone: %d %q %v", code, body, h)
+	}
+	e.core.bk.downloadFail = errors.New("reach the Zelie core: connection refused")
+	if code, _, h := e.raw("GET", path); code < 500 || h.Get("Content-Disposition") != "" {
+		t.Errorf("download while the core is down: %d %v", code, h)
+	}
+
+	e.core.bk.downloadPartial = true
+	defer func() {
+		if r := recover(); r != http.ErrAbortHandler {
+			t.Errorf("a cut download ended with %v, want the connection aborted", r)
+		}
+	}()
+	e.raw("GET", path)
+	t.Error("a download cut after its first bytes ended as a complete response")
+}
+
+// The backup being restored is held, so the safety backup taken first does
+// not leave it open to the next prune, and a restore that fails can be
+// tried again.
+func TestFailedRestoreKeepsItsBackup(t *testing.T) {
+	e := newAppEnv(t)
+	ctx := context.Background()
+	now := time.Unix(1_800_000_000, 0)
+	e.s.Now = func() time.Time { return now }
+	e.b.do("POST", "/api/databases", map[string]any{"id": "pg", "engine": "postgres"})
+	e.settle(t, "pg")
+	first := int64(e.backUp(t, "pg")["id"].(float64))
+
+	// It is past its time, and only the newest backup of a database is kept
+	// past that.
+	plan := store.DefaultBackupPlan("pg")
+	plan.KeepDays = 0
+	if err := e.s.Store.SetBackupPlan(ctx, plan); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(time.Minute)
+	e.core.bk.failLoad = map[string]bool{"*": true}
+	if out := e.restore(t, "pg", first); out["state"] != "failed" {
+		t.Fatalf("restore: %v", out)
+	}
+	e.s.pruneBackups(ctx)
+	if b, err := e.s.Store.Backup(ctx, first); err != nil || !slices.Contains(e.core.bk.files["pg"], b.File) {
+		t.Fatalf("the backup that was being restored is gone: %v, files %v", err, e.core.bk.files["pg"])
+	}
+
+	// It is held for a while, not for ever.
+	now = now.Add(restoreHold + time.Hour)
+	e.s.pruneBackups(ctx)
+	if _, err := e.s.Store.Backup(ctx, first); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("the hold never ended: %v", err)
+	}
+}
+
+// A restore the panel did not live to end is reported on the next start,
+// and one that ended leaves nothing behind.
+func TestInterruptedRestoreIsReported(t *testing.T) {
+	e := newAppEnv(t)
+	ctx := context.Background()
+	e.b.do("POST", "/api/databases", map[string]any{"id": "pg", "engine": "postgres"})
+	e.settle(t, "pg")
+	id := int64(e.backUp(t, "pg")["id"].(float64))
+
+	// While it runs, the restore is on record.
+	var during []store.RestoreRun
+	e.core.bk.duringRestore = func() { during, _ = e.s.Store.TakeInterruptedRestores(ctx) }
+	if out := e.restore(t, "pg", id); out["state"] != "done" {
+		t.Fatalf("restore: %v", out)
+	}
+	e.core.bk.duringRestore = nil
+	if len(during) != 1 || during[0].AppID != "pg" || during[0].BackupID != id {
+		t.Fatalf("recorded during the restore: %+v", during)
+	}
+	if left, _ := e.s.Store.TakeInterruptedRestores(ctx); len(left) != 0 {
+		t.Fatalf("a finished restore left %+v", left)
+	}
+	e.core.bk.failLoad = map[string]bool{"*": true}
+	if out := e.restore(t, "pg", id); out["state"] != "failed" {
+		t.Fatalf("restore: %v", out)
+	}
+	if left, _ := e.s.Store.TakeInterruptedRestores(ctx); len(left) != 0 {
+		t.Fatalf("a failed restore left %+v", left)
+	}
+
+	// The panel stopped halfway through one.
+	if err := e.s.Store.BeginRestore(ctx, "pg", id, e.s.now()); err != nil {
+		t.Fatal(err)
+	}
+	restarted := &Server{Store: e.s.Store, Log: e.s.Log}
+	if err := restarted.failInterruptedRestores(ctx); err != nil {
+		t.Fatal(err)
+	}
+	last, ok := restarted.restores.get("pg")
+	if !ok || last.State != "failed" || last.Backup != id || last.Error == nil || last.Error.Code != "restore.interrupted" {
+		t.Errorf("after the restart: %+v", last)
+	}
+	if left, _ := e.s.Store.TakeInterruptedRestores(ctx); len(left) != 0 {
+		t.Errorf("reported twice: %+v", left)
+	}
+}
+
+// Stopping the panel waits for a restore that is running, up to a limit.
+func TestStopWaitsForRestores(t *testing.T) {
+	s := newServer(t)
+	release := make(chan struct{})
+	s.jobs.Go(func() { <-release })
+	done := make(chan struct{})
+	go func() {
+		s.waitForJobs()
+		close(done)
+	}()
+	select {
+	case <-done:
+		t.Fatal("stopped with a job running")
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("still waiting after the job ended")
+	}
+
+	keep := jobsGrace
+	jobsGrace = 50 * time.Millisecond
+	defer func() { jobsGrace = keep }()
+	stuck := make(chan struct{})
+	s.jobs.Go(func() { <-stuck })
+	defer close(stuck)
+	start := time.Now()
+	s.waitForJobs()
+	if time.Since(start) > 5*time.Second {
+		t.Error("waited for a job that never ends")
+	}
+}
+
+// An update restarts the services, which cuts off a restore after the
+// database was emptied. It waits.
+func TestUpdateWaitsForBackups(t *testing.T) {
+	e := newAppEnv(t)
+	e.core.version = "v0.1.3"
+	e.s.Releases = func(context.Context) (Release, error) { return Release{Version: "v0.2.0"}, nil }
+	e.b.do("POST", "/api/server/check", nil)
+
+	e.s.backupBusy.take("pg")
+	code, out := e.b.do("POST", "/api/server/update", nil)
+	if code != http.StatusConflict || out["code"] != "update.busy" || e.core.updatedTo != "" {
+		t.Fatalf("update during a restore: %d %v, core asked for %q", code, out, e.core.updatedTo)
+	}
+	e.s.backupBusy.done("pg")
+	if code, _ := e.b.do("POST", "/api/server/update", nil); code != http.StatusAccepted || e.core.updatedTo != "v0.2.0" {
+		t.Errorf("update after it: %d, core asked for %q", code, e.core.updatedTo)
+	}
 }

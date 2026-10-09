@@ -137,11 +137,22 @@ func Load(ctx context.Context, exec Exec, k string, dump io.Reader) error {
 	}
 	sum := sha256.New()
 	counted := &counter{}
+	src := &failing{r: dump}
 	var out, stderr tail
 	code, err := exec(ctx, []string{"sh", "-c", "umask 077; cat > " + restoreFile + " && wc -c < " + restoreFile + " && sha256sum " + restoreFile},
-		io.TeeReader(dump, io.MultiWriter(sum, counted)), &out, &stderr)
+		io.TeeReader(src, io.MultiWriter(sum, counted)), &out, &stderr)
 	if err != nil {
 		return err
+	}
+	// Exec shows the command the end of its input whatever went wrong, and
+	// the count and checksum below only cover what arrived. A dump that
+	// broke off would load as if it were whole.
+	if src.err != nil {
+		exec(context.WithoutCancel(ctx), []string{"rm", "-f", restoreFile}, nil, nil, nil)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return errDamaged.Err("detail", src.err.Error())
 	}
 	if code != 0 {
 		return errCopyFailed.Err("code", code, "detail", stderr.String())
@@ -151,8 +162,15 @@ func Load(ctx context.Context, exec Exec, k string, dump io.Reader) error {
 		exec(context.WithoutCancel(ctx), []string{"rm", "-f", restoreFile}, nil, nil, nil)
 		return errCopyShort.Err("sent", counted.n, "got", strings.TrimSpace(out.String()))
 	}
+	// Up to here the restore can be given up. The load drops the database
+	// first, so once it starts, a stopping core or a panel that went away
+	// must not cut it off and leave the database empty.
+	if err := ctx.Err(); err != nil {
+		exec(context.WithoutCancel(ctx), []string{"rm", "-f", restoreFile}, nil, nil, nil)
+		return err
+	}
 	stderr = tail{}
-	code, err = exec(ctx, kd.load, nil, nil, &stderr)
+	code, err = exec(context.WithoutCancel(ctx), kd.load, nil, nil, &stderr)
 	if err != nil {
 		return err
 	}
@@ -251,6 +269,20 @@ func (e *ends) Write(b []byte) (int, error) {
 		e.tail = e.tail[len(e.tail)-e.max:]
 	}
 	return len(b), nil
+}
+
+// failing remembers the error its reader ended with, other than the end.
+type failing struct {
+	r   io.Reader
+	err error
+}
+
+func (f *failing) Read(b []byte) (int, error) {
+	n, err := f.r.Read(b)
+	if err != nil && err != io.EOF {
+		f.err = err
+	}
+	return n, err
 }
 
 type counter struct{ n int64 }

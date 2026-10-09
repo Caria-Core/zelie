@@ -84,7 +84,8 @@ type Server struct {
 	// Host describes the server; tests replace it.
 	Host func() (engine.Host, error)
 
-	busy busy
+	busy          busy
+	uploadSweeper uploadSweeper
 }
 
 func (s *Server) Handler() http.Handler {
@@ -194,6 +195,10 @@ func (s *Server) Serve(ctx context.Context, socket string) error {
 	if err := os.Chmod(socket, 0o666); err != nil {
 		l.Close()
 		return err
+	}
+	if s.Backups != nil {
+		// Uploads left from before this start have a time to go too.
+		s.sweepUploads()
 	}
 	srv := &http.Server{
 		Handler:           s.Handler(),

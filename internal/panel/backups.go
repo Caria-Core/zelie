@@ -24,6 +24,9 @@ var (
 	// A scheduled backup that failed is tried again after backupRetry, up
 	// to backupTries times before its next day.
 	backupRetry = 30 * time.Minute
+	// jobsGrace is how long the panel waits at shutdown for backups and
+	// restores that are running. systemd lets a service stop for 90 seconds.
+	jobsGrace = 60 * time.Second
 )
 
 const backupTries = 3
@@ -57,6 +60,13 @@ func (k *keyset) has(id string) bool {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	return k.set[id]
+}
+
+// any reports whether anything is held.
+func (k *keyset) any() bool {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	return len(k.set) > 0
 }
 
 // pauses keeps the supervisor away from apps a restore has stopped. Two
@@ -518,9 +528,32 @@ func (s *Server) downloadBackup(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Content-Disposition", `attachment; filename="`+name+`"`)
 	w.Header().Set("Cache-Control", "no-store")
-	if err := s.Core.DownloadBackup(r.Context(), b.AppID, b.File, w); err != nil {
+	out := &startedWriter{ResponseWriter: w}
+	if err := s.Core.DownloadBackup(r.Context(), b.AppID, b.File, out); err != nil {
 		s.Log.Error("download backup", "app", b.AppID, "backup", b.File, "err", err)
+		if !out.started {
+			w.Header().Del("Content-Disposition")
+			s.coreFailed(w, "download backup", err)
+			return
+		}
+		// The file has started; cutting the connection keeps a partial
+		// one from looking whole.
+		panic(http.ErrAbortHandler)
 	}
+}
+
+// startedWriter notes whether anything was written, after which the status
+// can no longer be changed.
+type startedWriter struct {
+	http.ResponseWriter
+	started bool
+}
+
+func (w *startedWriter) Write(b []byte) (int, error) {
+	if len(b) > 0 {
+		w.started = true
+	}
+	return w.ResponseWriter.Write(b)
 }
 
 func (s *Server) deleteBackup(w http.ResponseWriter, r *http.Request) {
@@ -576,6 +609,12 @@ func (s *Server) recoveryFile(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(buf.String()))
 }
 
+// restoreHold is how long a backup is kept at least from when it is
+// restored.
+const restoreHold = 24 * time.Hour
+
+var errRestoreInterrupted = msg.Define(0, "restore.interrupted", "The panel stopped before this restore ended, so what it was putting back may be only partly in place. Restore the backup again, or the one made just before it.")
+
 // restoreJSON is how the last restore of a database went. Restores run in
 // the background, since a large database takes longer than a browser or a
 // proxy in front of the panel waits for an answer.
@@ -616,6 +655,20 @@ func (r *restores) get(app string) (restoreJSON, bool) {
 	defer r.mu.Unlock()
 	v, ok := r.last[app]
 	return v, ok
+}
+
+// failInterruptedRestores reports the restores a stopped panel left
+// unfinished, on the page of the app each was for.
+func (s *Server) failInterruptedRestores(ctx context.Context) error {
+	runs, err := s.Store.TakeInterruptedRestores(ctx)
+	if err != nil {
+		return err
+	}
+	for _, r := range runs {
+		s.Log.Error("restore was interrupted", "app", r.AppID, "backup", r.BackupID)
+		s.restores.set(r.AppID, restoreJSON{Backup: r.BackupID, State: "failed", Error: new(errRestoreInterrupted.With()), Restarted: []string{}, At: r.StartedAt})
+	}
+	return nil
 }
 
 // zoneLabel names the server's time zone for people: its name when it has
@@ -689,6 +742,24 @@ func (s *Server) restoreBackup(w http.ResponseWriter, r *http.Request) {
 
 // runRestore backs up what is there, then puts the backup back.
 func (s *Server) runRestore(ctx context.Context, a store.App, b store.Backup, user int64) (out restoreJSON) {
+	// The safety backup made below is newer, which would end the protection
+	// of a backup kept only because it is the newest, while the restore may
+	// still fail and be tried again.
+	if err := s.Store.HoldBackup(ctx, b.ID, s.now().Add(restoreHold)); err != nil {
+		s.Log.Error("restore: hold backup", "app", a.ID, "backup", b.File, "err", err)
+		return restoreJSON{Backup: b.ID, State: "failed", Error: new(backupFailure(err)), Restarted: []string{}, At: s.now()}
+	}
+	// A restore that stops halfway leaves this behind, and the next start
+	// reports it.
+	if err := s.Store.BeginRestore(ctx, a.ID, b.ID, s.now()); err != nil {
+		s.Log.Error("restore: record start", "app", a.ID, "backup", b.File, "err", err)
+		return restoreJSON{Backup: b.ID, State: "failed", Error: new(backupFailure(err)), Restarted: []string{}, At: s.now()}
+	}
+	defer func() {
+		if err := s.Store.EndRestore(context.WithoutCancel(ctx), a.ID); err != nil {
+			s.Log.Error("restore: record end", "app", a.ID, "err", err)
+		}
+	}()
 	if err := s.ensureLocal(ctx, &b); err != nil {
 		s.Log.Error("restore: fetch backup", "app", a.ID, "backup", b.File, "err", err)
 		return restoreJSON{Backup: b.ID, State: "failed", Error: new(backupFailure(err)), Restarted: []string{}, At: s.now()}

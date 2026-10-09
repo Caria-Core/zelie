@@ -8,6 +8,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	_ "time/tzdata" // zones for the tests, whatever the machine has
 
 	"github.com/Caria-Core/zelie/internal/store"
 )
@@ -403,4 +404,40 @@ func waitFor(t *testing.T, ok func() bool) {
 		}
 	}
 	t.Fatal("timed out")
+}
+
+// On the day the clocks go back the same hour is shown twice, and a
+// schedule at a time of day runs for the first only.
+func TestSchedulerRunsOnceWhenClocksGoBack(t *testing.T) {
+	berlin, err := time.LoadLocation("Europe/Berlin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	se := newScheduleEnv(t)
+	se.create(t, map[string]any{"cron": "30 2 * * *", "tasks": []any{cmd("say daily")}})
+	se.create(t, map[string]any{"cron": "30 * * * *", "tasks": []any{cmd("say hourly")}})
+	container := se.startGame(t, "srv")
+	// The two schedules run side by side, so the order is not fixed.
+	said := func() []string {
+		got := se.stdin(container)
+		slices.Sort(got)
+		return got
+	}
+
+	// 2027-10-31, when 3:00 became 2:00 again. 2:31 the first time is 0:31
+	// in UTC.
+	se.clock = time.Date(2027, 10, 31, 0, 31, 0, 0, time.UTC).In(berlin)
+	se.tick(t)
+	if got := said(); !slices.Equal(got, []string{"say daily\n", "say hourly\n"}) {
+		t.Fatalf("at 2:31 the first time: %q", got)
+	}
+	se.clock = se.clock.Add(time.Hour)
+	if _, off := se.clock.Zone(); off != 3600 {
+		t.Fatalf("setup: the clocks show %d seconds from UTC", off)
+	}
+	se.tick(t)
+	// The schedule for every hour runs again; the one for 2:30 does not.
+	if got := said(); !slices.Equal(got, []string{"say daily\n", "say hourly\n", "say hourly\n"}) {
+		t.Errorf("at 2:31 the second time: %q", got)
+	}
 }

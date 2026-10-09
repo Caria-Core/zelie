@@ -560,5 +560,22 @@ CREATE TABLE steam_web_key (
 -- What an app ran with once a deployment of it went live: start command,
 -- port, limits and health path, as JSON. Empty for older deployments.
 ALTER TABLE deployments ADD COLUMN settings TEXT NOT NULL DEFAULT '';
+`, `
+-- The last backup and schedule id handed out, as for deployments: anything
+-- still holding the id of a deleted row (an off-site upload on its way, a
+-- run in progress) must not find it on a new one.
+CREATE TABLE backup_seq (last INTEGER NOT NULL) STRICT;
+INSERT INTO backup_seq (last) SELECT coalesce(max(id), 0) FROM backups;
+CREATE TABLE schedule_seq (last INTEGER NOT NULL) STRICT;
+INSERT INTO schedule_seq (last) SELECT coalesce(max(id), 0) FROM schedules;
+
+-- A restore that has begun and not ended. The panel keeps how a restore
+-- goes in memory; a row left behind after it stopped tells the next start
+-- that this one was cut off.
+CREATE TABLE restore_runs (
+	app_id     TEXT PRIMARY KEY,
+	backup_id  INTEGER NOT NULL,
+	started_at INTEGER NOT NULL
+) STRICT;
 `,
 }

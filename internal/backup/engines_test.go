@@ -5,12 +5,16 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
+	"testing/iotest"
+
+	"github.com/Caria-Core/zelie/internal/msg"
 )
 
 // fakeExec answers like a container would: out for the command, and for the
@@ -88,6 +92,72 @@ func TestLoadNeedsTheWholeFile(t *testing.T) {
 	}
 	if err := Load(context.Background(), f.exec, "redis", strings.NewReader("REDIS")); err == nil {
 		t.Error("redis loaded in place")
+	}
+}
+
+// A backup that cannot be read to its end (a flipped bit, a truncated copy)
+// reaches the container as a shorter file that passes the count and checksum
+// of what arrived. It must not be loaded.
+func TestLoadRefusesABrokenBackup(t *testing.T) {
+	dump := strings.Repeat("insert into t values (1);\n", 1000)
+	broken := io.MultiReader(strings.NewReader(dump[:len(dump)/2]), iotest.ErrReader(errors.New("failed to decrypt and authenticate payload chunk")))
+	f := &fakeExec{}
+	err := Load(context.Background(), f.exec, "postgres", broken)
+	var me *msg.Error
+	if !errors.As(err, &me) || me.Code != "restore.damaged" || !strings.Contains(me.Text, "payload chunk") {
+		t.Fatalf("a broken backup gave %v", err)
+	}
+	// Nothing was dropped, and the half that was copied in is removed.
+	for _, c := range f.commands {
+		if strings.Contains(strings.Join(c, " "), "DROP") {
+			t.Errorf("ran %q after a broken backup", c)
+		}
+	}
+	if last := f.commands[len(f.commands)-1]; len(last) < 3 || last[0] != "rm" || last[2] != restoreFile {
+		t.Errorf("the copy was left in the container: %q", f.commands)
+	}
+}
+
+// The load drops the database before it fills it, so it runs to its end even
+// when the request that asked for it is gone; before it starts, a request
+// that is gone stops it.
+func TestLoadIsNotCutOffOnceItDrops(t *testing.T) {
+	dump := "insert into t values (1);\n"
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var loaded bool
+	exec := func(c context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) (uint32, error) {
+		if stdin != nil {
+			b, _ := io.ReadAll(stdin)
+			io.WriteString(stdout, strings.Join([]string{itoa(len(b)), sha256hex(b), restoreFile}, "\n"))
+			cancel() // the panel went away, or the core is stopping
+			return 0, nil
+		}
+		if strings.Contains(strings.Join(args, " "), "DROP DATABASE") {
+			loaded = true
+		}
+		return 0, nil
+	}
+	if err := Load(ctx, exec, "postgres", strings.NewReader(dump)); !errors.Is(err, context.Canceled) {
+		t.Fatalf("a request that went away before the load: %v", err)
+	}
+	if loaded {
+		t.Fatal("the database was dropped for a request that was gone")
+	}
+
+	ctx, cancel = context.WithCancel(context.Background())
+	defer cancel()
+	exec = func(c context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) (uint32, error) {
+		if stdin != nil {
+			b, _ := io.ReadAll(stdin)
+			io.WriteString(stdout, strings.Join([]string{itoa(len(b)), sha256hex(b), restoreFile}, "\n"))
+			return 0, nil
+		}
+		cancel() // gone while the load runs
+		return 0, c.Err()
+	}
+	if err := Load(ctx, exec, "postgres", strings.NewReader(dump)); err != nil {
+		t.Errorf("a load cut off by its request going away: %v", err)
 	}
 }
 

@@ -152,13 +152,12 @@ func insertTasks(ctx context.Context, tx *sql.Tx, id int64, tasks []ScheduleTask
 // LastSlot is what the caller sets, normally the current minute.
 func (s *Store) CreateSchedule(ctx context.Context, x Schedule) (int64, error) {
 	var id int64
-	err := s.tx(ctx, func(tx *sql.Tx) error {
-		res, err := tx.ExecContext(ctx, "INSERT INTO schedules (app_id, name, cron, only_running, enabled, created_at, last_slot) VALUES (?, ?, ?, ?, ?, ?, ?)",
-			x.AppID, x.Name, x.Cron, x.OnlyRunning, x.Enabled, x.CreatedAt.Unix(), x.LastSlot.Unix())
-		if err != nil {
+	err := s.tx(ctx, func(tx *sql.Tx) (err error) {
+		if id, err = nextID(ctx, tx, "schedule_seq", "schedules"); err != nil {
 			return err
 		}
-		if id, err = res.LastInsertId(); err != nil {
+		if _, err = tx.ExecContext(ctx, "INSERT INTO schedules (id, app_id, name, cron, only_running, enabled, created_at, last_slot) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+			id, x.AppID, x.Name, x.Cron, x.OnlyRunning, x.Enabled, x.CreatedAt.Unix(), x.LastSlot.Unix()); err != nil {
 			return err
 		}
 		return insertTasks(ctx, tx, id, x.Tasks)

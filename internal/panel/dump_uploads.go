@@ -221,6 +221,12 @@ func (s *Server) finishDumpUpload(w http.ResponseWriter, r *http.Request) {
 		defer s.backupBusy.done(a.ID)
 		b, err := s.importDump(ctx, a, u)
 		if err != nil {
+			// After a failure that is not the file's, the core keeps it for
+			// another try. Nothing here offers one, and it is a whole dump
+			// in the clear.
+			if rerr := s.Core.RemoveUpload(ctx, u.ID); rerr != nil && !isNotFound(rerr) {
+				s.Log.Error("dump upload: remove", "app", a.ID, "upload", u.ID, "err", rerr)
+			}
 			s.restores.set(a.ID, restoreJSON{Backup: b.ID, State: "failed", Error: new(backupFailure(err)), Restarted: []string{}, At: s.now()})
 			return
 		}
