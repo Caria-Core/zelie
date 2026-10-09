@@ -490,13 +490,20 @@ func (c *appCore) SetExternal(_ context.Context, app, engine, container string, 
 		}
 	}
 	c.extSets = append(c.extSets, fmt.Sprintf("%s %d %v", app, port, sealed != ""))
+	// Like the core: a listener that is open already stays, and a moved one
+	// is closed before the new port is tried.
+	l := core.ExternalListener{App: app, Port: port, Target: target}
+	if c.external[app] == l {
+		return nil
+	}
+	delete(c.external, app)
 	if c.takenPorts[port] {
-		return &core.Error{Status: http.StatusConflict, Code: "external.port_taken", Message: "taken"}
+		return &core.Error{Status: http.StatusConflict, Code: "external.port_taken", Message: "taken", Params: map[string]any{"port": port}}
 	}
 	if c.external == nil {
 		c.external = map[string]core.ExternalListener{}
 	}
-	c.external[app] = core.ExternalListener{App: app, Port: port, Target: target}
+	c.external[app] = l
 	return nil
 }
 
@@ -511,10 +518,16 @@ func (c *appCore) SyncExternal(_ context.Context, list []core.ExternalListener) 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.external = map[string]core.ExternalListener{}
+	var err error
 	for _, l := range list {
+		if c.takenPorts[l.Port] {
+			// The others are open all the same, as in the core.
+			err = &core.Error{Status: http.StatusConflict, Code: "external.port_taken", Message: "taken", Params: map[string]any{"port": l.Port}}
+			continue
+		}
 		c.external[l.App] = l
 	}
-	return nil
+	return err
 }
 
 func (c *appCore) SetForwards(_ context.Context, app string, forwards []engine.Forward) error {

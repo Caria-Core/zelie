@@ -11,7 +11,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -176,10 +175,7 @@ var (
 // https://panel.example.com. GitHub sends people and webhooks back there.
 func (s *Server) panelBase(r *http.Request) (string, error) {
 	host := r.Host
-	name := host
-	if h, _, err := net.SplitHostPort(host); err == nil {
-		name = h
-	}
+	name := requestHost(r)
 	if s.Proxy != nil {
 		cfg, err := s.Proxy.Config(r.Context())
 		if err != nil {

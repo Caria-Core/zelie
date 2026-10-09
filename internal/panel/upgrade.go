@@ -240,6 +240,9 @@ func (s *Server) runUpgrade(ctx context.Context, db store.App, d *store.Deployme
 		if err == nil {
 			err = s.Store.RemoveExternalAccess(ctx, db.ID)
 		}
+		if err == nil {
+			s.held.drop(db.ID)
+		}
 		s.externalMu.Unlock()
 		if err != nil {
 			s.Log.Error("upgrade: turn off outside access", "database", db.ID, "err", err)

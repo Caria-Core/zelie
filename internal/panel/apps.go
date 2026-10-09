@@ -937,13 +937,25 @@ func (s *Server) deleteApp(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// Under externalMu, as in an upgrade, and the saved port goes with the
+	// listener: a retry of a held port, or a page that checks it, would open
+	// it again for a database that is going.
+	s.externalMu.Lock()
 	if _, err := s.Store.ExternalAccess(ctx, a.ID); err == nil {
 		// Its containers are gone, and its user with them.
 		if err := s.Core.RemoveExternal(ctx, a.ID, a.Engine, ""); err != nil {
+			s.externalMu.Unlock()
 			s.coreFailed(w, "remove outside access", err)
 			return
 		}
+		if err := s.Store.RemoveExternalAccess(ctx, a.ID); err != nil {
+			s.externalMu.Unlock()
+			s.fail(w, "remove outside access", err)
+			return
+		}
+		s.held.drop(a.ID)
 	}
+	s.externalMu.Unlock()
 	if err := s.removeDeployLogs(ctx, a.ID); err != nil {
 		s.fail(w, "remove deployment logs", err)
 		return

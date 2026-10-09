@@ -44,6 +44,15 @@ func TestCheck(t *testing.T) {
 	}
 }
 
+// An address typed in full is kept in its shortest form, the one a browser
+// sends, so the panel's route matches the requests that come to it.
+func TestCheckKeepsAnIPInItsShortestForm(t *testing.T) {
+	o := Options{Mode: ModeIP, Host: " 2001:0DB8:0::1 "}
+	if err := o.Check(); err != nil || o.Host != "2001:db8::1" {
+		t.Errorf("%q, %v", o.Host, err)
+	}
+}
+
 const token = "eyJhIjoiMTIzNDU2Nzg5MGFiY2RlZiIsInQiOiJhYmNkZWYtMTIzNCIsInMiOiJzZWNyZXQifQ=="
 
 func TestTunnelToken(t *testing.T) {

@@ -64,9 +64,12 @@ func (o *Options) Check() error {
 			return fmt.Errorf("%q is not a domain name", o.Host)
 		}
 	case ModeIP:
-		if _, err := netip.ParseAddr(o.Host); err != nil {
+		ip, err := netip.ParseAddr(o.Host)
+		if err != nil {
 			return fmt.Errorf("%q is not an IP address", o.Host)
 		}
+		// The shortest form, which is what the proxy matches requests on.
+		o.Host = ip.String()
 	default:
 		return fmt.Errorf("unknown mode %q", o.Mode)
 	}

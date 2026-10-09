@@ -37,6 +37,14 @@ var (
 	errBackDown = msg.Define(0, "update.back_failed", "{version} did not come back up either: {detail}")
 	errNoSave   = msg.Define(0, "update.db_unsaved", "The panel's database could not be copied before the update: {detail}")
 	errBackNoDB = msg.Define(0, "update.back_without_db", "{version} is running again, but the panel's database could not be put back: {detail}. Its copy is {copy}.")
+	// When the old version cannot be put back and the database copy had
+	// stopped the panel, it is started on the new one: without a panel the
+	// update would leave nothing to say what went wrong. That panel runs
+	// against the old core and proxy, on a database nothing can restore.
+	errNoOldPanelUp   = msg.Define(0, "update.old_unplaced_panel_up", "The old version could not be put back: {detail}. The panel was started again, running {version} while the core and the proxy are still on {from}. Its database has no copy from before the update, so what {version} changes in it cannot be undone.")
+	errNoOldPanelDown = msg.Define(0, "update.old_unplaced_panel_down", "The old version could not be put back: {detail}. The panel could not be started again either: {start}.")
+	// The new version's restart already started the panel.
+	errNoOldCopyKept = msg.Define(0, "update.old_unplaced_db_kept", "The old version could not be put back: {detail}. The panel's database from before the update is kept in {copy}.")
 )
 
 // Result is the outcome of the last update, as the panel shows it.
@@ -88,14 +96,44 @@ func removeStrays(dir string) {
 // Revert puts Old back as the binary the services run from, for an update
 // that did not come up or could not be started at all.
 func Revert(root string) error {
-	bin, err := os.ReadFile(filepath.Join(root, Old))
-	if err != nil {
-		return fmt.Errorf("the old binary could not be read back: %w", err)
-	}
-	if err := writeAtomic(filepath.Join(root, install.Binary), bin); err != nil {
-		return fmt.Errorf("the old binary could not be put back: %w", err)
+	if step, err := putOldBack(root); err != nil {
+		return step.Err("detail", err.Error())
 	}
 	return nil
+}
+
+// putOldBack is Revert, with the message that says which step failed. It
+// takes no room on the disk when it can help it: a full disk is a likely
+// reason for the update to have failed, and a second name for the old file
+// costs none. Copying is for a file system that cannot link.
+func putOldBack(root string) (msg.Template, error) {
+	old, target := filepath.Join(root, Old), filepath.Join(root, install.Binary)
+	if linkOver(old, target) == nil {
+		return msg.Template{}, nil
+	}
+	bin, err := os.ReadFile(old)
+	if err != nil {
+		return errNoOld, err
+	}
+	if err := writeAtomic(target, bin); err != nil {
+		return errNoPutOld, err
+	}
+	return msg.Template{}, nil
+}
+
+// linkOver makes dst another name for src, replacing dst in one step.
+func linkOver(src, dst string) error {
+	// The name starts like writeAtomic's, so removeStrays clears it too.
+	tmp := dst + ".tmp-link"
+	os.Remove(tmp)
+	if err := os.Link(src, tmp); err != nil {
+		return err
+	}
+	err := os.Rename(tmp, dst)
+	// Renaming a name onto another name of the same file does nothing and
+	// leaves both.
+	os.Remove(tmp)
+	return err
 }
 
 // writeAtomic replaces path with data in one step. The file is written
@@ -137,7 +175,7 @@ type Finisher struct {
 // went.
 func (f *Finisher) Run(ctx context.Context, from, to string) Result {
 	res := Result{From: from, To: to, At: f.Now()}
-	saved, err := f.saveDatabase(ctx)
+	saved, stopped, err := f.saveDatabase(ctx)
 	if err != nil {
 		err = errNoSave.Err("detail", err.Error())
 	} else {
@@ -153,10 +191,8 @@ func (f *Finisher) Run(ctx context.Context, from, to string) Result {
 	res.Reason = &reason
 	// Back to the binary that worked, and to the database it understands.
 	var back msg.Msg
-	if bin, rerr := os.ReadFile(filepath.Join(f.Root, Old)); rerr != nil {
-		back = errNoOld.With("detail", rerr.Error())
-	} else if werr := writeAtomic(filepath.Join(f.Root, install.Binary), bin); werr != nil {
-		back = errNoPutOld.With("detail", werr.Error())
+	if step, rerr := putOldBack(f.Root); rerr != nil {
+		back = f.stranded(ctx, step, rerr, from, to, saved, stopped)
 	} else {
 		var dberr error
 		if saved {
@@ -181,6 +217,27 @@ func (f *Finisher) Run(ctx context.Context, from, to string) Result {
 	res.Error = strings.TrimSuffix(reason.Text, ".") + ". " + back.Text
 	f.save(res)
 	return res
+}
+
+// stranded says what became of the services when the old version could not
+// be put back, and gives the panel a chance to show it. step and cause are
+// what putOldBack could not do.
+func (f *Finisher) stranded(ctx context.Context, step msg.Template, cause error, from, to string, saved, stopped bool) msg.Msg {
+	switch {
+	case stopped && !saved:
+		// The database copy failed after the panel was stopped for it, and
+		// the restart that would have started it was skipped. A panel that
+		// shows what went wrong beats none.
+		if err := f.startPanel(ctx); err != nil {
+			return errNoOldPanelDown.With("detail", cause.Error(), "start", err.Error())
+		}
+		return errNoOldPanelUp.With("detail", cause.Error(), "version", to, "from", from)
+	case saved:
+		// The restart to the new version ran, or was at least tried; the
+		// copy is kept for whoever puts the old version back by hand.
+		return errNoOldCopyKept.With("detail", cause.Error(), "copy", DBCopy)
+	}
+	return step.With("detail", cause.Error())
 }
 
 func (f *Finisher) restartAndWait(ctx context.Context, version string) error {

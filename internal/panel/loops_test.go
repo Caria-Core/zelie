@@ -134,6 +134,7 @@ func TestNothingRunsOnAnEmptyServer(t *testing.T) {
 	rounds := map[string]func(context.Context) bool{
 		"supervise": e.s.superviseOnce, "metrics": e.s.recordMetrics, "image-check": e.s.checkImages, "volumes": e.s.checkVolumes,
 		"steam": e.s.steamRound, "schedules": e.s.schedulesOnce, "backups": e.s.backupsOnce, "uploads": e.s.uploadsOnce,
+		"external": e.s.retryExternalOnce,
 	}
 	for name, round := range rounds {
 		if round(ctx) {
@@ -141,13 +142,13 @@ func TestNothingRunsOnAnEmptyServer(t *testing.T) {
 		}
 	}
 	e.core.mu.Lock()
-	lists := e.core.lists
+	lists, ports := e.core.lists, len(e.core.extSets)
 	e.core.mu.Unlock()
 	e.proxy.mu.Lock()
 	reads := e.proxy.statsCalls
 	e.proxy.mu.Unlock()
-	if lists != 0 || reads != 0 {
-		t.Errorf("an empty server asked the core for its containers %d times and the proxy for its counts %d times", lists, reads)
+	if lists != 0 || reads != 0 || ports != 0 {
+		t.Errorf("an empty server asked the core for its containers %d times and for its outside access ports %d times, and the proxy for its counts %d times", lists, ports, reads)
 	}
 }
 

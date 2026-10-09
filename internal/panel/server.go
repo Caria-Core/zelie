@@ -19,6 +19,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -37,6 +38,8 @@ const setupLinkTTL = 24 * time.Hour
 type Server struct {
 	// Shorter waits for tests; zero means the usual ones.
 	testStopGrace, testWatchRetry time.Duration
+	// testPortFree stands in for trying a port on the machine.
+	testPortFree func(port int) bool
 
 	Store  *store.Store
 	Sealer *Sealer
@@ -107,8 +110,12 @@ type Server struct {
 	banKeepers    banKeepers
 	banLocks      banLocks
 
-	// externalMu keeps two requests from picking the same port.
+	// externalMu keeps two requests from picking the same port, and holds
+	// back the job that retries held ports while one changes a database's
+	// access. It guards held too.
 	externalMu sync.Mutex
+	// held are the databases whose outside access port something else holds.
+	held externalHeld
 	// backupBusy holds the databases being backed up or restored.
 	backupBusy keyset
 	// uploading holds the ids of backups being sent off-site, and
@@ -139,6 +146,16 @@ func (s *Server) baseContext() context.Context {
 		return s.ctx
 	}
 	return context.Background()
+}
+
+// requestHost is the name or address a request was made to, without the
+// port. An IPv6 address comes without its brackets, the way the proxy's
+// configuration keeps it.
+func requestHost(r *http.Request) string {
+	if h, _, err := net.SplitHostPort(r.Host); err == nil {
+		return h
+	}
+	return strings.Trim(r.Host, "[]")
 }
 
 func (s *Server) now() time.Time {
@@ -223,6 +240,7 @@ func (s *Server) Handler() http.Handler {
 	web.HandleFunc("POST /api/server/update", s.confirmed(s.startUpdate))
 	web.HandleFunc("GET /api/apps/{app}/external", s.signedIn(s.getExternal))
 	web.HandleFunc("POST /api/apps/{app}/external", s.confirmed(s.setExternal))
+	web.HandleFunc("PUT /api/apps/{app}/external", s.signedIn(s.moveExternal))
 	web.HandleFunc("DELETE /api/apps/{app}/external", s.signedIn(s.removeExternal))
 	web.HandleFunc("GET /api/apps/{app}/data/export/{token}", s.signedIn(s.downloadExport))
 	web.HandleFunc("POST /api/apps/{app}/data/keys", s.signedIn(s.dataKeys))

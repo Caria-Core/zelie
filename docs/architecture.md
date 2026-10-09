@@ -159,6 +159,10 @@ against the database's catalog, and runs it read-only with a time limit.
 Desktop tools reach a database through an SSH tunnel. The core listens on a port on
 127.0.0.1 and passes each connection to the database's container, and the tool signs in
 as a user made for it alone, so its password can change or go without touching the apps.
+If another program on the server holds that port, the page says so and shows no connection
+details, so a tunnel is never pointed at the wrong program. The panel tries the port again
+every minute, only while one is held, and once each time the page is opened or you press
+Check again. The page offers a free port from the engine's own range to move to.
 
 Backups are encrypted with [age](https://age-encryption.org) before they touch the disk.
 The key is the core's; a recovery file, which the panel asks you to save, lets another

@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { ask } from '$lib/ask.svelte';
 	import { Copy, Check, KeyRound, Laptop, Server, TriangleAlert } from '@lucide/svelte';
-	import { api } from '$lib/api';
+	import { api, ApiError } from '$lib/api';
 	import type { App } from '$lib/apps.svelte';
 	import { sensitive } from '$lib/confirm.svelte';
 	import { messageOf } from '$lib/errors';
@@ -11,23 +11,43 @@
 
 	// Outside access: a desktop tool reaches the database through an SSH
 	// tunnel to a port only this server itself can open. The password is
-	// shown once, right after it is made.
-	type External = { enabled: boolean; port?: number; user?: string; database?: string; password?: string };
+	// shown once, right after it is made. When another program holds the
+	// port the server sends no way in, only the port and a free one to move to.
+	type External = {
+		enabled: boolean;
+		port?: number;
+		user?: string;
+		database?: string;
+		password?: string;
+		port_taken?: boolean;
+		free_port?: number;
+	};
 
 	let { app }: { app: App } = $props();
+	// The app is replaced by a fresh copy every few seconds, and an effect
+	// that read it would run each time: asking the core about the port again
+	// and dropping the password that is shown once. The id only changes when
+	// the page moves to another database.
+	const id = $derived(app.id);
 	let x = $state<External | null>(null);
 	let password = $state('');
 	let error = $state('');
 	let busy = $state(false);
 	let copied = $state('');
 
+	// An answer for the database the page has since moved away from is dropped.
+	async function load() {
+		const want = id;
+		const r = await api<External>('GET', `/apps/${want}/external`);
+		if (want === id) x = r;
+	}
+
 	$effect(() => {
-		app.id;
+		const want = id;
+		x = null;
 		password = '';
-		api<External>('GET', `/apps/${app.id}/external`).then(
-			(r) => (x = r),
-			(err) => (error = messageOf(err))
-		);
+		error = '';
+		load().catch((err) => want === id && (error = messageOf(err)));
 	});
 
 	// The address the browser reached the panel at is the server's.
@@ -55,6 +75,10 @@
 			await fn();
 		} catch (err) {
 			error = messageOf(err);
+			// The server may know more than the page does: a port that turned
+			// out to be taken takes the connection details away. The error
+			// above is the one to show, so a failed read adds nothing.
+			if (err instanceof ApiError && fn !== load) await load().catch(() => {});
 		} finally {
 			busy = false;
 		}
@@ -62,15 +86,20 @@
 
 	const setUp = () =>
 		act(async () => {
-			const r = await sensitive(() => api<External>('POST', `/apps/${app.id}/external`));
+			const r = await sensitive(() => api<External>('POST', `/apps/${id}/external`));
 			password = r.password ?? '';
 			x = { ...r, password: undefined };
+		});
+
+	const move = (port: number) =>
+		act(async () => {
+			x = await api<External>('PUT', `/apps/${id}/external`, { port });
 		});
 
 	async function turnOff() {
 		if (!(await ask({ title: t('outside.offConfirm'), text: t('outside.offConfirmText'), action: t('common.turnOff'), danger: true }))) return;
 		act(async () => {
-			await api('DELETE', `/apps/${app.id}/external`);
+			await api('DELETE', `/apps/${id}/external`);
 			x = { enabled: false };
 			password = '';
 		});
@@ -114,6 +143,22 @@
 			<Button {busy} disabled={!running} onclick={setUp}>{t('outside.setUp')}</Button>
 			{#if !running}<span class="text-sm text-muted">{t('outside.notRunning')}</span>{/if}
 		</div>
+	{:else if x?.port_taken}
+		<div class="flex flex-col gap-3 rounded-2xl border border-line bg-panel p-4">
+			<p class="flex gap-2.5 text-sm">
+				<TriangleAlert size={16} strokeWidth={1.75} class="mt-0.5 shrink-0" />
+				<span><span class="font-medium">{t('outside.takenTitle', { port: x.port ?? 0 })}</span> <span class="text-muted">{t('outside.taken')}</span></span>
+			</p>
+			<p class="text-sm text-muted">{x.free_port ? t('outside.moveLead', { port: x.free_port }) : t('outside.noFreePort')}</p>
+		</div>
+		<div class="flex flex-wrap items-center gap-3">
+			{#if x.free_port}
+				<Button {busy} onclick={() => move(x?.free_port ?? 0)}>{t('outside.usePort', { port: x.free_port })}</Button>
+			{/if}
+			<Button kind={x.free_port ? 'secondary' : 'primary'} {busy} onclick={() => act(load)}>{t('outside.checkAgain')}</Button>
+			<Button kind="quiet" {busy} disabled={!running} class="hover:!text-danger" onclick={turnOff}>{t('outside.turnOff')}</Button>
+		</div>
+		{#if !running}<p class="text-sm text-muted">{t('outside.notRunning')}</p>{/if}
 	{:else if x?.enabled}
 		{#if password}
 			<div class="flex flex-col gap-3 rounded-2xl border border-line bg-panel p-4">

@@ -27,19 +27,20 @@ const DBCopy = "/var/lib/zelie/panel.db.before-update"
 const walSuffix = "-wal"
 
 // saveDatabase stops the panel and copies its database aside. It reports
-// whether there was one to copy. The panel stays stopped: the restart that
-// follows brings it up on the new version, after the copy.
-func (f *Finisher) saveDatabase(ctx context.Context) (bool, error) {
+// whether there was one to copy, and whether the panel is stopped, which it
+// is after an error too once the stop worked. The panel stays stopped: the
+// restart that follows brings it up on the new version, after the copy.
+func (f *Finisher) saveDatabase(ctx context.Context) (bool, bool, error) {
 	live := filepath.Join(f.Root, install.PanelDB)
 	// Lstat: a link under the database's name is something to refuse below,
 	// not a reason to think there is no database.
 	if _, err := os.Lstat(live); errors.Is(err, os.ErrNotExist) {
-		return false, nil
+		return false, false, nil
 	} else if err != nil {
-		return false, err
+		return false, false, err
 	}
 	if err := f.stopPanel(ctx); err != nil {
-		return false, err
+		return false, false, err
 	}
 	// A copy left by an update that went wrong is of no use to this one.
 	f.dropDatabaseCopy()
@@ -47,13 +48,13 @@ func (f *Finisher) saveDatabase(ctx context.Context) (bool, error) {
 	// The log goes first and the database last, so a copy that has the
 	// database has its log too.
 	if err := copyFile(saved+walSuffix, live+walSuffix, -1, -1); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return false, err
+		return false, true, err
 	}
 	if err := copyFile(saved, live, -1, -1); err != nil {
 		f.dropDatabaseCopy()
-		return false, err
+		return false, true, err
 	}
-	return true, nil
+	return true, true, nil
 }
 
 // restoreDatabase puts the copy made by saveDatabase back, for the version
@@ -88,8 +89,16 @@ func (f *Finisher) restoreDatabase(ctx context.Context) error {
 }
 
 func (f *Finisher) stopPanel(ctx context.Context) error {
-	if out, err := f.Exec(ctx, "systemctl", "stop", install.PanelService); err != nil {
-		return fmt.Errorf("systemctl stop %s: %v: %s", install.PanelService, err, strings.TrimSpace(out))
+	return f.panelService(ctx, "stop")
+}
+
+func (f *Finisher) startPanel(ctx context.Context) error {
+	return f.panelService(ctx, "start")
+}
+
+func (f *Finisher) panelService(ctx context.Context, verb string) error {
+	if out, err := f.Exec(ctx, "systemctl", verb, install.PanelService); err != nil {
+		return fmt.Errorf("systemctl %s %s: %v: %s", verb, install.PanelService, err, strings.TrimSpace(out))
 	}
 	return nil
 }

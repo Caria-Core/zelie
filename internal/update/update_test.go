@@ -372,6 +372,119 @@ func TestUpdateStopsWhenTheDatabaseCannotBeSaved(t *testing.T) {
 	}
 }
 
+// If the database cannot be saved and the old binary cannot be put back
+// either, nothing restarts the services. The panel was stopped for the copy,
+// so it is started again, or the update would leave no panel to show why it
+// failed. It is the new version, against the old core and proxy and with no
+// copy of its database, and the result says so.
+func TestUpdateStartsThePanelWhenNothingCanGoBack(t *testing.T) {
+	root := setup(t)
+	panelDatabase(t, root)
+	os.RemoveAll(filepath.Join(root, filepath.Dir(DBCopy)))
+	os.Remove(filepath.Join(root, Old))
+	var ran []string
+	exec, _ := server(root, &ran)
+	f := &Finisher{Root: root, Timeout: time.Second, Now: time.Now, Exec: exec, Healthy: func(context.Context, string) error { return errors.New("no") }}
+	res := f.Run(context.Background(), "v1.2.2", "v1.2.3")
+	if res.OK || res.Reason == nil || res.Reason.Code != "update.db_unsaved" {
+		t.Fatalf("%+v", res)
+	}
+	if res.Back == nil || res.Back.Code != "update.old_unplaced_panel_up" || res.Back.Params["version"] != "v1.2.3" || res.Back.Params["from"] != "v1.2.2" {
+		t.Fatalf("back %+v", res.Back)
+	}
+	// The cause is in it, and the whole thing is in the text saved for
+	// earlier languages.
+	if detail, _ := res.Back.Params["detail"].(string); !strings.Contains(detail, Old) || !strings.Contains(res.Error, res.Back.Text) {
+		t.Errorf("detail %q, error %q", detail, res.Error)
+	}
+	if !slices.Equal(ran, []string{"systemctl stop zelie-panel", "systemctl start zelie-panel"}) {
+		t.Errorf("ran %v", ran)
+	}
+
+	// And when even that fails, the result says so.
+	f.Exec = func(ctx context.Context, name string, args ...string) (string, error) {
+		if args[0] == "start" {
+			return "Failed to start zelie-panel.service", errors.New("exit status 1")
+		}
+		return exec(ctx, name, args...)
+	}
+	res = f.Run(context.Background(), "v1.2.2", "v1.2.3")
+	if res.Back == nil || res.Back.Code != "update.old_unplaced_panel_down" || !strings.Contains(res.Back.Text, "Failed to start") {
+		t.Errorf("back %+v", res.Back)
+	}
+}
+
+// A panel that was never stopped has nothing to be started, and a panel the
+// restart already brought up is not started again: the result must not say
+// it was.
+func TestUpdateDoesNotStartThePanelThatIsRunning(t *testing.T) {
+	// The database was saved, the new version did not come up, and the old
+	// binary is gone. The restart started the panel.
+	root := setup(t)
+	panelDatabase(t, root)
+	os.Remove(filepath.Join(root, Old))
+	var ran []string
+	exec, _ := server(root, &ran)
+	f := &Finisher{Root: root, Timeout: time.Second, Now: time.Now, Exec: exec, Healthy: func(context.Context, string) error { return errors.New("no") }}
+	res := f.Run(context.Background(), "v1.2.2", "v1.2.3")
+	if res.OK || res.Back == nil || res.Back.Code != "update.old_unplaced_db_kept" || res.Back.Params["copy"] != DBCopy {
+		t.Fatalf("%+v %+v", res, res.Back)
+	}
+	if slices.Contains(ran, "systemctl start zelie-panel") {
+		t.Errorf("ran %v", ran)
+	}
+	if read(root, DBCopy) != "schema 31" {
+		t.Errorf("the copy is %q", read(root, DBCopy))
+	}
+
+	// The panel would not stop: it is still the old one, running.
+	root = setup(t)
+	panelDatabase(t, root)
+	os.Remove(filepath.Join(root, Old))
+	ran = nil
+	f = &Finisher{Root: root, Timeout: time.Second, Now: time.Now, Healthy: func(context.Context, string) error { return errors.New("no") },
+		Exec: func(_ context.Context, name string, args ...string) (string, error) {
+			ran = append(ran, name+" "+strings.Join(args, " "))
+			return "Job for zelie-panel.service canceled.", errors.New("exit status 1")
+		},
+	}
+	res = f.Run(context.Background(), "v1.2.2", "v1.2.3")
+	if res.OK || res.Reason == nil || res.Reason.Code != "update.db_unsaved" || res.Back == nil || res.Back.Code != "update.old_unread" {
+		t.Fatalf("%+v %+v", res, res.Back)
+	}
+	if !slices.Equal(ran, []string{"systemctl stop zelie-panel"}) {
+		t.Errorf("ran %v", ran)
+	}
+}
+
+// Going back after a failed update gives the binary the old file's second
+// name instead of a copy of it, so a disk too full for the update is not too
+// full for this.
+func TestUpdateThatFailsGoesBackWithoutRoom(t *testing.T) {
+	root := setup(t)
+	f := &Finisher{
+		Root: root, Timeout: time.Second, Now: time.Now,
+		Exec: func(context.Context, string, ...string) (string, error) { return "", nil },
+		Healthy: func(_ context.Context, v string) error {
+			if read(root, install.Binary) == "old binary" && v == "v1.2.2" {
+				return nil
+			}
+			return errors.New("no")
+		},
+	}
+	if res := f.Run(context.Background(), "v1.2.2", "v1.2.3"); res.Back == nil || res.Back.Code != "update.back" {
+		t.Fatalf("%+v", res)
+	}
+	bin, _ := os.Stat(filepath.Join(root, install.Binary))
+	old, _ := os.Stat(filepath.Join(root, Old))
+	if bin == nil || old == nil || !os.SameFile(bin, old) {
+		t.Error("the old version was copied back instead of linked")
+	}
+	if left, _ := filepath.Glob(filepath.Join(root, install.Binary) + ".tmp*"); len(left) != 0 {
+		t.Errorf("left behind: %v", left)
+	}
+}
+
 // The panel owns the folder its database is in, so whatever it leaves under
 // the database's names must not make the update, which runs as root, copy a
 // file from elsewhere into that folder or wait on a pipe.
@@ -483,6 +596,48 @@ func TestRevert(t *testing.T) {
 	os.Remove(filepath.Join(root, Old))
 	if err := Revert(root); err == nil || !strings.Contains(err.Error(), "read back") {
 		t.Errorf("without the old binary: %v", err)
+	}
+}
+
+// A full disk is a likely reason for an update to fail, so going back must
+// not need room: the old binary gets a second name.
+func TestRevertNeedsNoRoom(t *testing.T) {
+	root := setup(t)
+	if err := Revert(root); err != nil {
+		t.Fatal(err)
+	}
+	bin, _ := os.Stat(filepath.Join(root, install.Binary))
+	old, _ := os.Stat(filepath.Join(root, Old))
+	if bin == nil || old == nil || !os.SameFile(bin, old) || read(root, install.Binary) != "old binary" {
+		t.Errorf("binary %q is not the old file", read(root, install.Binary))
+	}
+	// Going back twice leaves nothing behind.
+	if err := Revert(root); err != nil {
+		t.Fatal(err)
+	}
+	entries, _ := os.ReadDir(filepath.Join(root, filepath.Dir(install.Binary)))
+	for _, e := range entries {
+		if strings.Contains(e.Name(), ".tmp-") {
+			t.Errorf("%s was left behind", e.Name())
+		}
+	}
+}
+
+// Where the old binary cannot get a second name, it is copied.
+func TestRevertCopiesWhenItCannotLink(t *testing.T) {
+	root := setup(t)
+	// The name the link would take is a folder with something in it.
+	blocked := filepath.Join(root, install.Binary+".tmp-link", "x")
+	if err := os.MkdirAll(blocked, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := Revert(root); err != nil || read(root, install.Binary) != "old binary" {
+		t.Errorf("%v, binary %q", err, read(root, install.Binary))
+	}
+	bin, _ := os.Stat(filepath.Join(root, install.Binary))
+	old, _ := os.Stat(filepath.Join(root, Old))
+	if os.SameFile(bin, old) {
+		t.Error("linked all the same")
 	}
 }
 

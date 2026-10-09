@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/netip"
@@ -159,6 +160,45 @@ func TestExternalPortTaken(t *testing.T) {
 		if rec := request(t, s, &peer.Peer{UID: 999}, "PUT", "/v1/external/db", bad); rec.Code != http.StatusBadRequest {
 			t.Errorf("%s: %d", bad, rec.Code)
 		}
+	}
+}
+
+// The panel asks for a port again, with no password, to learn whether it is
+// still open. Asking is not news, so the log keeps quiet unless the
+// listener moved or a user got a password.
+func TestExternalSetLogsOnlyWhatChanged(t *testing.T) {
+	s, f, sealed := externalServer(t)
+	var log strings.Builder
+	s.Log = slog.New(slog.NewTextHandler(&log, nil))
+	panel := &peer.Peer{UID: 999}
+	f.containers = []engine.Status{{ID: "db-1", App: "db", State: "running", IP: netip.MustParseAddr("127.0.0.1")}}
+	f.exec = func([]string, io.Reader, io.Writer) uint32 { return 0 }
+	logged := func() int { return strings.Count(log.String(), "external access set") }
+	set := func(port int, password string) {
+		t.Helper()
+		body := fmt.Sprintf(`{"engine":"postgres","container":"db-1","port":%d,"target":5432,"password":%q}`, port, password)
+		if rec := request(t, s, panel, "PUT", "/v1/external/db", body); rec.Code != http.StatusNoContent {
+			t.Fatalf("set: %d %s", rec.Code, rec.Body)
+		}
+	}
+
+	port := freePort(t)
+	set(port, "")
+	if logged() != 1 {
+		t.Fatalf("opening the port: %d lines\n%s", logged(), &log)
+	}
+	set(port, "")
+	set(port, "")
+	if logged() != 1 {
+		t.Errorf("asking again for an open port: %d lines\n%s", logged(), &log)
+	}
+	set(port, sealed)
+	if logged() != 2 || !strings.Contains(log.String(), "user=true") {
+		t.Errorf("a new password: %d lines\n%s", logged(), &log)
+	}
+	set(freePort(t), "")
+	if logged() != 3 {
+		t.Errorf("moving the port: %d lines\n%s", logged(), &log)
 	}
 }
 

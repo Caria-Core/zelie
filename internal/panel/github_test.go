@@ -567,3 +567,38 @@ func TestSlowWebhookBodyIsCutOff(t *testing.T) {
 		t.Errorf("a body nobody reads: %d after %s, closed %v, %v", code, took, closed, err)
 	}
 }
+
+func TestRequestHost(t *testing.T) {
+	for host, want := range map[string]string{
+		"panel.example.com":      "panel.example.com",
+		"panel.example.com:8443": "panel.example.com",
+		"203.0.113.7":            "203.0.113.7",
+		"203.0.113.7:8443":       "203.0.113.7",
+		"[2001:db8::1]":          "2001:db8::1",
+		"[2001:db8::1]:8443":     "2001:db8::1",
+	} {
+		r := httptest.NewRequest("GET", "https://"+host+"/", nil)
+		if got := requestHost(r); got != want {
+			t.Errorf("%s: got %q, want %q", host, got, want)
+		}
+	}
+}
+
+// A panel reached at its IPv6 address, which a browser sends in brackets and
+// without a port on the usual one, is the panel the proxy was told about.
+func TestPanelBaseAtAnIPv6Address(t *testing.T) {
+	e := newAppEnv(t)
+	e.proxy.cfg.Panel = "2001:db8::1"
+	for host, want := range map[string]string{
+		"[2001:db8::1]":      "https://[2001:db8::1]",
+		"[2001:db8::1]:8443": "https://[2001:db8::1]:8443",
+	} {
+		base, err := e.s.panelBase(httptest.NewRequest("GET", "https://"+host+"/", nil))
+		if err != nil || base != want {
+			t.Errorf("%s: %q, %v", host, base, err)
+		}
+	}
+	if _, err := e.s.panelBase(httptest.NewRequest("GET", "https://[2001:db8::2]/", nil)); err == nil || !strings.Contains(err.Error(), "2001:db8::1") {
+		t.Errorf("another address: %v", err)
+	}
+}

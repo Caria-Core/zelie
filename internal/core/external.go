@@ -94,22 +94,24 @@ func (x *External) Start(list []ExternalListener) {
 	}
 }
 
-// Set opens or moves an app's listener.
-func (x *External) Set(l ExternalListener) error {
+// Set opens or moves an app's listener. It reports whether that changed
+// anything: the panel asks again for a port that is open, to learn whether
+// something else would hold it.
+func (x *External) Set(l ExternalListener) (changed bool, err error) {
 	x.mu.Lock()
 	defer x.mu.Unlock()
 	if f, ok := x.open[l.App]; ok {
 		if f.ExternalListener == l {
-			return nil
+			return false, nil
 		}
 		f.close()
 		delete(x.open, l.App)
 	}
 	if err := x.listen(l); err != nil {
 		x.save()
-		return err
+		return true, err
 	}
-	return x.save()
+	return true, x.save()
 }
 
 // Remove closes an app's listener and the connections through it.
@@ -308,11 +310,14 @@ func (s *Server) setExternal(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if err := s.External.Set(l); err != nil {
+	changed, err := s.External.Set(l)
+	if err != nil {
 		s.backupFailed(w, "open external port", app, err)
 		return
 	}
-	s.Log.Info("external access set", "app", app, "port", l.Port, "user", req.Password != "")
+	if changed || req.Password != "" {
+		s.Log.Info("external access set", "app", app, "port", l.Port, "user", req.Password != "")
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 

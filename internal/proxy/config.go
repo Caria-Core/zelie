@@ -110,5 +110,10 @@ func (c *Config) checkHost(h string) (string, error) {
 	case err != nil && !hostname().MatchString(host):
 		return "", fmt.Errorf("%q is not a valid domain name", h)
 	}
+	if err == nil {
+		// A request is matched on the shortest form of an address, which
+		// is how a browser writes it, whatever the administrator typed.
+		return ip.String(), nil
+	}
 	return host, nil
 }

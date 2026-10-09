@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"net/http"
 	"slices"
 	"strconv"
@@ -598,12 +597,8 @@ func (s *Server) deleteBackup(w http.ResponseWriter, r *http.Request) {
 // recoveryFile hands out the key that opens every backup, as a file to keep
 // off the server.
 func (s *Server) recoveryFile(w http.ResponseWriter, r *http.Request) {
-	host := r.Host
-	if h, _, err := net.SplitHostPort(host); err == nil {
-		host = h
-	}
 	var buf strings.Builder
-	if err := s.Core.RecoveryKey(r.Context(), host, &buf); err != nil {
+	if err := s.Core.RecoveryKey(r.Context(), requestHost(r), &buf); err != nil {
 		s.coreFailed(w, "recovery key", err)
 		return
 	}

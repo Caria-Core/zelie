@@ -53,6 +53,27 @@ func TestValidate(t *testing.T) {
 	}
 }
 
+// An IPv6 address typed in full is kept in its shortest form, the one a
+// browser sends, or requests for it would find no route and no certificate.
+func TestValidateKeepsAnIPInItsShortestForm(t *testing.T) {
+	cfg := Config{
+		TLS:    TLSSelfSigned,
+		Panel:  "2001:0DB8:0::1",
+		Routes: []Route{{"2001:db8:0:0:0:0:0:2", "10.210.0.4:80"}, {"203.0.113.9", "10.210.0.5:80"}},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Panel != "2001:db8::1" || cfg.Routes[0].Host != "2001:db8::2" || cfg.Routes[1].Host != "203.0.113.9" {
+		t.Errorf("panel %q, routes %+v", cfg.Panel, cfg.Routes)
+	}
+	// The same address written two ways is one route.
+	twice := Config{TLS: TLSSelfSigned, Routes: []Route{{"2001:db8::2", "10.210.0.4:80"}, {"2001:0db8::2", "10.210.0.5:80"}}}
+	if err := twice.Validate(); err == nil {
+		t.Error("an address routed twice passed")
+	}
+}
+
 // newTestProxy points upstreams at loopback so a local server can stand in
 // for a container.
 func newTestProxy(t *testing.T) (*Proxy, string) {
