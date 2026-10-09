@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/rand/v2"
 	"net"
@@ -10,6 +11,7 @@ import (
 	"strconv"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -450,29 +452,24 @@ func isTimeout(err error) bool {
 	return ok && ne.Timeout()
 }
 
-// freeLoopbackPort finds a port that is free for both UDP and TCP on the loopback.
-func freeLoopbackPort(t *testing.T) uint16 {
+// listenOnFreePort starts d on addr at a port nobody uses. A port found free
+// and let go of can be taken by the tests of another package before the
+// server binds it, so the server binds itself, and a port that is taken is
+// traded for another. Below 32768, where the kernel hands out ports to
+// sockets that bind none, such clashes are rare already.
+func listenOnFreePort(t *testing.T, d *dnsServer, addr netip.Addr) {
 	t.Helper()
-	// Below the range the kernel hands out to sockets that bind no port
-	// (32768 and up on Linux, 49152 on macOS): the tests of other packages,
-	// which run at the same time, would otherwise take a port that was just
-	// found free whenever this test let go of it for a moment.
 	for range 200 {
-		port := 20000 + rand.IntN(12000)
-		hostport := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
-		pc, err := net.ListenPacket("udp4", hostport)
-		if err != nil {
-			continue
-		}
-		l, err := net.Listen("tcp4", hostport)
-		pc.Close()
+		d.port = uint16(20000 + rand.IntN(12000))
+		err := d.listen(addr)
 		if err == nil {
-			l.Close()
-			return uint16(port)
+			return
+		}
+		if !errors.Is(err, syscall.EADDRINUSE) {
+			t.Fatal(err)
 		}
 	}
 	t.Skip("no port free for UDP and TCP")
-	return 0
 }
 
 // A network that is freed and made again must not leave anything behind: it
@@ -481,11 +478,13 @@ func TestDNSServersCanBeStoppedAndStartedAgain(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	d := newDNSServer(nil, nil)
-	d.ctx, d.errs, d.port = ctx, make(chan error, 1), freeLoopbackPort(t)
+	d.ctx, d.errs = ctx, make(chan error, 1)
 	gateway := netip.MustParseAddr("127.0.0.1")
 
 	before := runtime.NumGoroutine()
-	for range 30 {
+	listenOnFreePort(t, d, gateway)
+	d.stop(gateway)
+	for range 29 {
 		if err := d.listen(gateway); err != nil {
 			t.Fatal(err)
 		}
@@ -527,10 +526,8 @@ func TestDNSServersAnswerOverUDPAndTCP(t *testing.T) {
 	d := newDNSServer(func(_ context.Context, from netip.Addr, name string) ([]netip.Addr, bool) {
 		return []netip.Addr{netip.MustParseAddr("10.210.1.2")}, name == "db" && from == loopback
 	}, nil)
-	d.ctx, d.errs, d.port = ctx, make(chan error, 1), freeLoopbackPort(t)
-	if err := d.listen(loopback); err != nil {
-		t.Fatal(err)
-	}
+	d.ctx, d.errs = ctx, make(chan error, 1)
+	listenOnFreePort(t, d, loopback)
 	defer d.stop(loopback)
 
 	at := net.JoinHostPort("127.0.0.1", strconv.Itoa(int(d.port)))
