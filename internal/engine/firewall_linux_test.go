@@ -117,3 +117,31 @@ func TestOutsideTrafficCannotReachContainers(t *testing.T) {
 		t.Error("the last input rule does not drop traffic to the container range from outside")
 	}
 }
+
+func TestHostAccessOpensOnePortOnTheGateway(t *testing.T) {
+	accept := []expr.Any{&expr.Verdict{Kind: expr.VerdictAccept}}
+	drop := []expr.Any{&expr.Verdict{Kind: expr.VerdictDrop}}
+	fw := &firewall{
+		bridges: []string{"zelie3", "zelie4"},
+		host:    []hostRule{{"zelie3", ip("10.210.3.1")}},
+	}
+	input := rulesIn(t, sent(t, func(c *nftables.Conn) error { return buildFirewall(c, fw) }), "input")
+
+	open := ruleIn(t, "input", ifname(expr.MetaKeyIIFNAME, "zelie3"), ipv4, toAddr(ip("10.210.3.1")), l4proto(unix.IPPROTO_TCP), dport(3306), accept)
+	generic := ruleIn(t, "input", fromBridge, drop)
+	at := func(rule []byte) int {
+		return slices.IndexFunc(input, func(r []byte) bool { return bytes.Equal(r, rule) })
+	}
+	if at(open) < 0 {
+		t.Fatal("no rule opens port 3306 on the gateway")
+	}
+	if at(open) > at(generic) {
+		t.Error("the opening comes after the rule that drops everything from the bridges")
+	}
+
+	// Without host access the rule is not there.
+	none := rulesIn(t, sent(t, func(c *nftables.Conn) error { return buildFirewall(c, &firewall{bridges: fw.bridges}) }), "input")
+	if len(none) != len(input)-1 {
+		t.Errorf("%d input rules without host access, %d with", len(none), len(input))
+	}
+}

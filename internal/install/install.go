@@ -48,6 +48,8 @@ type Options struct {
 	Host  string // the panel's domain, or the server's IP address
 	Email string // for Let's Encrypt, in domain mode
 	Port  int    // loopback port, in tunnel mode
+	// NoSFTP installs with SFTP turned off; see SFTPStateFile.
+	NoSFTP bool
 	// Cloudflared is the command Cloudflare shows for connecting a new
 	// tunnel, pasted as it is. Only needed when no connector runs yet.
 	Cloudflared string
@@ -315,6 +317,14 @@ func (in *Installer) engine(ctx context.Context) (bool, string, error) {
 }
 
 func (in *Installer) services(ctx context.Context) (bool, string, error) {
+	// Written first, so that nothing below can start SFTP on a server that
+	// was asked to have it off. Without the flag the choice is left alone:
+	// running the install again must not undo what the panel set.
+	if in.Opts.NoSFTP {
+		if err := SetSFTPOff(in.path(SFTPStateFile), true); err != nil {
+			return false, "", err
+		}
+	}
 	units := Units(in.Opts)
 	// A service that runs and whose unit changes must restart to take the
 	// change. One that did not run starts fresh below, and restarting it
@@ -339,6 +349,11 @@ func (in *Installer) services(ctx context.Context) (bool, string, error) {
 		if out, err := in.Exec(ctx, "systemctl", "is-active", unit); err != nil || strings.TrimSpace(out) != "active" {
 			continue
 		}
+		// A socket that runs on a server with SFTP off is stopped below,
+		// not restarted.
+		if unit == SFTPSocket && SFTPOff(in.path(SFTPStateFile)) {
+			continue
+		}
 		// A socket runs no binary of its own.
 		if changed || (unit != SFTPSocket && in.staleBinary(ctx, unit)) {
 			restart = append(restart, unit)
@@ -357,7 +372,12 @@ func (in *Installer) services(ctx context.Context) (bool, string, error) {
 	// SSH server on 2222 for one. That must not stop the install: the panel
 	// that sets another port does not exist yet.
 	enabled := strings.Join(Services, ", ")
-	if out, err := in.Exec(ctx, "systemctl", "enable", "--now", SFTPSocket); err != nil {
+	if SFTPOff(in.path(SFTPStateFile)) {
+		if err := stopSFTP(ctx, in.Exec); err != nil {
+			return false, "", err
+		}
+		notes = append(notes, "SFTP is off")
+	} else if out, err := in.Exec(ctx, "systemctl", "enable", "--now", SFTPSocket); err != nil {
 		notes = append(notes, fmt.Sprintf("%s did not start (%s): choose another SFTP port on the Server page", SFTPSocket, strings.Join(strings.Fields(out), " ")))
 	} else {
 		enabled += ", " + SFTPSocket
@@ -374,6 +394,9 @@ func (in *Installer) services(ctx context.Context) (bool, string, error) {
 // sftpPort lets the SFTP port through ufw, when ufw is on. Other firewalls
 // are left to their owners, as Zelie does not know their rules.
 func (in *Installer) sftpPort(ctx context.Context) (bool, string, error) {
+	if SFTPOff(in.path(SFTPStateFile)) {
+		return false, "SFTP is off", nil
+	}
 	return openSFTPPort(ctx, in.Exec)
 }
 

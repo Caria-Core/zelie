@@ -41,6 +41,7 @@ type Core interface {
 	Pin(ctx context.Context, image string) (string, error)
 	SetLinks(ctx context.Context, app string, links []engine.Link) error
 	SetForwards(ctx context.Context, app string, forwards []engine.Forward) error
+	SetHostAccess(ctx context.Context, app string, on bool) error
 	ClearForwards(ctx context.Context, app string) error
 	UsedPorts(ctx context.Context) ([]int, error)
 	PublicAddress(ctx context.Context) (core.PublicAddress, error)
@@ -59,6 +60,7 @@ type Core interface {
 	SyncExternal(ctx context.Context, list []core.ExternalListener) error
 	SetSFTPVolumes(ctx context.Context, names []string) error
 	SetSFTPPort(ctx context.Context, port int) error
+	SetSFTPEnabled(ctx context.Context, on bool) error
 	SFTP(ctx context.Context) (core.SFTPStatus, error)
 	UpdateStatus(ctx context.Context) (core.UpdateStatus, error)
 	Update(ctx context.Context, version string) error

@@ -56,6 +56,7 @@ func runCore(stderr io.Writer) int {
 		HostKeyDir: sftpKeyDir,
 		OldKeyDir:  sftpOldState,
 		User:       install.SFTPUser,
+		StateFile:  install.SFTPStateFile,
 		Run:        runCmd,
 	}
 	// The server only reads its host key, so it has to exist before the

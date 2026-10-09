@@ -29,6 +29,8 @@ const (
 	auditWhitelistRemove = "whitelist_remove"
 	auditNoteAdd         = "note_add"
 	auditNoteDelete      = "note_delete"
+	auditSFTPOn          = "sftp_on"
+	auditSFTPOff         = "sftp_off"
 	auditSteamKeySet     = "steam_key_set"
 	auditSteamKeyRemoved = "steam_key_removed"
 )

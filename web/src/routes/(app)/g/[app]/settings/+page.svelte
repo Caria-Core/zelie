@@ -14,6 +14,7 @@
 	import Button from '$lib/ui/Button.svelte';
 	import ErrorText from '$lib/ui/ErrorText.svelte';
 	import Field from '$lib/ui/Field.svelte';
+	import HostAccess from '$lib/ui/HostAccess.svelte';
 	import Resources from '$lib/ui/Resources.svelte';
 	import SaveBar from '$lib/ui/SaveBar.svelte';
 
@@ -160,6 +161,8 @@
 			</div>
 		{/if}
 	</form>
+
+	<HostAccess app={g.id} />
 
 	<section class="flex flex-col gap-3">
 		<div>

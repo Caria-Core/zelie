@@ -34,6 +34,7 @@ type fakeEngine struct {
 	volumes       []string
 	links         map[string][]engine.Link
 	forwards      map[string][]engine.Forward
+	hostAccess    map[string]bool
 
 	// unmeasured is what VolumeSizes cannot measure.
 	unmeasured map[string]error
@@ -165,6 +166,14 @@ func (f *fakeEngine) SetLinks(_ context.Context, app string, links []engine.Link
 		f.links = map[string][]engine.Link{}
 	}
 	f.links[app] = links
+	return nil
+}
+
+func (f *fakeEngine) SetHostAccess(_ context.Context, app string, on bool) error {
+	if f.hostAccess == nil {
+		f.hostAccess = map[string]bool{}
+	}
+	f.hostAccess[app] = on
 	return nil
 }
 
@@ -476,6 +485,27 @@ func TestLinks(t *testing.T) {
 	rec := request(t, s, root, "GET", "/v1/links/web", "")
 	if strings.TrimSpace(rec.Body.String()) != `[{"name":"db","to":"pg","port":5432}]` {
 		t.Errorf("list: %s", rec.Body)
+	}
+}
+
+func TestHostAccess(t *testing.T) {
+	s, f := newServer()
+	root := &peer.Peer{UID: 0}
+	for _, c := range []struct {
+		app, body string
+		want      int
+	}{
+		{"web", `{"on":true}`, http.StatusNoContent},
+		{"Bad Name", `{"on":true}`, http.StatusBadRequest},
+		{"web", `{"on":`, http.StatusBadRequest},
+		{"other", `{"on":false}`, http.StatusNoContent},
+	} {
+		if rec := request(t, s, root, "PUT", "/v1/host-access/"+strings.ReplaceAll(c.app, " ", "%20"), c.body); rec.Code != c.want {
+			t.Errorf("%s %s: status %d, want %d: %s", c.app, c.body, rec.Code, c.want, rec.Body)
+		}
+	}
+	if !f.hostAccess["web"] || f.hostAccess["other"] || len(f.hostAccess) != 2 {
+		t.Errorf("host access %v", f.hostAccess)
 	}
 }
 

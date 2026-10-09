@@ -103,6 +103,19 @@ By default every container gets:
 
 Nothing runs privileged.
 
+A container cannot open a connection to the host itself, apart from asking the DNS server
+on its network's gateway address. The one exception is host access, for people who keep
+their databases in a MariaDB installed on the server. It is off for every app, only an
+administrator can turn it on (after confirming it is them), and each change is logged. It
+opens TCP port 3306 and nothing else, and only on the gateway address of that app's own
+network, so another app cannot use it. The app finds the host under `host.zelie.internal`:
+Zelie's DNS server answers that name with the gateway address, and only for apps that have
+host access. Container addresses and network numbers can change when an app restarts, so
+the rules in the nftables table and in the `ZELIE-INPUT` iptables chain are worked out
+again from the current networks whenever the firewall is refreshed. The MariaDB on the
+host sees the container's own `10.210.x.x` address, so create its users for host `10.210.%`
+and give them strong passwords.
+
 ## Apps from GitHub
 
 Zelie connects to GitHub through a GitHub App that it creates in your own account, with

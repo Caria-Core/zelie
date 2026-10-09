@@ -121,9 +121,11 @@ type peers struct {
 	links map[string][]Link
 	// app of each container address, and the addresses of each app, the
 	// running ones first.
-	appOf   map[netip.Addr]string
-	running map[string][]netip.Addr
-	others  map[string][]netip.Addr
+	appOf map[netip.Addr]string
+	// the host's address on the network of each app that has host access
+	hostAddr map[string]netip.Addr
+	running  map[string][]netip.Addr
+	others   map[string][]netip.Addr
 	// what the firewall was last given, to skip rewriting it unchanged
 	applied *firewall
 	// when the host's INPUT chain was last checked
@@ -158,6 +160,10 @@ func (e *Engine) refreshLocked(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	hostApps, err := e.loadHostAccess()
+	if err != nil {
+		return err
+	}
 	nets, err := e.networks.all()
 	if err != nil {
 		return err
@@ -184,6 +190,7 @@ func (e *Engine) refreshLocked(ctx context.Context) error {
 	for _, nw := range nets {
 		fw.bridges = append(fw.bridges, nw.bridge())
 	}
+	fw.host, p.hostAddr = hostAccessRules(nets, hostApps)
 	for app, ls := range links {
 		for _, l := range ls {
 			for _, from := range p.addrs(app) {
@@ -229,6 +236,13 @@ func (e *Engine) refreshLocked(ctx context.Context) error {
 	if err := ensureHostForward(ctx, fw.forwards, true); err != nil {
 		return err
 	}
+	// Emptying the chain also drops the rules for DNS for a moment, so it is
+	// only done when the openings to the host changed.
+	if old == nil || !slices.Equal(old.host, fw.host) {
+		if err := ensureHostInput(ctx, fw.host, true); err != nil {
+			return err
+		}
+	}
 	p.applied = fw
 	e.endStaleFlows(old, fw)
 	return nil
@@ -244,7 +258,11 @@ func (e *Engine) checkHostRules(ctx context.Context) error {
 	if time.Since(p.inputAt) < hostInputEvery {
 		return nil
 	}
-	if err := ensureHostInput(ctx); err != nil {
+	var host []hostRule
+	if p.applied != nil {
+		host = p.applied.host
+	}
+	if err := ensureHostInput(ctx, host, false); err != nil {
 		return err
 	}
 	if p.applied != nil {
@@ -324,6 +342,12 @@ func (e *Engine) lookup(ctx context.Context, from netip.Addr, name string) (addr
 	if !known {
 		return nil, false
 	}
+	if name == HostName {
+		if gw, on := e.peers.hostAddr[app]; on {
+			return []netip.Addr{gw}, true
+		}
+		return nil, false
+	}
 	for _, l := range e.peers.links[app] {
 		if l.Name == name {
 			if r := e.peers.running[l.To]; len(r) > 0 {
@@ -345,6 +369,7 @@ type firewall struct {
 	bridges  []string
 	allow    []allowed
 	forwards []portMap
+	host     []hostRule
 }
 
 func (f *firewall) sort() {
@@ -369,8 +394,9 @@ func (f *firewall) sort() {
 		)
 	})
 	f.forwards = slices.Compact(f.forwards)
+	slices.SortFunc(f.host, func(a, b hostRule) int { return cmp.Compare(a.bridge, b.bridge) })
 }
 
 func (f *firewall) equal(g *firewall) bool {
-	return slices.Equal(f.bridges, g.bridges) && slices.Equal(f.allow, g.allow) && slices.Equal(f.forwards, g.forwards)
+	return slices.Equal(f.bridges, g.bridges) && slices.Equal(f.allow, g.allow) && slices.Equal(f.forwards, g.forwards) && slices.Equal(f.host, g.host)
 }

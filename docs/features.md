@@ -88,6 +88,12 @@ page shows its memory and CPU as they are now.
 - **From your computer.** Tools like TablePlus or DBeaver can connect through an SSH
   tunnel to a port only the server itself can reach, as a user of their own whose
   password is shown once.
+- **A MariaDB on the server itself.** An app or game server that keeps its data in a
+  MariaDB installed on the host can be allowed to reach it, from the app's settings. It is
+  off by default and only an administrator can turn it on. Only port 3306 opens, only for
+  that app. Inside the app the host is `host.zelie.internal`. MariaDB has to listen on more
+  than 127.0.0.1 for this to work. Create its users for host `10.210.%` and give them
+  strong passwords.
 
 ![A PostgreSQL database's tables, browsed read-only in Zelie](images/data.png)
 
@@ -179,6 +185,8 @@ For Rust and Minecraft servers, and as a plain list for some other Steam games.
   database's.
 - Wrong passwords are limited per address and per server.
 - The server starts when someone connects and stops after five idle minutes.
+- SFTP can be turned off, with `--no-sftp` at install or later on the Server page. Then
+  nothing listens on its port, and the pages of game servers say so.
 
 ## Backups
 

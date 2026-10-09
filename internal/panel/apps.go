@@ -934,6 +934,13 @@ func (s *Server) deleteApp(w http.ResponseWriter, r *http.Request) {
 		s.coreFailed(w, "remove links", err)
 		return
 	}
+	if !a.IsDatabase() && !a.IsFiles() {
+		// The row goes with the app; the core keeps its own note until told.
+		if err := s.Core.SetHostAccess(ctx, a.ID, false); err != nil {
+			s.coreFailed(w, "close host access", err)
+			return
+		}
+	}
 	s.removeAppImages(ctx, a.ID)
 	if ports, err := s.Store.AppAllocations(ctx, a.ID); err != nil {
 		s.fail(w, "list ports", err)

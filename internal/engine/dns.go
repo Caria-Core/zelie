@@ -14,9 +14,9 @@ import (
 )
 
 // Each network has a DNS server on its gateway address. It answers the
-// names of the asking app's links and passes every other name on to the
-// host's own DNS servers. An address changes with every deployment, and a
-// name looked up again follows it.
+// names of the asking app's links, and HostName for an app with host access,
+// and passes every other name on to the host's own DNS servers. An address
+// changes with every deployment, and a name looked up again follows it.
 
 // linkTTL is short so a client that caches finds a new deployment quickly.
 const linkTTL = 5
@@ -208,7 +208,9 @@ func (d *dnsServer) answer(ctx context.Context, from netip.Addr, req *dns.Msg, t
 	name := strings.ToLower(strings.TrimSuffix(q.Name, "."))
 	// A name without a dot is always one of ours. Passed on, it would tell
 	// the host's DNS servers what the apps look for.
-	if strings.Contains(name, ".") {
+	// The name of the host is the one dotted name answered here, and never
+	// passed on.
+	if strings.Contains(name, ".") && name != HostName {
 		return d.forward(ctx, from, req, tcp)
 	}
 	nw := networkOf(from)

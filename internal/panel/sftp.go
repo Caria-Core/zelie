@@ -55,6 +55,7 @@ var (
 	errSFTPPortTaken = msg.Define(http.StatusConflict, "sftp.port_taken", "Port {port} is in the pool of game server ports. Choose another.")
 	errSFTPDenied    = msg.Define(http.StatusForbidden, "sftp.denied", "The login was refused.")
 	errSFTPPortFail  = msg.Define(http.StatusBadGateway, "sftp.port_failed", "Port {port} could not be opened; another program may be using it. SFTP stays on port {old}.")
+	errSFTPToggle    = msg.Define(http.StatusBadGateway, "sftp.toggle_failed", "SFTP could not be turned on or off. Check the logs of the core.")
 	errSFTPWait      = msg.Define(http.StatusTooManyRequests, "sftp.wait", "Too many wrong passwords. Try again later.")
 )
 
@@ -207,6 +208,10 @@ type sftpServerJSON struct {
 	// Running is whether the port is open. The server behind it starts
 	// with the first connection and stops when idle.
 	Running bool `json:"running"`
+	// On is false when SFTP is turned off on this server: nothing listens
+	// and there is nothing to connect to. It stays true when the core
+	// cannot be asked, as that is how every server was before the switch.
+	On bool `json:"on"`
 }
 
 func (s *Server) sftpInfo(ctx context.Context) (sftpServerJSON, error) {
@@ -214,13 +219,13 @@ func (s *Server) sftpInfo(ctx context.Context) (sftpServerJSON, error) {
 	if err != nil {
 		return sftpServerJSON{}, err
 	}
-	out := sftpServerJSON{Port: port}
+	out := sftpServerJSON{Port: port, On: true}
 	st, err := s.Core.SFTP(ctx)
 	if err != nil {
 		s.Log.Warn("ask the core about SFTP", "err", err)
 		return out, nil
 	}
-	out.HostKey, out.Running = st.HostKey, st.Listening
+	out.HostKey, out.Running, out.On = st.HostKey, st.Listening, st.On
 	return out, nil
 }
 
@@ -273,6 +278,30 @@ func (s *Server) setSFTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.Log.Info("sftp port set", "port", req.Port, "user", loginFrom(ctx).account.ID)
+	s.getSFTP(w, r)
+}
+
+// setSFTPEnabled turns the SFTP server on or off. Turning it on does not
+// touch the firewall: the page tells the administrator to open the port.
+func (s *Server) setSFTPEnabled(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		On bool `json:"on"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	ctx := r.Context()
+	if err := s.Core.SetSFTPEnabled(ctx, req.On); err != nil {
+		s.Log.Error("turn sftp on or off in the core", "on", req.On, "err", err)
+		writeError(w, errSFTPToggle.Err())
+		return
+	}
+	action := auditSFTPOff
+	if req.On {
+		action = auditSFTPOn
+	}
+	s.audit(ctx, "", action, "")
+	s.Log.Info("sftp turned on or off", "on", req.On, "user", loginFrom(ctx).account.ID)
 	s.getSFTP(w, r)
 }
 

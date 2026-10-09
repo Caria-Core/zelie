@@ -29,6 +29,7 @@ func newSFTPSocket(t *testing.T) (*Server, *SFTPSocket, *[]string) {
 		DropIn:     filepath.Join(dir, "zelie-sftp.socket.d", "port.conf"),
 		HostKeyDir: filepath.Join(dir, "etc", "zelie-sftp"),
 		User:       me.Username,
+		StateFile:  filepath.Join(dir, "var", "sftp.json"),
 		Run: func(_ context.Context, name string, args ...string) (string, error) {
 			ran = append(ran, name+" "+strings.Join(args, " "))
 			if len(args) > 0 && args[0] == "is-active" {
@@ -168,5 +169,83 @@ func TestSFTPHostKeyMovesFromTheOldFolder(t *testing.T) {
 	}
 	if ssh.FingerprintSHA256(key.PublicKey()) != ssh.FingerprintSHA256(old.PublicKey()) {
 		t.Error("the fingerprint changed")
+	}
+}
+
+func TestSFTPCanBeTurnedOffAndOn(t *testing.T) {
+	s, sock, ran := newSFTPSocket(t)
+	panel := &peer.Peer{UID: 999}
+	put := func(on string) int {
+		return request(t, s, panel, "PUT", "/v1/sftp/enabled", `{"on":`+on+`}`).Code
+	}
+	status := func() SFTPStatus {
+		var st SFTPStatus
+		json.Unmarshal(request(t, s, panel, "GET", "/v1/sftp", "").Body.Bytes(), &st)
+		return st
+	}
+	if !status().On {
+		t.Error("a server without the state file has SFTP off")
+	}
+	*ran = nil
+
+	if code := put("false"); code != http.StatusNoContent {
+		t.Fatalf("turn off: %d", code)
+	}
+	b, _ := os.ReadFile(sock.StateFile)
+	if string(b) != "{\"off\":true}\n" {
+		t.Errorf("state file: %q", b)
+	}
+	want := "systemctl disable --now zelie-sftp.socket;systemctl stop zelie-sftp.service"
+	if got := strings.Join(*ran, ";"); got != want {
+		t.Errorf("ran %q, want %q", got, want)
+	}
+	if status().On {
+		t.Error("the status says on")
+	}
+
+	// A new port is kept for later but does not start the socket.
+	*ran = nil
+	if code := request(t, s, panel, "PUT", "/v1/sftp/port", `{"port":2300}`).Code; code != http.StatusNoContent {
+		t.Fatalf("port while off: %d", code)
+	}
+	if got := strings.Join(*ran, ";"); got != "systemctl daemon-reload" {
+		t.Errorf("a port change while off ran %q", got)
+	}
+
+	*ran = nil
+	if code := put("true"); code != http.StatusNoContent {
+		t.Fatalf("turn on: %d", code)
+	}
+	if got := strings.Join(*ran, ";"); got != "systemctl enable --now zelie-sftp.socket" {
+		t.Errorf("ran %q", got)
+	}
+	if !status().On {
+		t.Error("the status says off")
+	}
+	if code := request(t, s, panel, "PUT", "/v1/sftp/enabled", `{"on":"yes"}`).Code; code != http.StatusBadRequest {
+		t.Errorf("a bad body: %d", code)
+	}
+	sftp := &peer.Peer{UID: 4242}
+	if code := request(t, s, sftp, "PUT", "/v1/sftp/enabled", `{"on":false}`).Code; code != http.StatusForbidden {
+		t.Errorf("the SFTP user turned SFTP off: %d", code)
+	}
+}
+
+func TestSFTPStaysOffWhenTheCoreFails(t *testing.T) {
+	s, sock, _ := newSFTPSocket(t)
+	panel := &peer.Peer{UID: 999}
+	run := sock.Run
+	sock.Run = func(ctx context.Context, name string, args ...string) (string, error) {
+		if len(args) > 0 && args[0] == "enable" {
+			return "port in use", errors.New("exit status 1")
+		}
+		return run(ctx, name, args...)
+	}
+	request(t, s, panel, "PUT", "/v1/sftp/enabled", `{"on":false}`)
+	if code := request(t, s, panel, "PUT", "/v1/sftp/enabled", `{"on":true}`).Code; code != http.StatusInternalServerError {
+		t.Errorf("turn on with the port taken: %d", code)
+	}
+	if b, _ := os.ReadFile(sock.StateFile); !strings.Contains(string(b), "true") {
+		t.Errorf("SFTP was marked on although the socket did not start: %q", b)
 	}
 }

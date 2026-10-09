@@ -20,6 +20,8 @@ import (
 //     a database listening on all addresses, except to ask the DNS server
 //     on their network's gateway. Replies to connections the host started,
 //     like the proxy talking to an app, still get through.
+//   - An app with host access may also connect to TCP port 3306 on its own
+//     network's gateway address (see SetHostAccess).
 //   - Containers on different networks cannot reach each other, except
 //     through the openings links make: one address to another, on one TCP
 //     port.
@@ -95,6 +97,11 @@ func buildFirewall(c *nftables.Conn, fw *firewall) error {
 	rule(input, fromBridge, established, accept)
 	for _, proto := range []byte{unix.IPPROTO_UDP, unix.IPPROTO_TCP} {
 		rule(input, fromBridge, ipv4, l4proto(proto), toContainerRange, dport(53), accept)
+	}
+	// An app with host access reaches the database port on its own bridge's
+	// address, and nothing else of the host.
+	for _, h := range fw.host {
+		rule(input, ifname(expr.MetaKeyIIFNAME, h.bridge), ipv4, toAddr(h.gw), l4proto(unix.IPPROTO_TCP), dport(HostPort), accept)
 	}
 	rule(input, fromBridge, drop)
 	// The host's own addresses on the bridges answer for anyone who can route

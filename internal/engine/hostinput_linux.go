@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"slices"
 	"strings"
 )
 
@@ -12,7 +13,8 @@ import (
 // ufw, and firewalls like it, drop what reaches the host unless their own
 // iptables chains allow it. So the same opening is also made there, in a
 // chain of Zelie's own that INPUT jumps to first, the way Docker and the CNI
-// plugins add theirs: only DNS, only from Zelie's bridges.
+// plugins add theirs: only DNS, only from Zelie's bridges, and port 3306 on
+// the gateway of an app that has host access.
 const inputChain = "ZELIE-INPUT"
 
 var inputRules = [][]string{
@@ -27,22 +29,33 @@ var iptables = func(ctx context.Context, args ...string) (string, error) {
 	return string(out), err
 }
 
-// ensureHostInput makes sure INPUT lets containers ask their DNS server.
-// Without iptables on the machine there is nothing that could drop it.
-func ensureHostInput(ctx context.Context) error {
+// ensureHostInput makes sure INPUT lets containers ask their DNS server, and
+// lets the apps with host access reach the host's database port. Without
+// iptables on the machine there is nothing that could drop it. With rewrite
+// the chain is emptied and filled again, which is how an opening that went
+// away is closed; without it, missing rules are added.
+func ensureHostInput(ctx context.Context, host []hostRule, rewrite bool) error {
 	if _, err := exec.LookPath("iptables"); err != nil {
 		return nil
 	}
-	return ensureInputRules(ctx)
+	return ensureInputRules(ctx, host, rewrite)
 }
 
-func ensureInputRules(ctx context.Context) error {
+func ensureInputRules(ctx context.Context, host []hostRule, rewrite bool) error {
 	if _, err := iptables(ctx, "-L", inputChain, "-n"); err != nil {
 		if out, err := iptables(ctx, "-N", inputChain); err != nil {
 			return fmt.Errorf("iptables -N %s: %v: %s", inputChain, err, strings.TrimSpace(out))
 		}
+	} else if rewrite {
+		if out, err := iptables(ctx, "-F", inputChain); err != nil {
+			return fmt.Errorf("iptables -F %s: %v: %s", inputChain, err, strings.TrimSpace(out))
+		}
 	}
-	for _, rule := range inputRules {
+	rules := slices.Clone(inputRules)
+	for _, h := range host {
+		rules = append(rules, h.iptablesRule())
+	}
+	for _, rule := range rules {
 		if _, err := iptables(ctx, append([]string{"-C", inputChain}, rule...)...); err == nil {
 			continue
 		}

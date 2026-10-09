@@ -13,6 +13,7 @@
 	import Button from '$lib/ui/Button.svelte';
 	import ErrorText from '$lib/ui/ErrorText.svelte';
 	import Field from '$lib/ui/Field.svelte';
+	import HostAccess from '$lib/ui/HostAccess.svelte';
 	import Resources from '$lib/ui/Resources.svelte';
 	import SaveBar from '$lib/ui/SaveBar.svelte';
 
@@ -240,6 +241,10 @@
 			<Resources bind:memory={form.memory} bind:cpus={form.cpus} app={app.id} usage={current.usage} />
 		</section>
 	</form>
+
+	{#if !database && !files}
+		<HostAccess app={app.id} />
+	{/if}
 
 	{#if files}
 		<section class="flex flex-col gap-3">

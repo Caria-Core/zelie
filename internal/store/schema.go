@@ -605,5 +605,11 @@ CREATE TABLE app_layers (
 	warning     TEXT NOT NULL DEFAULT '',
 	stopped_for TEXT NOT NULL DEFAULT ''
 ) STRICT;
+`, `
+-- Apps that may connect to port 3306 of the host itself, for a database
+-- installed on the server. Off unless a row is here.
+CREATE TABLE host_access (
+	app_id TEXT PRIMARY KEY REFERENCES apps(id) ON DELETE CASCADE
+) STRICT;
 `,
 }

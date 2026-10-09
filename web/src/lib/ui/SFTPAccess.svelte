@@ -10,7 +10,7 @@
 
 	// How to reach a game server's files over SFTP. The password belongs to
 	// the server, not to a person, and is shown once, right after it is made.
-	type Info = { host: string; port: number; user: string; host_key: string; running: boolean; password_set: boolean };
+	type Info = { host: string; port: number; user: string; host_key: string; running: boolean; on: boolean; password_set: boolean };
 
 	let { id }: { id: string } = $props();
 	let x = $state<Info | null>(null);
@@ -83,7 +83,9 @@
 		<h2 class="font-medium">{t('sftp.title')}</h2>
 		<p class="text-sm text-muted">{t('sftp.lead')}</p>
 	</div>
-	{#if x}
+	{#if x && !x.on}
+		<p class="text-sm text-muted">{t('sftp.offHere')}</p>
+	{:else if x}
 		{#if !x.running}<p class="text-sm text-danger">{t('sftp.notRunning')}</p>{/if}
 
 		<div class="flex items-center gap-2 rounded-xl bg-panel px-3 py-2">

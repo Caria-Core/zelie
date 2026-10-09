@@ -15,6 +15,7 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/Caria-Core/zelie/internal/hostkey"
+	"github.com/Caria-Core/zelie/internal/install"
 )
 
 // The SFTP server starts when someone connects: systemd holds the port in a
@@ -22,7 +23,10 @@ import (
 // one that can change that port and create the host key, so the panel asks
 // it to, and asks it whether the socket is up.
 
-const sftpSocketUnit = "zelie-sftp.socket"
+const (
+	sftpSocketUnit  = "zelie-sftp.socket"
+	sftpServiceUnit = "zelie-sftp.service"
+)
 
 // SFTPSocket controls the SFTP socket. The paths and the command runner are
 // fields so tests can point them elsewhere.
@@ -35,6 +39,8 @@ type SFTPSocket struct {
 	HostKeyDir string
 	OldKeyDir  string
 	User       string
+	// StateFile says whether SFTP is turned off; see install.SFTPStateFile.
+	StateFile string
 	// Run runs a command and returns what it printed.
 	Run func(ctx context.Context, name string, args ...string) (string, error)
 
@@ -47,6 +53,12 @@ type SFTPStatus struct {
 	// while someone is connected.
 	Listening bool   `json:"listening"`
 	HostKey   string `json:"host_key"`
+	// On is false when an administrator, or the install, turned SFTP off.
+	On bool `json:"on"`
+}
+
+type sftpEnabledRequest struct {
+	On bool `json:"on"`
 }
 
 type sftpPortRequest struct {
@@ -100,8 +112,38 @@ func (c *SFTPSocket) apply(ctx context.Context, content []byte, keep bool) error
 	if out, err := c.Run(ctx, "systemctl", "daemon-reload"); err != nil {
 		return fmt.Errorf("systemctl daemon-reload: %v: %s", err, strings.TrimSpace(out))
 	}
+	// Moving the port of a socket that is off must not start it.
+	if install.SFTPOff(c.StateFile) {
+		return nil
+	}
 	if out, err := c.Run(ctx, "systemctl", "restart", sftpSocketUnit); err != nil {
 		return fmt.Errorf("systemctl restart %s: %v: %s", sftpSocketUnit, err, strings.TrimSpace(out))
+	}
+	return nil
+}
+
+// SetEnabled turns SFTP on or off. The choice is saved before the socket is
+// touched when turning off, so a failure halfway leaves SFTP off, and after
+// the socket started when turning on, so a port that will not open leaves it
+// off. Turning off also stops the server, which ends the sessions that are
+// open: the socket going away would not.
+func (c *SFTPSocket) SetEnabled(ctx context.Context, on bool) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if on {
+		if out, err := c.Run(ctx, "systemctl", "enable", "--now", sftpSocketUnit); err != nil {
+			return fmt.Errorf("systemctl enable %s: %v: %s", sftpSocketUnit, err, strings.TrimSpace(out))
+		}
+		return install.SetSFTPOff(c.StateFile, false)
+	}
+	if err := install.SetSFTPOff(c.StateFile, true); err != nil {
+		return err
+	}
+	if out, err := c.Run(ctx, "systemctl", "disable", "--now", sftpSocketUnit); err != nil {
+		return fmt.Errorf("systemctl disable %s: %v: %s", sftpSocketUnit, err, strings.TrimSpace(out))
+	}
+	if out, err := c.Run(ctx, "systemctl", "stop", sftpServiceUnit); err != nil {
+		return fmt.Errorf("systemctl stop %s: %v: %s", sftpServiceUnit, err, strings.TrimSpace(out))
 	}
 	return nil
 }
@@ -132,7 +174,11 @@ func (c *SFTPSocket) Status(ctx context.Context) (SFTPStatus, error) {
 		return SFTPStatus{}, err
 	}
 	out, _ := c.Run(ctx, "systemctl", "is-active", sftpSocketUnit)
-	return SFTPStatus{Listening: strings.TrimSpace(out) == "active", HostKey: ssh.FingerprintSHA256(key.PublicKey())}, nil
+	return SFTPStatus{
+		Listening: strings.TrimSpace(out) == "active",
+		HostKey:   ssh.FingerprintSHA256(key.PublicKey()),
+		On:        !install.SFTPOff(c.StateFile),
+	}, nil
 }
 
 func (s *Server) setSFTPPort(w http.ResponseWriter, r *http.Request) {
@@ -162,6 +208,24 @@ func (s *Server) setSFTPPort(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (s *Server) setSFTPEnabled(w http.ResponseWriter, r *http.Request) {
+	var req sftpEnabledRequest
+	if err := decode(w, r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if s.SFTPSocket == nil {
+		writeError(w, http.StatusConflict, errors.New("this core does not manage the SFTP socket"))
+		return
+	}
+	if err := s.SFTPSocket.SetEnabled(r.Context(), req.On); err != nil {
+		s.Log.Error("turn SFTP on or off", "on", req.On, "err", err)
+		writeError(w, http.StatusInternalServerError, errors.New("could not turn SFTP on or off"))
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (s *Server) sftpStatus(w http.ResponseWriter, r *http.Request) {
 	if s.SFTPSocket == nil {
 		writeError(w, http.StatusConflict, errors.New("this core does not manage the SFTP socket"))
@@ -179,6 +243,11 @@ func (s *Server) sftpStatus(w http.ResponseWriter, r *http.Request) {
 // SetSFTPPort tells the core which port the SFTP socket listens on.
 func (c *Client) SetSFTPPort(ctx context.Context, port int) error {
 	return c.do(ctx, http.MethodPut, "/v1/sftp/port", sftpPortRequest{Port: port}, nil)
+}
+
+// SetSFTPEnabled turns the SFTP server on or off.
+func (c *Client) SetSFTPEnabled(ctx context.Context, on bool) error {
+	return c.do(ctx, http.MethodPut, "/v1/sftp/enabled", sftpEnabledRequest{On: on}, nil)
 }
 
 // SFTP asks whether the SFTP socket is up, and for the host key.

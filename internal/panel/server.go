@@ -120,6 +120,9 @@ type Server struct {
 	externalMu sync.Mutex
 	// held are the databases whose outside access port something else holds.
 	held externalHeld
+	// hostAccessMu keeps two changes of an app's host access from reaching the
+	// store and the core in different order.
+	hostAccessMu sync.Mutex
 	// backupBusy holds the databases being backed up or restored.
 	backupBusy keyset
 	// uploading holds the ids of backups being sent off-site, and
@@ -242,6 +245,8 @@ func (s *Server) Handler() http.Handler {
 	web.HandleFunc("GET /api/server", s.signedIn(s.serverInfo))
 	web.HandleFunc("POST /api/server/check", s.signedIn(s.checkReleaseNow))
 	web.HandleFunc("POST /api/server/update", s.confirmed(s.startUpdate))
+	web.HandleFunc("GET /api/apps/{app}/host-access", s.signedIn(s.getHostAccess))
+	web.HandleFunc("PUT /api/apps/{app}/host-access", s.confirmed(requireAdmin(s.setHostAccess)))
 	web.HandleFunc("GET /api/apps/{app}/external", s.signedIn(s.getExternal))
 	web.HandleFunc("POST /api/apps/{app}/external", s.confirmed(s.setExternal))
 	web.HandleFunc("PUT /api/apps/{app}/external", s.signedIn(s.moveExternal))
@@ -310,6 +315,7 @@ func (s *Server) Handler() http.Handler {
 	web.HandleFunc("DELETE /api/games/{app}/sftp/password", s.confirmed(requireAdmin(s.removeGameSFTPPassword)))
 	web.HandleFunc("GET /api/sftp", s.signedIn(s.getSFTP))
 	web.HandleFunc("PUT /api/sftp", s.adminOnly(s.setSFTP))
+	web.HandleFunc("PUT /api/sftp/enabled", s.confirmed(requireAdmin(s.setSFTPEnabled)))
 	web.HandleFunc("GET /api/account/ssh-keys", s.signedIn(s.listSSHKeys))
 	web.HandleFunc("POST /api/account/ssh-keys", s.confirmed(s.addSSHKey))
 	web.HandleFunc("DELETE /api/account/ssh-keys/{id}", s.confirmed(s.deleteSSHKey))
@@ -435,6 +441,7 @@ func (s *Server) Serve(ctx context.Context, socket string) error {
 		s.wakeBackups()
 		s.wakeUploads()
 		s.syncAllLinks(ctx)
+		s.syncHostAccess(ctx)
 		s.syncExternal(ctx)
 		s.syncSFTPVolumes(ctx)
 		s.syncSFTPPort(ctx)

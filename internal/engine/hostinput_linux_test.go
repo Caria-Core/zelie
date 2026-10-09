@@ -50,7 +50,7 @@ func withFakeIptables(t *testing.T, f *fakeIptables) {
 func TestHostInput(t *testing.T) {
 	f := &fakeIptables{chains: map[string][]string{"INPUT": {"-j ufw-before-input"}}}
 	withFakeIptables(t, f)
-	if err := ensureInputRules(context.Background()); err != nil {
+	if err := ensureInputRules(context.Background(), nil, false); err != nil {
 		t.Fatal(err)
 	}
 	if f.chains["INPUT"][0] != "-j ZELIE-INPUT" || len(f.chains["INPUT"]) != 2 {
@@ -66,7 +66,7 @@ func TestHostInput(t *testing.T) {
 
 	// Again, as every minute: nothing is added twice.
 	f.calls = nil
-	if err := ensureInputRules(context.Background()); err != nil {
+	if err := ensureInputRules(context.Background(), nil, false); err != nil {
 		t.Fatal(err)
 	}
 	for _, c := range f.calls {
@@ -77,7 +77,7 @@ func TestHostInput(t *testing.T) {
 
 	// A firewall reload that drops the jump gets it back.
 	f.chains["INPUT"] = []string{"-j ufw-before-input"}
-	if err := ensureInputRules(context.Background()); err != nil {
+	if err := ensureInputRules(context.Background(), nil, false); err != nil {
 		t.Fatal(err)
 	}
 	if f.chains["INPUT"][0] != "-j ZELIE-INPUT" {
@@ -153,4 +153,46 @@ func TestHostForward(t *testing.T) {
 // machine's own iptables.
 func quietIptables(t *testing.T) {
 	withFakeIptables(t, &fakeIptables{chains: map[string][]string{"INPUT": nil}})
+}
+
+func TestHostInputOpensTheDatabasePort(t *testing.T) {
+	f := &fakeIptables{chains: map[string][]string{"INPUT": {"-j ufw-before-input"}}}
+	withFakeIptables(t, f)
+	ctx := context.Background()
+	web := hostRule{"zelie3", netip.MustParseAddr("10.210.3.1")}
+	rule := "-i zelie3 -d 10.210.3.1/32 -p tcp --dport 3306 -j ACCEPT"
+
+	if err := ensureInputRules(ctx, []hostRule{web}, true); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"-i zelie+ -p udp --dport 53 -j ACCEPT",
+		"-i zelie+ -p tcp --dport 53 -j ACCEPT",
+		rule,
+	}
+	if !slices.Equal(f.chains[inputChain], want) {
+		t.Errorf("ZELIE-INPUT %v", f.chains[inputChain])
+	}
+
+	// The check every minute puts back what a reload took, without emptying
+	// the chain.
+	f.chains[inputChain] = want[:2]
+	f.calls = nil
+	if err := ensureInputRules(ctx, []hostRule{web}, false); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(f.chains[inputChain], want) {
+		t.Errorf("after a reload: %v", f.chains[inputChain])
+	}
+	if slices.ContainsFunc(f.calls, func(c string) bool { return strings.HasPrefix(c, "-F") }) {
+		t.Error("the minute check emptied the chain")
+	}
+
+	// Turned off: the rule goes, and DNS stays.
+	if err := ensureInputRules(ctx, nil, true); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(f.chains[inputChain], want[:2]) {
+		t.Errorf("after turning it off: %v", f.chains[inputChain])
+	}
 }

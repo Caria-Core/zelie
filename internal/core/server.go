@@ -51,6 +51,7 @@ type Engine interface {
 	Links(app string) ([]engine.Link, error)
 	SetLinks(ctx context.Context, app string, links []engine.Link) error
 	SetForwards(ctx context.Context, app string, forwards []engine.Forward) error
+	SetHostAccess(ctx context.Context, app string, on bool) error
 	Exec(ctx context.Context, id string, args []string, stdin io.Reader, stdout, stderr io.Writer) (uint32, error)
 	OpenVolume(ctx context.Context, name string) (*os.Root, error)
 	ReadVolume(name string) (*os.Root, error)
@@ -131,9 +132,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/volumes/{name}/peek", s.peekVolume)
 	mux.HandleFunc("PUT /v1/sftp/volumes", s.setSFTPVolumes)
 	mux.HandleFunc("PUT /v1/sftp/port", s.setSFTPPort)
+	mux.HandleFunc("PUT /v1/sftp/enabled", s.setSFTPEnabled)
 	mux.HandleFunc("GET /v1/sftp", s.sftpStatus)
 	mux.HandleFunc("GET /v1/links/{app}", s.links)
 	mux.HandleFunc("PUT /v1/links/{app}", s.setLinks)
+	mux.HandleFunc("PUT /v1/host-access/{app}", s.setHostAccess)
 	mux.HandleFunc("PUT /v1/forwards/{app}", s.setForwards)
 	mux.HandleFunc("DELETE /v1/forwards/{app}", s.clearForwards)
 	mux.HandleFunc("GET /v1/ports", s.usedPorts)

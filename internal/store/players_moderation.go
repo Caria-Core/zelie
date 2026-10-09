@@ -398,11 +398,16 @@ func (s *Store) AddAudit(ctx context.Context, at time.Time, account int64, app, 
 	return err
 }
 
-// Audit lists a server's entries, the newest first.
+// Audit lists a server's entries, the newest first. An empty app lists the
+// entries that belong to no server, such as the Steam key and SFTP.
 func (s *Store) Audit(ctx context.Context, app string, limit int) ([]AuditEntry, error) {
+	var appID any
+	if app != "" {
+		appID = app
+	}
 	rows, err := s.db.QueryContext(ctx, `SELECT a.id, a.at, coalesce(u.email, ''), a.action, a.target, a.detail
 		FROM audit_log a LEFT JOIN users u ON u.id = a.account_id
-		WHERE a.app_id = ? ORDER BY a.id DESC LIMIT ?`, app, limit)
+		WHERE a.app_id IS ? ORDER BY a.id DESC LIMIT ?`, appID, limit)
 	if err != nil {
 		return nil, err
 	}

@@ -86,6 +86,7 @@ Flags answer the questions, for example from automation:
 | `--host` | the panel's domain, or the server's IP address with `--mode ip` |
 | `--email` | the Let's Encrypt email, with `--mode domain` |
 | `--port` | the local port for the tunnel; if left out, the one an earlier install used, or 8480 |
+| `--no-sftp` | install with SFTP turned off: nothing listens on the SFTP port and no ufw rule is added |
 
 ```sh
 curl -fsSL https://github.com/Caria-Core/zelie/releases/latest/download/install.sh | sh -s -- --mode domain --host panel.example.com --email you@example.com
@@ -128,32 +129,206 @@ The panel is empty at first. A few things are worth doing early:
 - **SFTP.** The SFTP server listens on port 2222. If another program has that port, such
   as Pterodactyl's Wings, the install finishes anyway and says so; choose another on the
   Server page. If the port will not open, SFTP stays where it was and the page says why.
+  With `--no-sftp` it is installed turned off. An administrator can turn it on from the
+  Server page later; Zelie does not open the port in any firewall when they do.
 - **Off-site backups.** The Backups page takes any S3-compatible storage. Download the
   recovery file there too: without it, no other server can open your backups.
 
 ## What the install changes
 
-- `/usr/local/bin/zelie`, and Zelie's own containerd and runc under
-  `/usr/local/lib/zelie`, with their settings in `/etc/zelie`. They do not touch Docker.
-- Three system users that cannot log in: `zelie` for the panel, `zelie-proxy` and
-  `zelie-sftp`.
+- `/usr/local/bin/zelie`, and Zelie's own containerd, its runc shim, `ctr`, runc and the
+  CNI network plugins under `/usr/local/lib/zelie`, with their settings in `/etc/zelie`.
+  They do not touch Docker. Zelie uses its own containerd socket and its own namespace.
+- Three system users that cannot log in, each with a group of the same name: `zelie` for
+  the panel, `zelie-proxy` and `zelie-sftp`. Nothing is added to `/etc/subuid` or
+  `/etc/subgid`.
 - Five systemd services, `zelie-containerd`, `zelie-core`, `zelie-proxy`, `zelie-panel`
   and `zelie-sftp`, and a socket, `zelie-sftp.socket`. The socket holds the SFTP port.
   The SFTP server starts when someone connects and stops after five idle minutes, so it
   uses no memory while nobody needs it. A port chosen on the Server page goes in
-  `/etc/systemd/system/zelie-sftp.socket.d/port.conf`.
-- If ufw is on, a rule that opens port 2222. Nothing else in ufw changes. With a domain,
+  `/etc/systemd/system/zelie-sftp.socket.d/port.conf`. With `--no-sftp`, or after SFTP is
+  turned off on the Server page, the socket is not started and nothing listens.
+- A systemd slice, `zelie.slice`, which holds one scope for each running container, and
+  a short-lived `zelie-update` unit while an update finishes.
+- Zelie's containerd is started with `modprobe overlay`. Nothing is written to
+  `/etc/sysctl.d` or `/etc/modules-load.d`.
+- If ufw is on, a rule that opens port 2222, unless you install with `--no-sftp`. Nothing
+  else in ufw changes. With a domain,
   make sure ports 80 and 443 are open in any firewall in front of the server.
 - nftables tables named `zelie` and `zelie-nat`, which only concern Zelie's containers
-  and the game ports it forwards. Other rules, such as ufw's or Docker's, are left as
-  they are.
+  and the game ports it forwards. If the server has iptables, two chains of Zelie's own,
+  `ZELIE-INPUT` and `ZELIE-FORWARD`, with one jump to each from `INPUT` and `FORWARD`.
+  They let containers reach their DNS server and let forwarded game ports through
+  firewalls such as ufw. Other rules, such as ufw's or Docker's, are left as they are.
+- One network bridge for each Zelie network, named `zelie0`, `zelie1` and so on, with
+  addresses in `10.210.0.0/16`.
+- With a tunnel, the `cloudflared` package and its service, unless one was already
+  there.
 - Data under `/var/lib/zelie`, `/var/lib/zelie-panel`, `/var/lib/zelie-proxy` and
-  `/var/lib/zelie-sftp`, and the SFTP host key in `/etc/zelie-sftp`.
+  `/var/lib/zelie-sftp`, and the SFTP host key in `/etc/zelie-sftp`. Whether SFTP is turned
+  off is kept in `/var/lib/zelie/sftp.json`; running the install again, or an update,
+  leaves that choice as it is. Runtime files live
+  in `/run/zelie`, `/run/zelie-panel` and `/run/zelie-proxy` and go away on a reboot.
 
 Running the install again is safe. It finishes an install that stopped halfway, leaves
 alone what is already done, and updates an older version. Behind a tunnel it keeps the
 port the proxy already uses; if you give another one with `--port`, the install says so,
 and the Cloudflare routes need to follow.
+
+## Uninstall
+
+There is no `zelie uninstall` command yet, so the steps are manual. Run them as root, in
+this order. Each one is safe to run again if something is already gone.
+
+This removes everything Zelie made. `/var/lib/zelie` holds the volumes of your apps and
+databases, your game server files, and the backups stored on this server. Copy what you
+want to keep before step 8. Backups kept in off-site storage are not touched.
+
+Zelie's services rewrite their own files every time they start, so stop them first.
+
+**1. Stop the services.**
+
+```sh
+systemctl disable --now zelie-core zelie-panel zelie-proxy zelie-sftp.socket zelie-sftp 2>/dev/null || true
+```
+
+**2. Stop the containers.** The containerd service does not stop containers when it
+stops, so they have to be stopped on their own. All of them run in `zelie.slice`.
+
+```sh
+systemctl stop zelie.slice 2>/dev/null || true
+CTR="/usr/local/lib/zelie/bin/ctr -a /run/zelie/containerd.sock -n zelie"
+if [ -S /run/zelie/containerd.sock ]; then
+  for t in $($CTR tasks ls -q 2>/dev/null); do $CTR tasks kill -s SIGKILL "$t" 2>/dev/null || true; done
+  sleep 2
+  for t in $($CTR tasks ls -q 2>/dev/null); do $CTR tasks delete -f "$t" 2>/dev/null || true; done
+fi
+```
+
+The socket path in `CTR` is Zelie's own. Docker has a separate containerd and these
+commands never reach it.
+
+**3. Stop containerd and its shims.**
+
+```sh
+systemctl disable --now zelie-containerd 2>/dev/null || true
+for u in zelie-core zelie-containerd; do
+  k=/sys/fs/cgroup/system.slice/$u.service/cgroup.kill
+  [ -e "$k" ] && echo 1 > "$k"
+done
+pkill -f /usr/local/lib/zelie/bin/containerd-shim-runc-v2 || true
+```
+
+Both services leave their child processes running when they stop: containerd its
+shims, and the core the small `sleep` processes that keep each container's input open.
+Writing to `cgroup.kill` ends what is left in those two services only. The `pkill`
+pattern is the full path, so it only matches Zelie's shims.
+
+**4. Unmount what is left.** Containers leave mounts under `/run/zelie` and
+`/var/lib/zelie`. This unmounts only those, deepest first.
+
+```sh
+findmnt -rn -o TARGET | awk '$1 ~ "^/(run|var/lib)/zelie/"' | sort -r | while read -r m; do
+  umount "$m" 2>/dev/null || umount -l "$m" 2>/dev/null || true
+done
+```
+
+**5. Remove the firewall rules and bridges.**
+
+```sh
+nft delete table inet zelie 2>/dev/null || true
+nft delete table ip zelie-nat 2>/dev/null || true
+if command -v iptables >/dev/null; then
+  while iptables -D INPUT -j ZELIE-INPUT 2>/dev/null; do :; done
+  while iptables -D FORWARD -j ZELIE-FORWARD 2>/dev/null; do :; done
+  for c in ZELIE-INPUT ZELIE-FORWARD; do iptables -F "$c" 2>/dev/null; iptables -X "$c" 2>/dev/null; done
+fi
+for l in $(ip -o link show | awk -F'[ :@]+' '$2 ~ /^zelie[0-9]+$/ {print $2}'); do ip link del "$l" 2>/dev/null || true; done
+```
+
+These tables, chains and bridges are Zelie's alone. The same removal covers the rules
+that let one app reach the host's database port 3306, which are kept in the same table
+and chain.
+
+The network plugins that give containers their addresses may leave rules behind if
+Zelie crashed, chains named `CNI-` followed by letters and digits, and `CNI-FORWARD` or
+`CNI-ADMIN`. Podman and k3s use the same names. If you run either, leave these alone.
+Otherwise check what they refer to:
+
+```sh
+iptables -t nat -S | grep CNI
+iptables -S | grep CNI
+```
+
+Remove them only if every address in the output is inside `10.210.0.0/16`. Delete the
+jump to a chain with `iptables -t nat -D POSTROUTING ...` (or `-D FORWARD ...`), then
+flush it with `-F` and remove it with `-X`. If there is no iptables on the server, the
+plugins may have used the nftables table `inet cni_plugins_masquerade` instead. The
+same care applies to it.
+
+Leave `net.ipv4.ip_forward` and the `overlay` module as they are. Zelie does not save
+either one, and Docker needs them.
+
+**6. Remove the ufw rule.** Skip this if ufw is not installed, or if it was not active
+when you installed Zelie. This removes only the SFTP rule. If you moved SFTP to another
+port, or installed with `--no-sftp`, no rule was added for it.
+
+```sh
+command -v ufw >/dev/null && ufw status | grep -q 'Zelie SFTP' && ufw delete allow 2222/tcp || true
+```
+
+**7. Remove the Cloudflare connector.** Only if you chose a tunnel, Zelie installed the
+connector, and nothing else on the server uses it.
+
+```sh
+if command -v cloudflared >/dev/null; then cloudflared service uninstall; apt-get remove -y cloudflared; fi
+```
+
+Then delete the tunnel and its hostnames in Cloudflare.
+
+**8. Remove the units and files.**
+
+```sh
+rm -f /etc/systemd/system/zelie-containerd.service /etc/systemd/system/zelie-core.service \
+  /etc/systemd/system/zelie-proxy.service /etc/systemd/system/zelie-panel.service \
+  /etc/systemd/system/zelie-sftp.service /etc/systemd/system/zelie-sftp.socket
+rm -rf /etc/systemd/system/zelie-sftp.socket.d
+systemctl daemon-reload
+systemctl reset-failed 'zelie*' 2>/dev/null || true
+rm -f /usr/local/bin/zelie /usr/local/bin/zelie.old /usr/local/bin/zelie.new \
+  /usr/local/bin/zelie.tmp-* /usr/local/bin/zelie.old.tmp-*
+rm -rf /usr/local/lib/zelie /etc/zelie /etc/zelie-sftp
+rm -rf /var/lib/zelie /var/lib/zelie-panel /var/lib/zelie-proxy /var/lib/zelie-sftp
+rm -rf /run/zelie /run/zelie-panel /run/zelie-proxy
+```
+
+If `rm` says a path is busy, a mount from step 4 is still there. Run step 4 again.
+Do not use `rm -rf` on `/var/lib/zelie` while it still shows up in `findmnt`.
+
+**9. Remove the users.**
+
+```sh
+for u in zelie zelie-proxy zelie-sftp; do userdel "$u" 2>/dev/null || true; done
+for g in zelie zelie-proxy zelie-sftp; do getent group "$g" >/dev/null && groupdel "$g" || true; done
+```
+
+### Check that nothing is left
+
+Each of these should print nothing.
+
+```sh
+systemctl list-units --all 'zelie*'
+nft list tables | grep zelie
+iptables -S 2>/dev/null | grep -i zelie
+ip link | grep zelie
+findmnt | grep zelie
+getent passwd zelie zelie-proxy zelie-sftp
+ls -d /usr/local/bin/zelie* /usr/local/lib/zelie /etc/zelie* /var/lib/zelie* /run/zelie* \
+  /etc/systemd/system/zelie* 2>/dev/null
+```
+
+`systemctl list-units` prints a heading and a count of zero units. That is fine. If a
+`zelie` process still shows up in `ps`, a shim was missed. Run step 3 again.
 
 ## Updates
 

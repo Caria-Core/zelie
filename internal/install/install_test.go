@@ -612,3 +612,153 @@ func TestInstallLinksBracketAnIPv6Address(t *testing.T) {
 		t.Errorf("output:\n%s", out.String())
 	}
 }
+
+// sftpExec is a command runner for a server where the SFTP socket is up, as
+// it is after an install that did not ask for SFTP to be off.
+func sftpExec(f *fakeServer, socketUp bool) ExecFunc {
+	return func(_ context.Context, name string, args ...string) (string, error) {
+		cmd := name + " " + strings.Join(args, " ")
+		f.commands = append(f.commands, cmd)
+		switch {
+		case name == "id" && !f.users[args[1]]:
+			return "no such user", errors.New("exit status 1")
+		case name == "useradd":
+			f.users[args[len(args)-1]] = true
+		case cmd == "ufw status":
+			return "Status: active\n", nil
+		case cmd == "systemctl is-active zelie-sftp.socket" && socketUp:
+			return "active\n", nil
+		case cmd == "systemctl is-active zelie-sftp.socket":
+			return "inactive\n", errors.New("exit status 3")
+		case cmd == "systemctl is-enabled zelie-sftp.socket" && socketUp:
+			return "enabled\n", nil
+		case cmd == "systemctl is-enabled zelie-sftp.socket":
+			return "disabled\n", errors.New("exit status 1")
+		}
+		return "", nil
+	}
+}
+
+func (f *fakeServer) ran(prefix string) bool {
+	for _, c := range f.commands {
+		if strings.HasPrefix(c, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func TestInstallWithSFTPOff(t *testing.T) {
+	f := newFakeServer(t)
+	var out bytes.Buffer
+	opts := Options{Mode: ModeIP, Host: "203.0.113.9", NoSFTP: true}
+	if err := f.installer(t, opts, &out).Run(context.Background()); err != nil {
+		t.Fatalf("%v\n%s", err, out.String())
+	}
+	if !SFTPOff(filepath.Join(f.root, SFTPStateFile)) {
+		t.Error("the off state was not written")
+	}
+	b, _ := os.ReadFile(filepath.Join(f.root, SFTPStateFile))
+	if string(b) != "{\"off\":true}\n" {
+		t.Errorf("state file %q", b)
+	}
+	if f.ran("systemctl enable --now zelie-sftp.socket") || f.ran("ufw") {
+		t.Errorf("SFTP was started or opened: %v", f.commands)
+	}
+	if !strings.Contains(out.String(), "SFTP is off") {
+		t.Errorf("the summary does not say so:\n%s", out.String())
+	}
+	// The units are there, so it can be turned on later.
+	if b, _ := os.ReadFile(filepath.Join(f.root, UnitDir, "zelie-sftp.socket")); string(b) != SFTPSocketUnit() {
+		t.Errorf("socket unit:\n%s", b)
+	}
+
+	// Installing again without the flag keeps it off.
+	f.commands = nil
+	out.Reset()
+	if err := f.installer(t, Options{Mode: ModeIP, Host: "203.0.113.9"}, &out).Run(context.Background()); err != nil {
+		t.Fatalf("%v\n%s", err, out.String())
+	}
+	if !SFTPOff(filepath.Join(f.root, SFTPStateFile)) {
+		t.Error("a reinstall turned SFTP on")
+	}
+	if f.ran("systemctl enable --now zelie-sftp.socket") || f.ran("ufw") {
+		t.Errorf("a reinstall started or opened SFTP: %v", f.commands)
+	}
+}
+
+func TestInstallWithoutTheFlagLeavesSFTPOn(t *testing.T) {
+	f := newFakeServer(t)
+	var out bytes.Buffer
+	if err := f.installer(t, Options{Mode: ModeIP, Host: "203.0.113.9"}, &out).Run(context.Background()); err != nil {
+		t.Fatalf("%v\n%s", err, out.String())
+	}
+	if _, err := os.Stat(filepath.Join(f.root, SFTPStateFile)); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("a state file was made: %v", err)
+	}
+	if !f.ran("systemctl enable --now zelie-sftp.socket") {
+		t.Errorf("the socket was not enabled: %v", f.commands)
+	}
+}
+
+func TestSetUpSFTPWhileOff(t *testing.T) {
+	f := newFakeServer(t)
+	f.users[PanelUser], f.users[ProxyUser] = true, true
+	state := filepath.Join(f.root, SFTPStateFile)
+	if err := SetSFTPOff(state, true); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+
+	// Fresh units: they are written, nothing is started or opened.
+	made, err := SetUpSFTP(ctx, sftpExec(f, false), f.root)
+	if err != nil || !made {
+		t.Fatalf("first: %v %v", made, err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(f.root, UnitDir, "zelie-sftp.socket")); string(b) != SFTPSocketUnit() {
+		t.Errorf("socket unit:\n%s", b)
+	}
+	if !f.ran("systemctl daemon-reload") || f.ran("systemctl enable") || f.ran("systemctl disable") || f.ran("ufw") {
+		t.Errorf("ran %v", f.commands)
+	}
+
+	// A later start finds all in place and only looks at the socket.
+	f.commands = nil
+	made, err = SetUpSFTP(ctx, sftpExec(f, false), f.root)
+	if err != nil || made || f.ran("systemctl disable") || f.ran("ufw") {
+		t.Errorf("second: %v %v %v", made, err, f.commands)
+	}
+
+	// A socket that runs although SFTP is off is stopped and disabled.
+	f.commands = nil
+	if _, err := SetUpSFTP(ctx, sftpExec(f, true), f.root); err != nil {
+		t.Fatal(err)
+	}
+	if !f.ran("systemctl disable --now zelie-sftp.socket") {
+		t.Errorf("the socket was left running: %v", f.commands)
+	}
+
+	// Turned on again, the same call does what it did before.
+	if err := SetSFTPOff(state, false); err != nil {
+		t.Fatal(err)
+	}
+	os.Remove(filepath.Join(f.root, UnitDir, "zelie-sftp.socket"))
+	f.commands = nil
+	if made, err := SetUpSFTP(ctx, sftpExec(f, false), f.root); err != nil || !made || !f.ran("systemctl enable --now zelie-sftp.socket") || !f.ran("ufw allow 2222/tcp") {
+		t.Errorf("after turning on: %v %v %v", made, err, f.commands)
+	}
+}
+
+func TestDamagedSFTPStateCountsAsOff(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sftp.json")
+	if SFTPOff(path) {
+		t.Error("no file means on")
+	}
+	os.WriteFile(path, []byte("{"), 0o644)
+	if !SFTPOff(path) {
+		t.Error("a damaged file opened SFTP")
+	}
+	if err := SetSFTPOff(path, false); err != nil || SFTPOff(path) {
+		t.Errorf("on again: %v", err)
+	}
+}

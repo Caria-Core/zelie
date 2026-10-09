@@ -27,6 +27,7 @@ func runInstall(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	host := fs.String("host", "", "the panel's domain, or this server's IP address")
 	mail := fs.String("email", "", "email for Let's Encrypt, in domain mode")
 	port := fs.Int("port", install.DefaultTunnelPort, "loopback port for the proxy, in tunnel mode")
+	noSFTP := fs.Bool("no-sftp", false, "install with SFTP turned off: no port is opened and no firewall rule is added")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -44,7 +45,7 @@ func runInstall(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
-	opts := install.Options{Mode: install.Mode(*mode), Host: *host, Email: *mail, Port: *port}
+	opts := install.Options{Mode: install.Mode(*mode), Host: *host, Email: *mail, Port: *port, NoSFTP: *noSFTP}
 	in := bufio.NewReader(stdin)
 	if err := ask(ctx, in, stdout, &opts); err != nil {
 		fmt.Fprintf(stderr, "zelie: %v\n", err)

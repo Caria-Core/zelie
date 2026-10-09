@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 
@@ -454,10 +455,23 @@ func (c *appCore) SetSFTPPort(_ context.Context, port int) error {
 	return nil
 }
 
+func (c *appCore) SetSFTPEnabled(_ context.Context, on bool) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.sftpToggleErr != nil {
+		return c.sftpToggleErr
+	}
+	c.sftpOff = !on
+	c.sftpToggles = append(c.sftpToggles, on)
+	return nil
+}
+
 func (c *appCore) SFTP(context.Context) (core.SFTPStatus, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.sftpStatus, nil
+	st := c.sftpStatus
+	st.On = !c.sftpOff
+	return st, nil
 }
 
 func (c *appCore) SetSFTPVolumes(_ context.Context, names []string) error {
@@ -643,4 +657,49 @@ func (e *appEnv) newSFTPPassword(t *testing.T) string {
 func jsonOf(v any) string {
 	b, _ := json.Marshal(v)
 	return string(b)
+}
+
+func TestSFTPCanBeTurnedOffAndOn(t *testing.T) {
+	e := newSFTPEnv(t)
+	if _, out := e.b.do("GET", "/api/sftp", nil); out["on"] != true {
+		t.Fatalf("by default: %v", out)
+	}
+	if code, out := e.b.do("PUT", "/api/sftp/enabled", map[string]bool{"on": false}); code != http.StatusOK || out["on"] != false {
+		t.Fatalf("turn off: %d %v", code, out)
+	}
+	if _, out := e.b.do("GET", "/api/games/survival/sftp", nil); out["on"] != false {
+		t.Errorf("a game server is told: %v", out)
+	}
+	if code, out := e.b.do("PUT", "/api/sftp/enabled", map[string]bool{"on": true}); code != http.StatusOK || out["on"] != true {
+		t.Fatalf("turn on: %d %v", code, out)
+	}
+	if got := e.core.sftpToggles; len(got) != 2 || got[0] || !got[1] {
+		t.Errorf("the core was told %v", got)
+	}
+	if got := e.auditOf(t, ""); !slices.Equal(got, []string{"sftp_on", "sftp_off"}) {
+		t.Errorf("audit %v", got)
+	}
+
+	e.core.sftpToggleErr = errors.New("systemctl failed")
+	if code, out := e.b.do("PUT", "/api/sftp/enabled", map[string]bool{"on": false}); code != http.StatusBadGateway || out["code"] != "sftp.toggle_failed" {
+		t.Errorf("when the core cannot: %d %v", code, out)
+	}
+	if got := e.auditOf(t, ""); len(got) != 2 {
+		t.Errorf("a failed change was written down: %v", got)
+	}
+}
+
+func TestTurningSFTPOffNeedsAnAdministratorWhoConfirmed(t *testing.T) {
+	e := newSFTPEnv(t)
+	if code, out := e.asCustomer(t, requireAdmin(e.s.setSFTPEnabled), "PUT", "", map[string]bool{"on": false}); code != http.StatusForbidden || out["code"] != "session.admin_only" {
+		t.Errorf("a customer: %d %v", code, out)
+	}
+	later := e.s.now().Add(confirmWindow + time.Minute)
+	e.s.Now = func() time.Time { return later }
+	if code, out := e.b.do("PUT", "/api/sftp/enabled", map[string]bool{"on": false}); code != http.StatusForbidden || out["confirm"] != true {
+		t.Errorf("without confirming: %d %v", code, out)
+	}
+	if len(e.core.sftpToggles) != 0 || len(e.auditOf(t, "")) != 0 {
+		t.Errorf("something was done anyway: %v %v", e.core.sftpToggles, e.auditOf(t, ""))
+	}
 }

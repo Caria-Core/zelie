@@ -21,6 +21,10 @@ const DefaultSFTPPort = 2222
 // until it exits, which it does when nobody is connected, and starts again
 // on the new one. It does nothing on a server that has both up to date, and
 // reports whether it made or changed anything.
+//
+// On a server where SFTP is turned off the units are still kept current, so
+// turning it on later works, but the socket is not started and no firewall
+// rule is made.
 func SetUpSFTP(ctx context.Context, run ExecFunc, root string) (bool, error) {
 	units := map[string]string{SFTPService + ".service": SFTPUnit(), SFTPSocket: SFTPSocketUnit()}
 	fresh, err := ensureUser(ctx, run, SFTPUser)
@@ -42,11 +46,17 @@ func SetUpSFTP(ctx context.Context, run ExecFunc, root string) (bool, error) {
 			return false, err
 		}
 	}
-	if !changed {
+	off := SFTPOff(filepath.Join(root, SFTPStateFile))
+	if !changed && !off {
 		return false, nil
 	}
-	if out, err := run(ctx, "systemctl", "daemon-reload"); err != nil {
-		return false, fmt.Errorf("systemctl daemon-reload: %v: %s", err, strings.TrimSpace(out))
+	if changed {
+		if out, err := run(ctx, "systemctl", "daemon-reload"); err != nil {
+			return false, fmt.Errorf("systemctl daemon-reload: %v: %s", err, strings.TrimSpace(out))
+		}
+	}
+	if off {
+		return changed, stopSFTP(ctx, run)
 	}
 	if out, err := run(ctx, "systemctl", "enable", "--now", SFTPSocket); err != nil {
 		return false, fmt.Errorf("systemctl enable %s: %v: %s", SFTPSocket, err, strings.TrimSpace(out))
