@@ -221,6 +221,7 @@ func (s *Server) runUpgrade(ctx context.Context, db store.App, d *store.Deployme
 		undo()
 		return errUpgradeLoad.Err("detail", err.Error())
 	}
+	d.Settings = new(db.RunSettings())
 	if err := s.Store.GoLive(ctx, *d, s.now()); err != nil {
 		undo()
 		return err

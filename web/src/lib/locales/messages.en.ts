@@ -97,6 +97,7 @@ export default {
 	'msg.db.name_taken': 'An app or database with that name already exists.',
 	'msg.db.no_password': 'This database has no password to show.',
 	'msg.deploy.bad_answer': 'The app answered {status} at {path} on port {port}. It has to answer with a status below 500 within {seconds} seconds.',
+	'msg.deploy.cancelled': 'The deployment was cancelled.',
 	'msg.deploy.database_no_answer': 'The database did not accept connections on port {port} within {seconds} seconds.',
 	'msg.deploy.never_live': 'Only a version that was live can be rolled back to.',
 	'msg.deploy.no_answer': 'The app did not answer at {path} on port {port} within {seconds} seconds.',

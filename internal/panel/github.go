@@ -3,8 +3,10 @@ package panel
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -29,8 +31,53 @@ const (
 	sealGitHubWebhook = "github webhook secret"
 )
 
-// GitHub's own limit for a webhook payload.
-const maxWebhook = 25 << 20
+// Nobody has proved who they are when a webhook arrives, and its signature
+// can only be checked once the whole body is here. So a body is limited in
+// size, in time and in how many are read at once. GitHub allows 25 MB, but a
+// push is a few kilobytes, and a huge one a few megabytes.
+const (
+	maxWebhook     = 5 << 20
+	webhookReaders = 2
+)
+
+// How long a webhook waits for its turn to be read, and how long it then
+// has to arrive. A slow sender frees its turn before the next one gives up.
+// Tests shorten both.
+var (
+	webhookWait     = 10 * time.Second
+	webhookReadTime = 10 * time.Second
+)
+
+// webhookGate lets a few webhook bodies be read at a time.
+type webhookGate struct {
+	once  sync.Once
+	slots chan struct{}
+}
+
+// enter waits for a turn and returns the function that gives it back, or
+// false if the turn did not come in time.
+func (g *webhookGate) enter(ctx context.Context) (leave func(), ok bool) {
+	g.once.Do(func() { g.slots = make(chan struct{}, webhookReaders) })
+	ctx, cancel := context.WithTimeout(ctx, webhookWait)
+	defer cancel()
+	select {
+	case g.slots <- struct{}{}:
+		return func() { <-g.slots }, true
+	case <-ctx.Done():
+		return nil, false
+	}
+}
+
+// hasSignature reports whether a header has the shape of GitHub's signature:
+// sha256= and a SHA-256 in hex.
+func hasSignature(header string) bool {
+	sum, ok := strings.CutPrefix(header, "sha256=")
+	if !ok {
+		return false
+	}
+	b, err := hex.DecodeString(sum)
+	return err == nil && len(b) == sha256.Size
+}
 
 var validAccount = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$`) })
 
@@ -366,6 +413,14 @@ func (s *Server) githubRepos(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
+// turnAway answers a webhook whose body was not read, or not all of it, and
+// ends the connection. Otherwise the server first waits for the rest of a
+// body that may never come, and the answer waits with it.
+func turnAway(w http.ResponseWriter, e *msg.Error) {
+	w.Header().Set("Connection", "close")
+	writeError(w, e)
+}
+
 // githubWebhook receives events from GitHub. It needs no login: the
 // signature, made with the secret only GitHub and the panel know, is the
 // proof.
@@ -380,12 +435,40 @@ func (s *Server) githubWebhook(w http.ResponseWriter, r *http.Request) {
 		writeError(w, errGitHubOff.Err().WithStatus(http.StatusNotFound))
 		return
 	}
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxWebhook))
-	if err != nil {
-		writeError(w, errWebhook.Err("detail", "the payload is too large").WithStatus(http.StatusRequestEntityTooLarge))
+	signature := r.Header.Get("X-Hub-Signature-256")
+	if !hasSignature(signature) {
+		s.Log.Warn("webhook without a signature", "ip", clientIP(r))
+		turnAway(w, errWebhook.Err("detail", "bad signature").WithStatus(http.StatusUnauthorized))
 		return
 	}
-	if !github.Verify(conn.secret, body, r.Header.Get("X-Hub-Signature-256")) {
+	if r.ContentLength > maxWebhook {
+		s.Log.Warn("webhook payload too large", "ip", clientIP(r), "bytes", r.ContentLength)
+		turnAway(w, errWebhook.Err("detail", "the payload is too large").WithStatus(http.StatusRequestEntityTooLarge))
+		return
+	}
+	leave, ok := s.webhooks.enter(ctx)
+	if !ok {
+		turnAway(w, errWebhook.Err("detail", "too many payloads at once, try again").WithStatus(http.StatusServiceUnavailable))
+		return
+	}
+	rc := http.NewResponseController(w)
+	if err := rc.SetReadDeadline(time.Now().Add(webhookReadTime)); err != nil && !errors.Is(err, http.ErrNotSupported) {
+		s.Log.Warn("webhook read deadline", "err", err)
+	}
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxWebhook))
+	rc.SetReadDeadline(time.Time{})
+	leave()
+	var tooBig *http.MaxBytesError
+	switch {
+	case errors.As(err, &tooBig):
+		s.Log.Warn("webhook payload too large", "ip", clientIP(r))
+		turnAway(w, errWebhook.Err("detail", "the payload is too large").WithStatus(http.StatusRequestEntityTooLarge))
+		return
+	case err != nil:
+		turnAway(w, errWebhook.Err("detail", "the payload did not arrive").WithStatus(http.StatusRequestTimeout))
+		return
+	}
+	if !github.Verify(conn.secret, body, signature) {
 		s.Log.Warn("webhook with a bad signature", "ip", clientIP(r))
 		writeError(w, errWebhook.Err("detail", "bad signature").WithStatus(http.StatusUnauthorized))
 		return

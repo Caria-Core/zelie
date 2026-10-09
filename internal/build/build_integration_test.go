@@ -93,7 +93,7 @@ func TestUnpackCannotReachTheCache(t *testing.T) {
 		&tar.Header{Name: "repo-abc/cache/planted", Typeflag: tar.TypeReg, Mode: 0o644},
 	)
 	b.Build(context.Background(), Request{App: "it-app", Version: "3", Source: src}, &bytes.Buffer{})
-	if _, err := os.Lstat(b.cacheDir("buildkit") + "/planted"); err == nil {
+	if _, err := os.Lstat(b.buildkitDir("it-app") + "/planted"); err == nil {
 		t.Fatal("the archive wrote into the build cache")
 	}
 }

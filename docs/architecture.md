@@ -117,8 +117,9 @@ Builds run [BuildKit](https://github.com/moby/buildkit) inside an ordinary Zelie
 container, with its own user namespace and resource limits, not as a service on the
 host. Each build step then runs in a sandbox of its own inside that container. The
 source archive is unpacked in a separate container that has nothing else mounted, so an
-archive with crafted symlinks has nothing to reach. Package manager caches are kept per
-app, and builds run one at a time.
+archive with crafted symlinks has nothing to reach. Every app has a build cache of its
+own, so a Dockerfile cannot plant anything that another app's build would pick up.
+Builds run one at a time.
 
 ## Web traffic
 

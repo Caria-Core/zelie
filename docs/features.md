@@ -40,7 +40,8 @@ Every app has:
   commands Railpack chose, and either can be replaced.
 - When a Node project has a test script, it runs on each new build first, with the app's
   variables. A failing test keeps the old version. The command can be changed or left
-  empty.
+  empty. The tests get no network and nothing of the databases linked to the app, so a
+  test suite cannot empty live data; one that needs a database has to start its own.
 - A new version starts next to the old one. An app with a domain must answer on its
   health check path within a minute before traffic moves over. If the build or the start
   fails, the old version keeps serving and the log shows why.
@@ -203,9 +204,15 @@ For Rust and Minecraft servers, and as a plain list for some other Steam games.
 
 ## Housekeeping
 
-- The build cache is kept to a tenth of the disk, at most 20 GB.
+- Every app has its own build cache. The caches share a tenth of the disk, at most 20 GB,
+  in equal parts. A build trims its own cache to its part, and a couple of others that
+  are still above theirs, so after an app is added the total settles within a few
+  builds. With many apps the parts get small and base images are pulled again more
+  often, which can run into a registry's pull limits.
 - Images nothing has used for a week are deleted. Images the last five deployments need
   for a rollback stay.
+- An app keeps its latest 50 deployments and their logs, and any older version that can
+  still be rolled back to.
 
 ## Install and updates
 

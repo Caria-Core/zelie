@@ -1,6 +1,7 @@
 package panel
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto"
@@ -13,12 +14,17 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
+	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"sync"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"github.com/Caria-Core/zelie/internal/peer"
@@ -261,7 +267,7 @@ func TestPushDeploys(t *testing.T) {
 	if first.State != store.DeployLive || first.Version != g.commit || first.Cause != store.CauseManual {
 		t.Fatalf("first deployment %+v", first)
 	}
-	if e.core.builds[0] != "web:cccccccccccc:private tarball" {
+	if e.core.builds[0] != fmt.Sprintf("web:cccccccccccc-%d:private tarball", first.ID) {
 		t.Errorf("build %q", e.core.builds[0])
 	}
 	if got := g.statusList(); got != "pending cccc https://panel.example.com/a/web; success cccc https://panel.example.com/a/web" {
@@ -280,7 +286,7 @@ func TestPushDeploys(t *testing.T) {
 		t.Fatalf("push deployment %+v", d)
 	}
 	// A push deploys the pushed commit, not whatever the branch holds now.
-	if last := e.core.builds[len(e.core.builds)-1]; last != "web:dddddddddddd:private tarball" {
+	if last := e.core.builds[len(e.core.builds)-1]; last != fmt.Sprintf("web:dddddddddddd-%d:private tarball", d.ID) {
 		t.Errorf("build %q", last)
 	}
 
@@ -312,10 +318,11 @@ func TestPublicRepoWithGitHubConnected(t *testing.T) {
 	g := newFakeGitHub(t)
 	e.connect(t, g)
 	e.b.do("POST", "/api/apps", map[string]any{"id": "web", "source": "github", "repo": "someone/public"})
-	if d := e.settle(t, "web"); d.State != store.DeployLive {
+	d := e.settle(t, "web")
+	if d.State != store.DeployLive {
 		t.Fatalf("deployment %+v", d)
 	}
-	if e.core.builds[0] != "web:aaaaaaaaaaaa:tarball" {
+	if e.core.builds[0] != fmt.Sprintf("web:aaaaaaaaaaaa-%d:tarball", d.ID) {
 		t.Errorf("build %q", e.core.builds[0])
 	}
 	if g.statusList() != "" {
@@ -375,5 +382,188 @@ func TestStatusWithoutWebhook(t *testing.T) {
 	_, out := e.b.do("GET", "/api/github", nil)
 	if out["error"] != nil || out["webhook"].(map[string]any)["state"] != "none" {
 		t.Errorf("status of an App without a webhook: %v", out)
+	}
+}
+
+// countingBody counts what is read from it, and fails after its bytes.
+type countingBody struct {
+	r io.Reader
+	n int64
+}
+
+func (c *countingBody) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n += int64(n)
+	return n, err
+}
+
+// unsignedHook sends a webhook that nobody has signed yet.
+func (e *appEnv) unsignedHook(body io.Reader, length int64, signature string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest("POST", "https://panel.example.com/api/github/webhook", body)
+	req.ContentLength = length
+	req = req.WithContext(peer.WithPeer(req.Context(), peer.Peer{UID: proxyUID}))
+	req.Header.Set("X-Forwarded-For", "203.0.113.9")
+	req.Header.Set("X-GitHub-Event", "push")
+	req.Header.Set("X-GitHub-Delivery", "x")
+	if signature != "" {
+		req.Header.Set("X-Hub-Signature-256", signature)
+	}
+	rec := httptest.NewRecorder()
+	e.b.h.ServeHTTP(rec, req)
+	return rec
+}
+
+// Anyone can send a webhook, and its signature can only be checked once the
+// body is here. What the panel holds for such a request is limited.
+func TestWebhookBodiesAreLimitedBeforeTheyAreSigned(t *testing.T) {
+	e := newAppEnv(t)
+	g := newFakeGitHub(t)
+	e.connect(t, g)
+	shaped := "sha256=" + strings.Repeat("ab", 32)
+
+	for _, sig := range []string{"", "sha256=", "sha1=" + strings.Repeat("ab", 20), "sha256=" + strings.Repeat("ab", 31), "sha256=" + strings.Repeat("zz", 32)} {
+		body := &countingBody{r: strings.NewReader(strings.Repeat("x", 1000))}
+		if rec := e.unsignedHook(body, 1000, sig); rec.Code != http.StatusUnauthorized || body.n != 0 {
+			t.Errorf("signature %q: %d, %d bytes read", sig, rec.Code, body.n)
+		}
+	}
+
+	body := &countingBody{r: strings.NewReader("x")}
+	if rec := e.unsignedHook(body, maxWebhook+1, shaped); rec.Code != http.StatusRequestEntityTooLarge || body.n != 0 {
+		t.Errorf("a payload that says it is too large: %d, %d bytes read", rec.Code, body.n)
+	}
+	// One that does not say how large it is.
+	body = &countingBody{r: io.LimitReader(zeroReader{}, maxWebhook+100)}
+	if rec := e.unsignedHook(body, -1, shaped); rec.Code != http.StatusRequestEntityTooLarge || body.n > maxWebhook+(64<<10) {
+		t.Errorf("a payload of unknown size: %d, %d bytes read", rec.Code, body.n)
+	}
+	if rec := e.unsignedHook(iotest.ErrReader(errors.New("connection reset")), -1, shaped); rec.Code != http.StatusRequestTimeout {
+		t.Errorf("a payload that stopped: %d", rec.Code)
+	}
+	if rec := e.unsignedHook(strings.NewReader("{}"), 2, shaped); rec.Code != http.StatusUnauthorized {
+		t.Errorf("a payload with a bad signature: %d", rec.Code)
+	}
+}
+
+type zeroReader struct{}
+
+func (zeroReader) Read(p []byte) (int, error) { clear(p); return len(p), nil }
+
+// gatedBody blocks its first read until it is released.
+type gatedBody struct {
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (b *gatedBody) Read([]byte) (int, error) {
+	b.once.Do(func() { close(b.started) })
+	<-b.release
+	return 0, io.EOF
+}
+
+func TestOnlyAFewWebhookBodiesAreReadAtOnce(t *testing.T) {
+	e := newAppEnv(t)
+	g := newFakeGitHub(t)
+	e.connect(t, g)
+	shaped := "sha256=" + strings.Repeat("ab", 32)
+	defer func(d time.Duration) { webhookWait = d }(webhookWait)
+	webhookWait = 50 * time.Millisecond
+
+	release := make(chan struct{})
+	var wg sync.WaitGroup
+	codes := make(chan int, webhookReaders)
+	for range webhookReaders {
+		body := &gatedBody{started: make(chan struct{}), release: release}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			codes <- e.unsignedHook(body, 100, shaped).Code
+		}()
+		select {
+		case <-body.started:
+		case <-time.After(5 * time.Second):
+			t.Fatal("a payload was never read")
+		}
+	}
+
+	// Their turn does not come while the others are slow.
+	body := &countingBody{r: strings.NewReader("{}")}
+	if rec := e.unsignedHook(body, 2, shaped); rec.Code != http.StatusServiceUnavailable || body.n != 0 {
+		t.Errorf("one more payload: %d, %d bytes read", rec.Code, body.n)
+	}
+	close(release)
+	wg.Wait()
+	close(codes)
+	for code := range codes {
+		if code != http.StatusUnauthorized {
+			t.Errorf("a slow payload ended with %d", code)
+		}
+	}
+
+	// Once they are done, the next one is read as usual.
+	if rec := e.unsignedHook(strings.NewReader("{}"), 2, shaped); rec.Code != http.StatusUnauthorized {
+		t.Errorf("after the others: %d", rec.Code)
+	}
+}
+
+// Senders that hold back their bodies are let go of after a while, or at
+// once when the body was not going to be read. The recorder the other tests
+// use has no deadlines and no connection to wait on, so this goes over a
+// real one.
+func TestSlowWebhookBodyIsCutOff(t *testing.T) {
+	e := newAppEnv(t)
+	e.connect(t, newFakeGitHub(t))
+	defer func(d time.Duration) { webhookReadTime = d }(webhookReadTime)
+	webhookReadTime = 200 * time.Millisecond
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r = r.WithContext(peer.WithPeer(r.Context(), peer.Peer{UID: proxyUID}))
+		e.b.h.ServeHTTP(w, r)
+	}))
+	defer srv.Close()
+
+	// A sender that announces 1000 bytes and sends a few.
+	send := func(signature, sent string) (code int, closed bool, took time.Duration, err error) {
+		conn, err := net.Dial("tcp", srv.Listener.Addr().String())
+		if err != nil {
+			return 0, false, 0, err
+		}
+		defer conn.Close()
+		fmt.Fprint(conn, "POST /api/github/webhook HTTP/1.1\r\nHost: panel.example.com\r\nX-GitHub-Event: push\r\nX-GitHub-Delivery: x\r\nContent-Length: 1000\r\n")
+		if signature != "" {
+			fmt.Fprintf(conn, "X-Hub-Signature-256: %s\r\n", signature)
+		}
+		fmt.Fprintf(conn, "\r\n%s", sent)
+		conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+		start := time.Now()
+		resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+		if err != nil {
+			return 0, false, 0, err
+		}
+		resp.Body.Close()
+		return resp.StatusCode, resp.Close, time.Since(start), nil
+	}
+
+	// More of them than there are turns: each gives its turn back once its
+	// time is up, so none of them waits for long.
+	signed := "sha256=" + strings.Repeat("ab", 32)
+	var wg sync.WaitGroup
+	for range webhookReaders + 1 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			code, closed, took, err := send(signed, `{"ref"`)
+			if err != nil || code != http.StatusRequestTimeout || !closed || took > 2*time.Second {
+				t.Errorf("a body that stopped: %d after %s, closed %v, %v", code, took, closed, err)
+			}
+		}()
+	}
+	wg.Wait()
+
+	// Nothing of this one will be read, so it is not waited for either.
+	code, closed, took, err := send("", "")
+	if err != nil || code != http.StatusUnauthorized || !closed || took > 2*time.Second {
+		t.Errorf("a body nobody reads: %d after %s, closed %v, %v", code, took, closed, err)
 	}
 }

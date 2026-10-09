@@ -54,6 +54,7 @@ var (
 	errNotStarted     = msg.Define(0, "deploy.not_started", "The app did not start in time.")
 	errStopOld        = msg.Define(0, "deploy.stop_old", "The old version could not be stopped: {detail}")
 	errRoute          = msg.Define(0, "deploy.route", "{domain} could not be pointed at the new version: {detail}")
+	errCancelled      = msg.Define(0, "deploy.cancelled", "The deployment was cancelled.")
 )
 
 // healthClient talks straight to the container: no proxy from the
@@ -75,12 +76,20 @@ const railpackBuildCmd = "RAILPACK_BUILD_CMD"
 // image, so they can be rolled back to.
 const keepImages = 5
 
+// keepDeployments is how many of an app's latest deployments are kept, with
+// their logs. Older ones go, except the live one, the last install of a game
+// server and the versions that can still be rolled back to.
+const keepDeployments = 50
+
 // deploys runs deployments in the background, one at a time per app.
 type deploys struct {
 	mu      sync.Mutex
 	locks   map[string]*sync.Mutex
 	cancels map[string]context.CancelFunc // of the deployment running now, by app
 	wg      sync.WaitGroup
+	// routes keeps two route syncs, which read the state of every app and
+	// then replace all of the proxy's routes, from overwriting each other.
+	routes sync.Mutex
 }
 
 // running records the cancel function of an app's current deployment.
@@ -167,7 +176,49 @@ func (s *Server) recordDeployment(ctx context.Context, d store.Deployment) (int6
 	if err := os.Remove(s.deployLogPath(id)); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return 0, err
 	}
+	s.pruneDeployments(ctx, d.AppID)
 	return id, nil
+}
+
+// pruneDeployments deletes an app's old deployments and their logs, which
+// would otherwise add up for as long as the app exists. A failure only
+// leaves them for the next time.
+func (s *Server) pruneDeployments(ctx context.Context, app string) {
+	list, err := s.Store.Deployments(ctx, app, -1)
+	if err != nil {
+		s.Log.Error("list deployments", "app", app, "err", err)
+		return
+	}
+	if len(list) <= keepDeployments {
+		return
+	}
+	// A game server shows the log of its last install.
+	install := int64(0)
+	if g, err := s.Store.GameServer(ctx, app); err == nil {
+		install = g.InstallID
+	} else if !errors.Is(err, store.ErrNotFound) {
+		s.Log.Error("load game server", "app", app, "err", err)
+		return
+	}
+	var gone []int64
+	for _, d := range list[keepDeployments:] {
+		switch {
+		case d.FinishedAt.IsZero(), d.State == store.DeployLive, d.ID == install:
+			continue
+		case d.State == store.DeployReplaced && !d.Pruned && strings.HasPrefix(d.Image, engine.LocalImages):
+			continue
+		}
+		gone = append(gone, d.ID)
+	}
+	if err := s.Store.DeleteDeployments(ctx, app, gone); err != nil {
+		s.Log.Error("delete old deployments", "app", app, "err", err)
+		return
+	}
+	for _, id := range gone {
+		if err := os.Remove(s.deployLogPath(id)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			s.Log.Error("delete deployment log", "app", app, "id", id, "err", err)
+		}
+	}
 }
 
 // removeDeployLogs deletes the logs of an app's deployments, which may hold
@@ -218,19 +269,27 @@ func (s *Server) runDeployment(ctx context.Context, appID string, id int64) {
 	}
 	defer closeLog()
 
+	// Writes after a cancel, as when the app is stopped, still record how
+	// the deployment ended.
+	bg := context.WithoutCancel(ctx)
 	set := func(state string) {
 		d.State = state
-		if err := s.Store.SetDeployment(ctx, d, s.now()); err != nil {
+		if err := s.Store.SetDeployment(bg, d, s.now()); err != nil {
 			s.Log.Error("save deployment", "app", appID, "id", id, "err", err)
 		}
 	}
 	var status *commitStatus
 	fail := func(err error) {
+		if errors.Is(err, context.Canceled) {
+			err = errCancelled.Err()
+		}
 		fmt.Fprintf(out, "\nDeployment failed: %v\n", err)
 		d.Error = new(msg.Wrap(err))
 		set(store.DeployFailed)
 		status.set(ctx, github.StatusFailure, "Deployment failed: "+err.Error())
 		s.Log.Warn("deployment failed", "app", appID, "id", id, "err", err)
+		// What a failed deployment built is of no use to anyone.
+		s.pruneImages(bg, appID)
 	}
 
 	// Only the newest of several queued deployments is worth the work.
@@ -250,6 +309,27 @@ func (s *Server) runDeployment(ctx context.Context, appID string, id int64) {
 	if err != nil {
 		fail(err)
 		return
+	}
+
+	// Stopped while it waited, as when a backup that stopped the app
+	// finishes just after the user stopped it for good. Deploying and
+	// restarting by hand clear the flag first.
+	if app.Stopped {
+		fmt.Fprintln(out, "The app was stopped before this deployment started, so it was skipped.")
+		set(store.DeploySkipped)
+		return
+	}
+	// A restart brings back what is live when it runs. Asked for earlier,
+	// it could put back a version that a deployment replaced meanwhile.
+	if d.ReusesLive() {
+		live, err := s.Store.LiveDeployment(ctx, appID)
+		switch {
+		case err == nil:
+			d.Version, d.Image, d.Message = live.Version, live.Image, live.Message
+		case !errors.Is(err, store.ErrNotFound):
+			fail(err)
+			return
+		}
 	}
 
 	if d.Cause == store.CauseRecover {
@@ -288,7 +368,7 @@ func (s *Server) runDeployment(ctx context.Context, appID string, id int64) {
 		if d.Cause == store.CausePush {
 			commit = d.Version
 		}
-		res, commit, err := s.build(ctx, app, src, commit, status, out)
+		res, commit, err := s.build(ctx, app, src, commit, id, status, out)
 		d.Version = commit
 		if err != nil {
 			fail(err)
@@ -360,12 +440,20 @@ func (s *Server) runDeployment(ctx context.Context, appID string, id int64) {
 		fail(err)
 		return
 	}
-	if err := s.syncRoutes(ctx, map[string]string{app.ID: container}); err != nil {
+	d.Settings = new(app.RunSettings())
+	// Another deployment's route sync between this one and the live record
+	// would send the domain to the old container again, which is removed
+	// next.
+	s.deploys.routes.Lock()
+	if err := s.applyRoutes(ctx, map[string]string{app.ID: container}); err != nil {
+		s.deploys.routes.Unlock()
 		undo()
 		fail(errRoute.Err("domain", app.Domain, "detail", err.Error()))
 		return
 	}
-	if err := s.Store.GoLive(ctx, d, s.now()); err != nil {
+	err = s.Store.GoLive(ctx, d, s.now())
+	s.deploys.routes.Unlock()
+	if err != nil {
 		fail(err)
 		return
 	}
@@ -411,8 +499,10 @@ func (s *Server) pruneImages(ctx context.Context, app string) {
 }
 
 // build fetches the app's code and has the core build it. Without a
-// commit, it takes the newest one on the app's branch.
-func (s *Server) build(ctx context.Context, app store.App, src Source, commit string, status *commitStatus, out io.Writer) (res build.Result, _ string, err error) {
+// commit, it takes the newest one on the app's branch. The image is named
+// after the commit and the deployment: building a commit again must not
+// replace the image that an earlier deployment of it runs.
+func (s *Server) build(ctx context.Context, app store.App, src Source, commit string, deployment int64, status *commitStatus, out io.Writer) (res build.Result, _ string, err error) {
 	if commit == "" {
 		fmt.Fprintf(out, "Fetching %s, branch %s.\n", app.Repo, app.Branch)
 		if commit, err = src.Resolve(ctx, app.Repo, app.Branch); err != nil {
@@ -440,25 +530,28 @@ func (s *Server) build(ctx context.Context, app store.App, src Source, commit st
 		env = append(env, railpackBuildCmd+"="+app.BuildCommand)
 		fmt.Fprintf(out, "Build command: %s\n", app.BuildCommand)
 	}
-	res, err = s.Core.Build(ctx, app.ID, commit[:12], env, sealed, archive, out)
+	res, err = s.Core.Build(ctx, app.ID, commit[:12]+"-"+strconv.FormatInt(deployment, 10), env, sealed, archive, out)
 	return res, commit, err
 }
 
 // runTests runs the app's test command in the new image, with the app's
-// variables, and fails if it exits with anything but 0.
+// own variables, and fails if it exits with anything but 0. The tests are
+// isolated: they get no network and nothing of the databases linked to the
+// app, since a test suite may well empty the database it is pointed at.
 func (s *Server) runTests(ctx context.Context, app store.App, image string, deployment int64, out io.Writer) error {
 	fmt.Fprintf(out, "Running the tests: %s\n", app.TestCommand)
-	env, sealed, linked, err := s.appEnv(ctx, app)
+	fmt.Fprintln(out, "They run without a network and without the linked databases. A test that needs a database has to start its own.")
+	env, sealed, err := s.vars(ctx, app)
 	if err != nil {
 		return err
 	}
 	// Test runners that would otherwise wait for changes run once.
-	env = append(env, "CI=true")
+	env = append([]string{"PORT=" + strconv.Itoa(app.Port)}, append(env, "CI=true")...)
 	id := fmt.Sprintf("%s-%d-test", app.ID, deployment)
 	_, err = s.Core.RunApp(ctx, engine.Spec{
-		ID: id, App: app.ID, Image: image, Args: []string{"sh", "-c", app.TestCommand}, Env: env, Network: app.ID,
+		ID: id, App: app.ID, Image: image, Args: []string{"sh", "-c", app.TestCommand}, Env: env,
 		MemoryBytes: app.MemoryMB << 20, CPUs: app.CPUs, Pids: defaultPids,
-	}, sealed, linked...)
+	}, sealed)
 	if err != nil {
 		return fmt.Errorf("start the tests: %w", err)
 	}
@@ -685,6 +778,11 @@ func (s *Server) restoreLive(ctx context.Context, app store.App, vols []store.Vo
 		return
 	}
 	fmt.Fprintln(out, "\nStarting the previous version again.")
+	// With the settings it ran with: the app's own may be why the new
+	// version failed.
+	if live.Settings != nil {
+		app = live.Settings.ApplyTo(app)
+	}
 	container := fmt.Sprintf("%s-%d", app.ID, live.ID)
 	s.Core.Remove(ctx, container)
 	if _, err := s.start(ctx, app, live.Image, container, vols, out); err != nil {
@@ -719,6 +817,13 @@ func (s *Server) removeOldContainers(ctx context.Context, app, keep string, out 
 // the proxy's routes: routes added by hand with zelie debug are replaced.
 // next names containers that are about to go live, by app.
 func (s *Server) syncRoutes(ctx context.Context, next map[string]string) error {
+	s.deploys.routes.Lock()
+	defer s.deploys.routes.Unlock()
+	return s.applyRoutes(ctx, next)
+}
+
+// applyRoutes is syncRoutes for a caller that holds the routes lock.
+func (s *Server) applyRoutes(ctx context.Context, next map[string]string) error {
 	if s.Proxy == nil {
 		return nil
 	}
@@ -740,6 +845,7 @@ func (s *Server) syncRoutes(ctx context.Context, next map[string]string) error {
 			continue
 		}
 		container, ok := next[a.ID]
+		port := a.Port
 		if !ok {
 			live, err := s.Store.LiveDeployment(ctx, a.ID)
 			if errors.Is(err, store.ErrNotFound) {
@@ -749,12 +855,17 @@ func (s *Server) syncRoutes(ctx context.Context, next map[string]string) error {
 				return err
 			}
 			container = fmt.Sprintf("%s-%d", a.ID, live.ID)
+			// The live container listens where it went live, not where the
+			// app's saved port points now.
+			if live.Settings != nil {
+				port = live.Settings.Port
+			}
 		}
 		ip := ips[container]
 		if !ip.IsValid() {
 			continue
 		}
-		routes = append(routes, proxy.Route{Host: a.Domain, Upstream: netip.AddrPortFrom(ip, uint16(a.Port)).String()})
+		routes = append(routes, proxy.Route{Host: a.Domain, Upstream: netip.AddrPortFrom(ip, uint16(port)).String()})
 	}
 	cfg, err := s.Proxy.Config(ctx)
 	if err != nil {

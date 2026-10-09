@@ -305,17 +305,21 @@ func (s *Server) startGame(ctx context.Context, app store.App, d store.Deploymen
 			}
 		}
 	}
-	if app.IsFiles() {
-		// Before the container counts as live, as for any app.
-		if err := s.syncRoutes(ctx, map[string]string{app.ID: container}); err != nil {
-			undo()
-			fail(errRoute.Err("domain", app.Domain, "detail", err.Error()))
-			return
+	err = func() error {
+		if app.IsFiles() {
+			// Before the container counts as live, as for any app, and
+			// with no other route sync in between: see runDeployment.
+			s.deploys.routes.Lock()
+			defer s.deploys.routes.Unlock()
+			if err := s.applyRoutes(ctx, map[string]string{app.ID: container}); err != nil {
+				return errRoute.Err("domain", app.Domain, "detail", err.Error())
+			}
 		}
-	}
-	s.gameRuns.set(app.ID, container, stateStarting)
-	s.watchGame(app, container, e, g, false)
-	if err := s.Store.GoLive(ctx, d, s.now()); err != nil {
+		s.gameRuns.set(app.ID, container, stateStarting)
+		s.watchGame(app, container, e, g, false)
+		return s.Store.GoLive(ctx, d, s.now())
+	}()
+	if err != nil {
 		undo()
 		fail(err)
 		return

@@ -30,7 +30,7 @@ func TestTestsRunBeforeGoingLive(t *testing.T) {
 		t.Fatalf("%d test runs", len(e.core.tests))
 	}
 	run := e.core.tests[1]
-	if strings.Join(run.Args, " ") != "sh -c npm test" || run.ID != fmt.Sprintf("web-%d-test", first.ID) || run.Network != "web" {
+	if strings.Join(run.Args, " ") != "sh -c npm test" || run.ID != fmt.Sprintf("web-%d-test", first.ID) || run.Network != "" {
 		t.Errorf("test container %+v", run)
 	}
 	if !slices.Contains(run.Env, "CI=true") || !slices.Contains(run.Env, "TOKEN=hunter2") {
@@ -83,5 +83,49 @@ func TestTestsRunBeforeGoingLive(t *testing.T) {
 	e.b.do("POST", "/api/apps", map[string]any{"id": "img", "source": "image", "image": "nginx"})
 	if code, _ := e.b.do("PATCH", "/api/apps/img", map[string]any{"test_command": "true"}); code != http.StatusBadRequest {
 		t.Errorf("tests on an image app: %d", code)
+	}
+}
+
+// A test suite may empty the database it is pointed at, so the tests of a
+// new build get neither a network nor a database's variables.
+func TestTestsAreIsolatedFromLinkedDatabases(t *testing.T) {
+	e := newAppEnv(t)
+	e.core.suggest = "npm test"
+	e.b.do("POST", "/api/databases", map[string]any{"id": "pg", "engine": "postgres"})
+	e.settle(t, "pg")
+	e.b.do("POST", "/api/apps", map[string]any{"id": "web", "source": "github", "repo": "owner/web"})
+	e.settle(t, "web")
+	e.b.do("PUT", "/api/apps/web/env", []map[string]any{{"name": "TOKEN", "value": "hunter2", "secret": true}})
+	if code, out := e.b.do("POST", "/api/apps/web/links", map[string]any{"db": "pg"}); code != http.StatusCreated {
+		t.Fatalf("link: %d %v", code, out)
+	}
+
+	e.b.do("POST", "/api/apps/web/deployments", nil)
+	d := e.settle(t, "web")
+	if d.State != store.DeployLive {
+		t.Fatalf("deployment %+v", d)
+	}
+	run := e.core.tests[len(e.core.tests)-1]
+	if run.ID != fmt.Sprintf("web-%d-test", d.ID) {
+		t.Fatalf("last test run %+v", run)
+	}
+	if run.Network != "" {
+		t.Errorf("the tests joined network %q", run.Network)
+	}
+	for _, kv := range run.Env {
+		name, _, _ := strings.Cut(kv, "=")
+		if strings.HasPrefix(name, "PG") || name == "DATABASE_URL" {
+			t.Errorf("the tests got %s", name)
+		}
+	}
+	if !slices.Contains(run.Env, "TOKEN=hunter2") || !slices.Contains(run.Env, "CI=true") || !slices.Contains(run.Env, "PORT=3000") {
+		t.Errorf("test env %v", run.Env)
+	}
+	// The app itself still gets its database.
+	if env := e.core.env[fmt.Sprintf("web-%d", d.ID)]; !slices.ContainsFunc(env, func(kv string) bool { return strings.HasPrefix(kv, "DATABASE_URL=") }) {
+		t.Errorf("the app lost its database variables: %v", env)
+	}
+	if b, _ := readFile(e.s.deployLogPath(d.ID)); !strings.Contains(b, "without a network") {
+		t.Errorf("log:\n%s", b)
 	}
 }

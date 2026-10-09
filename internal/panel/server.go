@@ -83,6 +83,8 @@ type Server struct {
 	samples samples
 	meter   meter
 	powUsed powUsed
+	// webhooks limits the GitHub webhook bodies read at once.
+	webhooks webhookGate
 	// Console tokens already used, and the consoles being watched.
 	consoleUsed powUsed
 	consoles    consoleHubs

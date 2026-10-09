@@ -556,5 +556,9 @@ CREATE TABLE steam_web_key (
 	one INTEGER PRIMARY KEY CHECK (one = 1),
 	sealed BLOB NOT NULL
 ) STRICT;
+`, `
+-- What an app ran with once a deployment of it went live: start command,
+-- port, limits and health path, as JSON. Empty for older deployments.
+ALTER TABLE deployments ADD COLUMN settings TEXT NOT NULL DEFAULT '';
 `,
 }

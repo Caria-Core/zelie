@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -338,7 +339,7 @@ func TestPruneAfterEveryBuild(t *testing.T) {
 		p := f.pruned[0]
 		args := strings.Join(p.Args, " ")
 		if !strings.Contains(args, "prune --all --keep-storage ") || p.Network != "" || !p.Nesting ||
-			mount(p, "/cache") != b.cacheDir("buildkit") {
+			mount(p, "/cache") != b.buildkitDir("web") {
 			t.Errorf("prune step %+v", p)
 		}
 		if strings.Contains(out.String(), "prune output") {
@@ -351,5 +352,144 @@ func TestCacheLimit(t *testing.T) {
 	limit, err := cacheLimit(t.TempDir())
 	if err != nil || limit <= 0 || limit > maxCache {
 		t.Fatalf("limit %d, %v", limit, err)
+	}
+}
+
+// A Dockerfile chooses its own cache mounts and may bring its own
+// frontend, so apps must not meet in one BuildKit state.
+func TestAppsDoNotShareABuildCache(t *testing.T) {
+	f := &fakeEngine{dockerfile: true}
+	b := newTestBuilder(t, f)
+	// What an older version left, shared by every app.
+	old := filepath.Join(b.cacheDir("buildkit"), "planted")
+	os.MkdirAll(filepath.Dir(old), 0o755)
+	os.WriteFile(old, []byte("x"), 0o644)
+
+	var caches []string
+	trims := 0
+	for _, app := range []string{"web", "api"} {
+		req := request()
+		req.App = app
+		if _, err := b.Build(context.Background(), req, io.Discard); err != nil {
+			t.Fatal(err)
+		}
+		build := f.specs[len(f.specs)-1]
+		caches = append(caches, mount(build, "/cache"))
+		// The app's own cache is the first to be trimmed.
+		if want, first := b.buildkitDir(app), mount(f.pruned[trims], "/cache"); mount(build, "/cache") != want || first != want {
+			t.Errorf("%s builds in %s and trims %s, want %s", app, mount(build, "/cache"), first, want)
+		}
+		trims = len(f.pruned)
+	}
+	if caches[0] == caches[1] {
+		t.Fatalf("both apps build in %s", caches[0])
+	}
+	if _, err := os.Stat(old); !errors.Is(err, os.ErrNotExist) {
+		t.Error("the cache shared by every app was kept")
+	}
+
+	// Taking an app away takes its cache with it.
+	if err := b.RemoveCache("web"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(caches[0]); !errors.Is(err, os.ErrNotExist) {
+		t.Error("the cache of a removed app was kept")
+	}
+	if _, err := os.Stat(caches[1]); err != nil {
+		t.Errorf("another app's cache went too: %v", err)
+	}
+}
+
+func TestCacheLimitIsSharedBetweenApps(t *testing.T) {
+	b := newTestBuilder(t, &fakeEngine{})
+	for _, app := range []string{"a", "b", "c", "d"} {
+		os.MkdirAll(b.buildkitDir(app), 0o755)
+	}
+	whole, err := cacheLimit(b.cacheDir("apps"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	share, err := b.cacheShare("a")
+	if err != nil || share != whole/4 {
+		t.Errorf("share %d of %d, %v", share, whole, err)
+	}
+}
+
+// Each build only knows the number of apps it sees. Caches trimmed when
+// there were fewer apps must not stay at their bigger parts.
+func TestOtherCachesFollowTheirShrinkingShare(t *testing.T) {
+	f := &fakeEngine{}
+	b := newTestBuilder(t, f)
+	os.MkdirAll(b.cacheDir("apps"), 0o755)
+	whole, err := cacheLimit(b.cacheDir("apps"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorded := map[string]int64{"a": whole / 2, "b": whole / 3, "c": whole / 4}
+	for app, part := range recorded {
+		os.MkdirAll(b.buildkitDir(app), 0o755)
+		os.WriteFile(b.shareFile(app), []byte(strconv.FormatInt(part, 10)), 0o600)
+	}
+	// "e" has a cache that was never trimmed, and "f" has nothing but the
+	// tools Railpack downloaded.
+	os.MkdirAll(b.buildkitDir("e"), 0o755)
+	os.MkdirAll(b.appCache("f"), 0o755)
+
+	trimmed := func() (names []string) {
+		for _, p := range f.pruned {
+			names = append(names, filepath.Base(filepath.Dir(mount(p, "/cache"))))
+		}
+		f.pruned = nil
+		return names
+	}
+	req := request()
+	req.App = "d"
+	if _, err := b.Build(context.Background(), req, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	// Six apps share the limit now. The build's own cache is trimmed first,
+	// then two more, the ones furthest above their part.
+	share := whole / 6
+	if got, want := trimmed(), []string{"d", "e", "a"}; !slices.Equal(got, want) {
+		t.Fatalf("trimmed %v, want %v", got, want)
+	}
+	for _, app := range []string{"d", "e", "a"} {
+		if text, _ := os.ReadFile(b.shareFile(app)); string(text) != strconv.FormatInt(share, 10) {
+			t.Errorf("%s was trimmed to %q, want %d", app, text, share)
+		}
+	}
+	for app, part := range map[string]int64{"b": whole / 3, "c": whole / 4} {
+		if text, _ := os.ReadFile(b.shareFile(app)); string(text) != strconv.FormatInt(part, 10) {
+			t.Errorf("%s was trimmed to %q, which it should not have been", app, text)
+		}
+	}
+
+	// The next builds finish the rest, then have nothing more to do.
+	for range 2 {
+		if _, err := b.Build(context.Background(), req, io.Discard); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got, want := trimmed(), []string{"d", "b", "c", "d"}; !slices.Equal(got, want) {
+		t.Errorf("trimmed %v, want %v", got, want)
+	}
+}
+
+func TestFailedTrimIsNotRecorded(t *testing.T) {
+	f := &fakeEngine{fail: "prune"}
+	b := newTestBuilder(t, f)
+	os.MkdirAll(b.buildkitDir("a"), 0o755)
+	var out bytes.Buffer
+	if _, err := b.Build(context.Background(), request(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "Could not trim the build cache") {
+		t.Errorf("log:\n%s", out.String())
+	}
+	if len(f.pruned) != 1 {
+		t.Errorf("%d trims after a failed one", len(f.pruned))
+	}
+	if _, err := os.Stat(b.shareFile("web")); !errors.Is(err, os.ErrNotExist) {
+		t.Error("a share was recorded for a cache that was not trimmed")
 	}
 }

@@ -57,6 +57,7 @@ type appCore struct {
 	failBuild   bool
 	crash       bool              // new containers stop right away
 	crashImage  string            // containers of this image stop right away
+	crashArgs   string            // containers whose command has this in it stop right away
 	digests     map[string]string // what each registry tag points at now
 	next        byte
 
@@ -187,7 +188,7 @@ func (c *appCore) runApp(s engine.Spec, sealed []string, linked ...core.LinkedVa
 	c.mounts[s.ID] = s.Volumes
 	c.next++
 	state := "running"
-	if c.crash || (c.crashImage != "" && s.Image == c.crashImage) {
+	if c.crash || (c.crashImage != "" && s.Image == c.crashImage) || (c.crashArgs != "" && strings.Contains(strings.Join(s.Args, " "), c.crashArgs)) {
 		state = "stopped"
 	}
 	if strings.HasSuffix(s.ID, "-test") {
@@ -600,6 +601,9 @@ type fakeProxy struct {
 	mu    sync.Mutex
 	cfg   proxy.Config
 	stats proxy.Stats
+	// applied sees each config right after it was applied, without the
+	// lock held.
+	applied func(proxy.Config)
 }
 
 func (p *fakeProxy) Stats(context.Context) (proxy.Stats, error) {
@@ -616,8 +620,12 @@ func (p *fakeProxy) Config(context.Context) (proxy.Config, error) {
 
 func (p *fakeProxy) Apply(_ context.Context, cfg proxy.Config) error {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	p.cfg = cfg
+	hook := p.applied
+	p.mu.Unlock()
+	if hook != nil {
+		hook(cfg)
+	}
 	return nil
 }
 
@@ -698,10 +706,12 @@ func TestDeployFromGitHub(t *testing.T) {
 		t.Fatalf("create: %d %v", code, out)
 	}
 	d := e.settle(t, "web")
-	if d.State != store.DeployLive || d.Version != strings.Repeat("a", 40) || d.Image != "zelie.local/web:aaaaaaaaaaaa" {
+	// Named after the deployment too, so building a commit again leaves the
+	// image of the first build alone.
+	if d.State != store.DeployLive || d.Version != strings.Repeat("a", 40) || d.Image != fmt.Sprintf("zelie.local/web:aaaaaaaaaaaa-%d", d.ID) {
 		t.Fatalf("deployment %+v", d)
 	}
-	if e.core.builds[0] != "web:aaaaaaaaaaaa:tarball" {
+	if e.core.builds[0] != fmt.Sprintf("web:aaaaaaaaaaaa-%d:tarball", d.ID) {
 		t.Errorf("build %q", e.core.builds[0])
 	}
 	if got := e.proxy.routes(); got != "web.example.com=10.210.0.1:3000" {

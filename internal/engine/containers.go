@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -20,12 +21,19 @@ import (
 	containerd "github.com/containerd/containerd/v2/client"
 	"github.com/containerd/containerd/v2/contrib/seccomp"
 	"github.com/containerd/containerd/v2/core/containers"
+	"github.com/containerd/containerd/v2/core/content"
+	"github.com/containerd/containerd/v2/core/images"
+	"github.com/containerd/containerd/v2/core/images/archive"
 	"github.com/containerd/containerd/v2/defaults"
 	"github.com/containerd/containerd/v2/pkg/cio"
 	"github.com/containerd/containerd/v2/pkg/namespaces"
 	"github.com/containerd/containerd/v2/pkg/netns"
 	"github.com/containerd/containerd/v2/pkg/oci"
 	"github.com/containerd/errdefs"
+	"github.com/containerd/platforms"
+	"github.com/distribution/reference"
+	"github.com/opencontainers/go-digest"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/opencontainers/runtime-spec/specs-go"
 )
 
@@ -515,7 +523,8 @@ func (e *Engine) image(ctx context.Context, ref string) (containerd.Image, error
 		return nil, err
 	}
 	if Pinned(name) {
-		if image, err := e.client.GetImage(ctx, name); err == nil {
+		// The name alone does not prove what is behind it.
+		if image, err := e.client.GetImage(ctx, name); err == nil && namesDigest(name, image.Target().Digest) {
 			return e.unpacked(ctx, image)
 		}
 	}
@@ -544,13 +553,72 @@ func (e *Engine) ImportImage(ctx context.Context, r io.Reader, name string) erro
 		return fmt.Errorf("local image names start with %s", LocalImages)
 	}
 	ctx = e.ctx(ctx)
-	// Replacing an image of the same name is fine: containers keep their
-	// snapshot, not the name.
-	if _, err := e.client.Import(ctx, r, containerd.WithIndexName(name)); err != nil {
+	// Held until the image refers to what was imported, or the garbage
+	// collector may take it.
+	err := func() error {
+		ctx, done, err := e.client.WithLease(ctx)
+		if err != nil {
+			return err
+		}
+		defer done(ctx)
+		return importArchive(ctx, e.client.ContentStore(), e.client.ImageService(), platforms.Default(), r, name)
+	}()
+	if err != nil {
 		return fmt.Errorf("import %s: %w", name, err)
 	}
-	_, err := e.image(ctx, name)
+	_, err = e.image(ctx, name)
 	return err
+}
+
+// importArchive stores the archive's image under name and names nothing
+// else. containerd's own Import also creates an image for every manifest
+// that the archive's index gives a name, and moves it if it exists. A build
+// can write whatever it likes into the index, and would take over any image
+// here, such as the builder's.
+//
+// Replacing an image of the same name is fine: containers keep their
+// snapshot, not the name.
+func importArchive(ctx context.Context, cs content.Store, is images.Store, match platforms.Matcher, r io.Reader, name string) error {
+	index, err := archive.ImportIndex(ctx, cs, r)
+	if err != nil {
+		return err
+	}
+	// Walks the way containerd's Import does, so that what the image refers
+	// to is labelled and kept.
+	children := func(ctx context.Context, desc ocispec.Descriptor) ([]ocispec.Descriptor, error) {
+		if desc.Digest != index.Digest {
+			return images.Children(ctx, cs, desc)
+		}
+		raw, err := content.ReadBlob(ctx, cs, desc)
+		if err != nil {
+			return nil, err
+		}
+		var idx ocispec.Index
+		if err := json.Unmarshal(raw, &idx); err != nil {
+			return nil, err
+		}
+		return idx.Manifests, nil
+	}
+	walk := images.SetChildrenLabels(cs, images.FilterPlatforms(children, match))
+	if err := images.WalkNotEmpty(ctx, walk, index); err != nil {
+		return err
+	}
+	img := images.Image{Name: name, Target: index}
+	if _, err := is.Update(ctx, img, "target"); !errdefs.IsNotFound(err) {
+		return err
+	}
+	_, err = is.Create(ctx, img)
+	return err
+}
+
+// namesDigest reports whether a pinned image name carries digest.
+func namesDigest(name string, digest digest.Digest) bool {
+	named, err := reference.ParseNormalizedNamed(name)
+	if err != nil {
+		return false
+	}
+	c, ok := named.(reference.Canonical)
+	return ok && c.Digest() == digest
 }
 
 // nestingOpts gives a builder what it needs to run build steps as containers

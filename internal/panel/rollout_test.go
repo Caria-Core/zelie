@@ -85,7 +85,7 @@ func TestRestartAndRollback(t *testing.T) {
 		t.Fatalf("rollback: %d", code)
 	}
 	back := e.settle(t, "web")
-	if back.State != store.DeployLive || back.Cause != store.CauseRollback || back.Image != "zelie.local/web:aaaaaaaaaaaa" {
+	if back.State != store.DeployLive || back.Cause != store.CauseRollback || back.Image != first.Image {
 		t.Fatalf("rollback %+v", back)
 	}
 	if len(e.core.builds) != builds {
@@ -115,11 +115,11 @@ func TestOldImagesAreRemoved(t *testing.T) {
 	}
 	// Seven versions went live; the oldest two lost their image, one at a
 	// time.
-	if got := strings.Join(e.core.removed, " "); got != "zelie.local/web:aaaaaaaaaaaa zelie.local/web:bbbbbbbbbbbb" {
-		t.Errorf("removed %q", got)
-	}
 	list, _ := e.s.Store.Deployments(context.Background(), "web", 10)
 	oldest := list[len(list)-1]
+	if got, want := strings.Join(e.core.removed, " "), oldest.Image+" "+list[len(list)-2].Image; got != want {
+		t.Errorf("removed %q, want %q", got, want)
+	}
 	if !oldest.Pruned {
 		t.Fatalf("oldest %+v", oldest)
 	}
@@ -136,7 +136,7 @@ func TestOldImagesAreRemoved(t *testing.T) {
 	e.source.commit = strings.Repeat("8", 40)
 	e.b.do("POST", "/api/apps/web/deployments", nil)
 	e.settle(t, "web")
-	if !strings.Contains(strings.Join(e.core.removed, " "), "zelie.local/web:999999999999") {
+	if !strings.Contains(strings.Join(e.core.removed, " "), "zelie.local/web:999999999999-") {
 		t.Errorf("the crashed version's image was kept: %v", e.core.removed)
 	}
 }

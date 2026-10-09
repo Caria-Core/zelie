@@ -11,7 +11,11 @@
 //  3. build: BuildKit builds the image, each step in a sandbox of its own.
 //     Only this container may run nested containers.
 //
-// After every build, a last container trims the build cache.
+// After every build, a last container trims the app's build cache, and then
+// those of a few other apps if they are above their part of the limit. Every
+// app has a BuildKit state of its own: a Dockerfile can name any cache mount,
+// or bring its own frontend, so with a shared state one app could plant files
+// that another app's build then compiles into its image.
 //
 // Keeping unpack apart matters: an archive can hold symlinks, and a
 // container that extracts one must not have anything worth reaching through
@@ -19,12 +23,14 @@
 package build
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -54,14 +60,20 @@ const (
 	// A build that runs longer than this is stopped.
 	timeout = 30 * time.Minute
 
-	// The build cache may take a tenth of the disk it is on, up to
-	// maxCache. Past that, what was used longest ago goes.
-	maxCache     = 20 << 30
+	// The build caches of all apps together may take a tenth of the disk
+	// they are on, up to maxCache, in equal parts. Past its part, what an
+	// app used longest ago goes.
+	maxCache = 20 << 30
+	// Everything a build's prune does has to fit in this.
 	pruneTimeout = 5 * time.Minute
+	// A build also trims this many other apps whose caches were last
+	// trimmed to a bigger part than today's, which happens when an app is
+	// added. More would keep the next build waiting.
+	extraTrims = 2
 
-	// buildkitdFlags are the same for every BuildKit that opens the cache.
-	// Without nesting, BuildKit falls back to another snapshotter and finds
-	// the cache empty.
+	// buildkitdFlags are the same for every BuildKit that opens an app's
+	// cache. Without nesting, BuildKit falls back to another snapshotter and
+	// finds the cache empty.
 	buildkitdFlags = "BUILDKITD_FLAGS=--root /cache --oci-worker-net=host"
 )
 
@@ -73,12 +85,12 @@ type Engine interface {
 	ImportImage(ctx context.Context, r io.Reader, name string) error
 }
 
-// Builder runs builds one at a time. The cache is shared between apps, and
-// with one build at a time a build never has to wait on another's locks.
+// Builder runs builds one at a time, so a single BuildKit runs at once and
+// builds do not compete for memory.
 type Builder struct {
 	Engine Engine
 	Paths  engine.Paths
-	// Dir holds the build cache and the files of the build in progress.
+	// Dir holds the build caches and the files of the build in progress.
 	Dir string
 
 	MemoryBytes int64
@@ -180,7 +192,7 @@ func (b *Builder) build(ctx context.Context, req Request, out io.Writer, res *Re
 	defer os.RemoveAll(job.root)
 	// Failed builds fill the cache too. The prune still holds the slot:
 	// two BuildKit daemons must not share a cache.
-	defer b.prune(ctx, out)
+	defer b.prune(ctx, req.App, out)
 
 	if err := b.step(ctx, out, "unpack", engine.Spec{
 		Args: []string{"tar", "-xzof", "/in/source.tar.gz", "--strip-components=1", "-C", "/src"},
@@ -196,7 +208,7 @@ func (b *Builder) build(ctx context.Context, req Request, out io.Writer, res *Re
 		"--local", "context=/src", "--output", "type=oci,dest=/out/image.tar"}
 	mounts := []engine.Mount{
 		{Source: job.dir("src"), Target: "/src", ReadOnly: true},
-		{Source: b.cacheDir("buildkit"), Target: "/cache"},
+		{Source: b.buildkitDir(req.App), Target: "/cache"},
 		{Source: job.dir("out"), Target: "/out"},
 	}
 	// Every variable is a BuildKit secret, read from a file so no value is
@@ -316,7 +328,12 @@ func (j job) dir(name string) string { return filepath.Join(j.root, name) }
 // prepare lays out the directories of a build and saves the source archive.
 func (b *Builder) prepare(req Request) (job, error) {
 	j := job{root: filepath.Join(b.Dir, "jobs", req.App)}
-	for _, d := range []string{b.cacheDir("buildkit"), b.appCache(req.App)} {
+	// The one cache that every app used to share would never be trimmed
+	// again.
+	if err := os.RemoveAll(b.cacheDir("buildkit")); err != nil {
+		return j, err
+	}
+	for _, d := range []string{b.buildkitDir(req.App), b.appCache(req.App)} {
 		if err := b.builderDir(d); err != nil {
 			return j, err
 		}
@@ -363,8 +380,8 @@ func (b *Builder) cacheDir(name string) string {
 	return filepath.Join(b.Dir, "cache", name)
 }
 
-// RemoveCache deletes the tools Railpack downloaded for an app. What the
-// app left in the shared cache ages out with the rest.
+// RemoveCache deletes an app's build cache: BuildKit's own and the tools
+// Railpack downloaded.
 func (b *Builder) RemoveCache(app string) error {
 	if !engine.ValidID(app) {
 		return fmt.Errorf("invalid app id %q", app)
@@ -377,6 +394,12 @@ func (b *Builder) appCache(app string) string {
 	return b.cacheDir(filepath.Join("apps", app, "railpack"))
 }
 
+// buildkitDir is the state of the BuildKit that builds one app: its layers
+// and its cache mounts.
+func (b *Builder) buildkitDir(app string) string {
+	return b.cacheDir(filepath.Join("apps", app, "buildkit"))
+}
+
 // builderDir creates a directory that root in the build containers owns.
 func (b *Builder) builderDir(dir string) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -385,28 +408,107 @@ func (b *Builder) builderDir(dir string) error {
 	return b.chown(dir, engine.BuilderHostID, engine.BuilderHostID)
 }
 
-// prune trims the build cache to its limit. A failure is not the build's:
-// it is noted in the log and the next build tries again.
-func (b *Builder) prune(ctx context.Context, out io.Writer) {
+// prune trims an app's build cache to its part of the limit, and then a
+// few others that still hold a bigger one. A failure is not the build's: it
+// is noted in the log and the next build tries again.
+func (b *Builder) prune(ctx context.Context, app string, out io.Writer) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), pruneTimeout)
 	defer cancel()
-	limit, err := cacheLimit(b.cacheDir("buildkit"))
+	share, err := b.cacheShare(app)
 	if err == nil {
-		// --all takes the frontend and the base images along; they are
-		// pulled again when a build needs them.
-		err = b.step(ctx, io.Discard, "prune", engine.Spec{
-			Args:    []string{"buildctl-daemonless.sh", "prune", "--all", "--keep-storage", strconv.FormatInt(limit>>20, 10)},
-			Env:     []string{buildkitdFlags},
-			Mounts:  []engine.Mount{{Source: b.cacheDir("buildkit"), Target: "/cache"}},
-			Nesting: true,
-		})
+		err = b.trim(ctx, app, share)
 	}
 	if err != nil {
 		fmt.Fprintf(out, "Could not trim the build cache: %v\n", err)
+		return
+	}
+	for _, other := range b.oversized(app, share, extraTrims) {
+		if err := b.trim(ctx, other, share); err != nil {
+			fmt.Fprintf(out, "Could not trim the build cache of another app: %v\n", err)
+		}
 	}
 }
 
-// cacheLimit is how large the cache in dir may grow.
+// trim cuts an app's cache down to share and notes what it was cut to.
+func (b *Builder) trim(ctx context.Context, app string, share int64) error {
+	// --all takes the frontend and the base images along; they are pulled
+	// again when a build needs them.
+	err := b.step(ctx, io.Discard, "prune", engine.Spec{
+		Args:    []string{"buildctl-daemonless.sh", "prune", "--all", "--keep-storage", strconv.FormatInt(share>>20, 10)},
+		Env:     []string{buildkitdFlags},
+		Mounts:  []engine.Mount{{Source: b.buildkitDir(app), Target: "/cache"}},
+		Nesting: true,
+	})
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(b.shareFile(app), []byte(strconv.FormatInt(share, 10)), 0o600)
+}
+
+// shareFile holds what an app's cache was last trimmed to. It is next to
+// the cache, not in it: a build cannot write there.
+func (b *Builder) shareFile(app string) string {
+	return b.cacheDir(filepath.Join("apps", app, "share"))
+}
+
+// oversized names up to n apps other than app whose caches were last
+// trimmed to more than share, the biggest first. A cache that was never
+// trimmed counts as the biggest.
+func (b *Builder) oversized(app string, share int64, n int) []string {
+	apps, err := os.ReadDir(b.cacheDir("apps"))
+	if err != nil {
+		return nil
+	}
+	type held struct {
+		app  string
+		part int64
+	}
+	var list []held
+	for _, e := range apps {
+		if e.Name() == app || !e.IsDir() {
+			continue
+		}
+		if _, err := os.Stat(b.buildkitDir(e.Name())); err != nil {
+			continue
+		}
+		part := int64(math.MaxInt64)
+		if text, err := os.ReadFile(b.shareFile(e.Name())); err == nil {
+			if v, err := strconv.ParseInt(strings.TrimSpace(string(text)), 10, 64); err == nil {
+				part = v
+			}
+		}
+		if part > share {
+			list = append(list, held{e.Name(), part})
+		}
+	}
+	slices.SortFunc(list, func(x, y held) int {
+		if x.part != y.part {
+			return cmp.Compare(y.part, x.part)
+		}
+		return strings.Compare(x.app, y.app)
+	})
+	var names []string
+	for _, h := range list[:min(n, len(list))] {
+		names = append(names, h.app)
+	}
+	return names
+}
+
+// cacheShare is how large one app's cache may grow: the limit shared
+// equally between the apps that have a cache.
+func (b *Builder) cacheShare(app string) (int64, error) {
+	limit, err := cacheLimit(b.buildkitDir(app))
+	if err != nil {
+		return 0, err
+	}
+	apps, err := os.ReadDir(b.cacheDir("apps"))
+	if err != nil {
+		return 0, err
+	}
+	return limit / int64(max(len(apps), 1)), nil
+}
+
+// cacheLimit is how large all the caches under dir may grow together.
 func cacheLimit(dir string) (int64, error) {
 	var st unix.Statfs_t
 	if err := unix.Statfs(dir, &st); err != nil {

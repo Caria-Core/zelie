@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"time"
 
@@ -307,16 +308,58 @@ type Deployment struct {
 	Error      *msg.Msg // why it failed
 	CreatedAt  time.Time
 	FinishedAt time.Time // zero while in progress
+	// Settings are what the app ran with once this deployment went live.
+	// Nil for deployments from before they were kept.
+	Settings *RunSettings
 }
 
-const deploymentColumns = "id, app_id, version, image, state, error, error_msg, cause, message, pruned, created_at, coalesce(finished_at, 0)"
+// RunSettings are the settings of an app that shape how its container runs.
+// An app's settings take effect with its next deployment. The live
+// deployment keeps the ones it went live with, so it can start again when a
+// newer one fails.
+type RunSettings struct {
+	StartCommand string  `json:"start_command,omitempty"`
+	Port         int     `json:"port"`
+	MemoryMB     int64   `json:"memory_mb"`
+	CPUs         float64 `json:"cpus"`
+	HealthPath   string  `json:"health_path,omitempty"`
+}
+
+// RunSettings returns the app's current ones.
+func (a App) RunSettings() RunSettings {
+	return RunSettings{StartCommand: a.StartCommand, Port: a.Port, MemoryMB: a.MemoryMB, CPUs: a.CPUs, HealthPath: a.HealthPath}
+}
+
+// ApplyTo returns a with these settings in place of its own.
+func (r RunSettings) ApplyTo(a App) App {
+	a.StartCommand, a.Port, a.MemoryMB, a.CPUs, a.HealthPath = r.StartCommand, r.Port, r.MemoryMB, r.CPUs, r.HealthPath
+	return a
+}
+
+// liveCauses are the causes of deployments that start the live version
+// again, unless they have no image yet: a restart that pulls builds one.
+var liveCauses = []string{CauseRestart, CauseRecover, CauseRestore, CauseBackup}
+
+// ReusesLive reports whether the deployment starts the live version again,
+// as the live version is when it runs, instead of building or pulling one.
+func (d Deployment) ReusesLive() bool {
+	return d.Image != "" && slices.Contains(liveCauses, d.Cause)
+}
+
+const deploymentColumns = "id, app_id, version, image, state, error, error_msg, cause, message, pruned, settings, created_at, coalesce(finished_at, 0)"
 
 func scanDeployment(row scanner) (Deployment, error) {
 	var d Deployment
 	var created, finished int64
-	var text, js string
-	err := row.Scan(&d.ID, &d.AppID, &d.Version, &d.Image, &d.State, &text, &js, &d.Cause, &d.Message, &d.Pruned, &created, &finished)
+	var text, js, settings string
+	err := row.Scan(&d.ID, &d.AppID, &d.Version, &d.Image, &d.State, &text, &js, &d.Cause, &d.Message, &d.Pruned, &settings, &created, &finished)
 	d.Error = readMsg(text, js)
+	if settings != "" {
+		var r RunSettings
+		if json.Unmarshal([]byte(settings), &r) == nil {
+			d.Settings = &r
+		}
+	}
 	d.CreatedAt = time.Unix(created, 0)
 	if finished != 0 {
 		d.FinishedAt = time.Unix(finished, 0)
@@ -394,11 +437,38 @@ func (s *Store) SetDeploymentImage(ctx context.Context, id int64, image string) 
 	return err
 }
 
-// HasNewer reports whether the app has a deployment created after d.
+// HasNewer reports whether the app has a deployment created after d that
+// makes d pointless. A newer restart of the live version does not for a
+// deployment that builds a new one: that deployment still has to run, and
+// the restart then restarts what it made live.
 func (s *Store) HasNewer(ctx context.Context, d Deployment) (bool, error) {
+	query := "SELECT count(*) FROM deployments WHERE app_id = ? AND id > ?"
+	if !d.ReusesLive() {
+		query += " AND NOT (image != '' AND cause IN ('" + strings.Join(liveCauses, "', '") + "'))"
+	}
 	var n int
-	err := s.db.QueryRowContext(ctx, "SELECT count(*) FROM deployments WHERE app_id = ? AND id > ?", d.AppID, d.ID).Scan(&n)
+	err := s.db.QueryRowContext(ctx, query, d.AppID, d.ID).Scan(&n)
 	return n > 0, err
+}
+
+// DeleteDeployments removes deployments of an app that have finished, other
+// than its live one. Their images are not touched.
+func (s *Store) DeleteDeployments(ctx context.Context, appID string, ids []int64) error {
+	for len(ids) > 0 {
+		n := min(len(ids), 500)
+		args := []any{appID, DeployLive}
+		marks := make([]string, 0, n)
+		for _, id := range ids[:n] {
+			args = append(args, id)
+			marks = append(marks, "?")
+		}
+		_, err := s.db.ExecContext(ctx, "DELETE FROM deployments WHERE app_id = ? AND finished_at IS NOT NULL AND state != ? AND id IN ("+strings.Join(marks, ",")+")", args...)
+		if err != nil {
+			return err
+		}
+		ids = ids[n:]
+	}
+	return nil
 }
 
 // Images lists every image an app or a kept deployment refers to.
@@ -457,19 +527,27 @@ func (s *Store) SetDeployment(ctx context.Context, d Deployment, now time.Time) 
 		finished = now.Unix()
 	}
 	text, js := msgColumns(d.Error)
-	_, err := s.db.ExecContext(ctx, "UPDATE deployments SET version = ?, image = ?, state = ?, error = ?, error_msg = ?, finished_at = coalesce(finished_at, ?) WHERE id = ?",
-		d.Version, d.Image, d.State, text, js, finished, d.ID)
+	_, err := s.db.ExecContext(ctx, "UPDATE deployments SET version = ?, image = ?, message = ?, state = ?, error = ?, error_msg = ?, finished_at = coalesce(finished_at, ?) WHERE id = ?",
+		d.Version, d.Image, d.Message, d.State, text, js, finished, d.ID)
 	return err
 }
 
 // GoLive makes d the app's live deployment and marks the one before it
 // replaced, in one step.
 func (s *Store) GoLive(ctx context.Context, d Deployment, now time.Time) error {
+	settings := ""
+	if d.Settings != nil {
+		b, err := json.Marshal(d.Settings)
+		if err != nil {
+			return err
+		}
+		settings = string(b)
+	}
 	return s.tx(ctx, func(tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, "UPDATE deployments SET state = ? WHERE app_id = ? AND state = ?", DeployReplaced, d.AppID, DeployLive); err != nil {
 			return err
 		}
-		_, err := tx.ExecContext(ctx, "UPDATE deployments SET image = ?, state = ?, error = '', finished_at = ? WHERE id = ?", d.Image, DeployLive, now.Unix(), d.ID)
+		_, err := tx.ExecContext(ctx, "UPDATE deployments SET image = ?, state = ?, error = '', settings = ?, finished_at = ? WHERE id = ?", d.Image, DeployLive, settings, now.Unix(), d.ID)
 		return err
 	})
 }

@@ -811,10 +811,11 @@ func stoppedApps(stopped []string, db string) []string {
 	return slices.DeleteFunc(slices.Clone(stopped), func(id string) bool { return id == db })
 }
 
-// startAgain starts an app's live version again after Zelie stopped it.
+// startAgain starts an app's live version again after Zelie stopped it,
+// unless the user stopped it meanwhile.
 func (s *Server) startAgain(ctx context.Context, id, cause string) {
 	a, err := s.Store.App(ctx, id)
-	if err != nil {
+	if err != nil || a.Stopped {
 		return
 	}
 	live, err := s.Store.LiveDeployment(ctx, id)
