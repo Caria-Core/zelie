@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Caria-Core/zelie/internal/engine"
 	"github.com/Caria-Core/zelie/internal/players"
 	"github.com/Caria-Core/zelie/internal/store"
 )
@@ -77,6 +78,10 @@ type playerRecorder struct {
 	// starts later knows what was recorded and what the game printed since.
 	container string
 	lines     int
+	// cut says the log was cleared since the position was stored. If no
+	// events follow, the position still has to be written, or it would keep
+	// counting the lines of the log that is gone.
+	cut bool
 	// The allowance of the minute that began at windowStart.
 	windowStart time.Time
 	windowCount int
@@ -108,10 +113,11 @@ func (r *playerRecorder) writeCtx() (context.Context, context.CancelFunc) {
 // begin gets the recorder ready before the console is read. A new container
 // starts with nobody in it, so visits left open by the last one are closed.
 // For a server found running at startup the console is read once to teach
-// the parser what the game said before, and the number of lines in it is
-// returned: those are not recorded again, except the ones the game printed
-// after the last panel stopped recording.
-func (r *playerRecorder) begin(ctx context.Context, logs logReader, container string, resumed bool) (skip int) {
+// the parser what the game said before. What it read is returned: those lines
+// are not recorded again, except the ones the game printed after the last
+// panel stopped recording, and the console uses it to tell whether the log is
+// still the one that was read when its stream begins.
+func (r *playerRecorder) begin(ctx context.Context, logs logReader, container string, resumed bool) (read logRead) {
 	r.mu.Lock()
 	r.container = container
 	r.mu.Unlock()
@@ -125,20 +131,20 @@ func (r *playerRecorder) begin(ctx context.Context, logs logReader, container st
 			r.log.Error("note the console position", "server", r.app, "err", err)
 		}
 	} else {
-		skip = r.catchUp(ctx, logs, container)
+		read = r.catchUp(ctx, logs, container)
 	}
 	r.writeMu.Lock()
 	defer r.writeMu.Unlock()
 	r.prune()
-	return skip
+	return read
 }
 
 // catchUp reads the whole console of a container that ran on while the panel
-// was off, and returns how many lines it has. The events of the lines the last
+// was off, and returns what it found in it. The events of the lines the last
 // panel recorded are dropped; those of the lines after them are queued. When
 // the last panel's position is not known, as for a server that was started by
 // an older version, all of it counts as recorded.
-func (r *playerRecorder) catchUp(ctx context.Context, logs logReader, container string) int {
+func (r *playerRecorder) catchUp(ctx context.Context, logs logReader, container string) logRead {
 	var recorded int
 	var known bool
 	wctx, cancel := r.writeCtx()
@@ -155,9 +161,10 @@ func (r *playerRecorder) catchUp(ctx context.Context, logs logReader, container 
 	queued := 0
 	var failedAt time.Time
 	for {
-		lines := 0
+		var read logRead
 		w := &lineSplitter{emit: func(line string) {
-			lines++
+			read.add(line)
+			lines := read.lines
 			events := r.parser.Feed(ansi().ReplaceAllString(line, ""))
 			if !known || lines <= recorded || lines <= queued {
 				return
@@ -175,6 +182,7 @@ func (r *playerRecorder) catchUp(ctx context.Context, logs logReader, container 
 		// A container with no log is a console with nothing in it. Asking
 		// again would not make one.
 		if err == nil || isNotFound(err) || ctx.Err() != nil {
+			lines := read.lines
 			r.mu.Lock()
 			r.lines = max(r.lines, lines)
 			r.mu.Unlock()
@@ -188,7 +196,7 @@ func (r *playerRecorder) catchUp(ctx context.Context, logs logReader, container 
 					r.log.Error("note the console position", "server", r.app, "err", err)
 				}
 			}
-			return lines
+			return read
 		}
 		if now := r.now(); failedAt.IsZero() || now.Sub(failedAt) >= readFailEvery {
 			failedAt = now
@@ -206,6 +214,17 @@ func (r *playerRecorder) catchUp(ctx context.Context, logs logReader, container 
 func (r *playerRecorder) feed(line string) {
 	events := r.parser.Feed(line)
 	r.mu.Lock()
+	if engine.IsLogCut(line) {
+		// The core starts a cleared log with this line, and catchUp counts
+		// the lines of the log it finds, so the position starts over here. A
+		// look-alike printed by the game only makes it too small: the lines
+		// after it are recorded again at the next catch-up.
+		r.lines = 0
+		if !r.done {
+			r.cut = true
+			r.armLocked()
+		}
+	}
 	r.lines++
 	batch := r.queueLocked(events)
 	r.mu.Unlock()
@@ -242,10 +261,17 @@ func (r *playerRecorder) queueLocked(events []players.Event) bool {
 	switch {
 	case len(r.buf) >= playerFlushMax:
 		return true
-	case len(r.buf) > 0 && r.timer == nil:
-		r.timer = time.AfterFunc(playerFlushEvery, r.flush)
+	case len(r.buf) > 0:
+		r.armLocked()
 	}
 	return false
+}
+
+// armLocked makes sure what waits is written within playerFlushEvery.
+func (r *playerRecorder) armLocked() {
+	if r.timer == nil {
+		r.timer = time.AfterFunc(playerFlushEvery, r.flush)
+	}
 }
 
 // allowLocked counts an event against the allowance of the minute. Once it is
@@ -278,14 +304,22 @@ func (r *playerRecorder) flush() {
 	r.writeMu.Lock()
 	defer r.writeMu.Unlock()
 	r.mu.Lock()
-	batch, container, lines := r.buf, r.container, r.lines
-	r.buf = nil
+	batch, container, lines, cut := r.buf, r.container, r.lines, r.cut
+	r.buf, r.cut = nil, false
 	if r.timer != nil {
 		r.timer.Stop()
 		r.timer = nil
 	}
 	r.mu.Unlock()
 	if len(batch) == 0 {
+		if !cut || container == "" {
+			return
+		}
+		wctx, cancel := r.writeCtx()
+		defer cancel()
+		if err := r.store.SetPlayerLogPos(wctx, r.app, container, lines); err != nil {
+			r.log.Error("note the console position", "server", r.app, "err", err)
+		}
 		return
 	}
 	wctx, cancel := r.writeCtx()

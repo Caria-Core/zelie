@@ -148,3 +148,9 @@ func TestHostForward(t *testing.T) {
 		t.Errorf("after clearing: %v %v", f.chains["FORWARD"], f.chains[forwardChain])
 	}
 }
+
+// quietIptables keeps a test that reaches the host's rules from running the
+// machine's own iptables.
+func quietIptables(t *testing.T) {
+	withFakeIptables(t, &fakeIptables{chains: map[string][]string{"INPUT": nil}})
+}

@@ -82,10 +82,15 @@ By default every container gets:
 
 - a user namespace, so root inside the container is an unprivileged user on the host
 - the default seccomp profile and a reduced set of capabilities
-- limits on CPU, memory, disk and number of processes
+- limits on CPU, memory, disk and number of processes. Memory is a hard limit with no swap,
+  and if the host itself runs out of memory the kernel stops a container before it stops
+  anything of Zelie's
+- an output log that is cleared once it reaches 64 MiB, which the console and the log view
+  say in the reader's language
 - a place on its project's network and nowhere else: it can reach the internet and the
   other containers of the same project, but not other projects or services running on
-  the host
+  the host. Nothing outside those networks can open a connection to it either, other
+  than through a port Zelie forwards to it
 
 Nothing runs privileged.
 

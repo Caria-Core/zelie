@@ -10,7 +10,9 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/Caria-Core/zelie/internal/engine"
 )
@@ -491,5 +493,58 @@ func TestFailedTrimIsNotRecorded(t *testing.T) {
 	}
 	if _, err := os.Stat(b.shareFile("web")); !errors.Is(err, os.ErrNotExist) {
 		t.Error("a share was recorded for a cache that was not trimmed")
+	}
+}
+
+// safeBuffer is a buffer that a test reads while copyLog writes to it.
+type safeBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (s *safeBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *safeBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
+}
+
+// The core clears a step's log when it grows too large. What the step prints
+// after that has to reach the build log, not wait for the new log to grow
+// past the place the copy had reached.
+func TestCopyLogReadsAClearedLogFromItsStart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "step.log")
+	if err := os.WriteFile(path, []byte("a long first stretch of output\nand a line left o"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out safeBuffer
+	done := make(chan struct{})
+	finished := make(chan error, 1)
+	go func() { finished <- copyLog(path, &out, done) }()
+
+	waitFor := func(want string) {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
+		for out.String() != want {
+			if time.Now().After(deadline) {
+				t.Fatalf("the build log is %q, want %q", out.String(), want)
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	waitFor("a long first stretch of output\nand a line left o")
+	// The cleared log is shorter than the place the copy had reached.
+	if err := os.WriteFile(path, []byte("[zelie:log-cut 1]\nafter\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	waitFor("a long first stretch of output\nand a line left o\n[zelie:log-cut 1]\nafter\n")
+	close(done)
+	if err := <-finished; err != nil {
+		t.Fatal(err)
 	}
 }

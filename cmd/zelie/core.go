@@ -83,7 +83,7 @@ func runCore(stderr io.Writer) int {
 		log.Info("containerd unit updated, restarting containerd (the core restarts with it)")
 	}
 
-	e, err := engine.Connect(ctx, engine.DefaultPaths)
+	e, err := engine.Connect(ctx, engine.DefaultPaths, engine.WithLog(log))
 	if err != nil {
 		if stopping() {
 			return 0
@@ -132,6 +132,8 @@ func runCore(stderr io.Writer) int {
 		case <-ctx.Done():
 		}
 	}()
+
+	e.StartLogCap(ctx)
 
 	sftpVolumes, err := core.LoadSFTPVolumes("/var/lib/zelie/sftp-volumes.json")
 	if sftpVolumes == nil {

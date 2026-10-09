@@ -130,6 +130,10 @@ type peers struct {
 	inputAt time.Time
 }
 
+// rulesIntact tells whether Zelie's nftables rules are still in the kernel.
+// Tests replace it.
+var rulesIntact = firewallIntact
+
 // hostInputEvery is how often the host's INPUT chain is checked again: a
 // firewall reloading its own rules can take Zelie's jump away.
 const hostInputEvery = time.Minute
@@ -212,20 +216,13 @@ func (e *Engine) refreshLocked(ctx context.Context) error {
 		}
 	}
 	fw.sort()
-	if time.Since(p.inputAt) >= hostInputEvery {
-		if err := ensureHostInput(ctx); err != nil {
-			return err
-		}
-		if p.applied != nil {
-			if err := ensureHostForward(ctx, p.applied.forwards, false); err != nil {
-				return err
-			}
-		}
-		p.inputAt = time.Now()
+	if err := e.checkHostRules(ctx); err != nil {
+		return err
 	}
 	if p.applied != nil && p.applied.equal(fw) {
 		return nil
 	}
+	old := p.applied
 	if err := applyFirewall(fw); err != nil {
 		return err
 	}
@@ -233,7 +230,79 @@ func (e *Engine) refreshLocked(ctx context.Context) error {
 		return err
 	}
 	p.applied = fw
+	e.endStaleFlows(old, fw)
 	return nil
+}
+
+// checkHostRules runs once a minute and makes sure the rules other firewalls
+// can undo are still there. Missing iptables jumps are put back. When the
+// nftables tables are gone, the applied rules are forgotten so that the caller
+// applies everything again; otherwise they would stay missing until the
+// containers happen to change. The caller holds peers.mu.
+func (e *Engine) checkHostRules(ctx context.Context) error {
+	p := &e.peers
+	if time.Since(p.inputAt) < hostInputEvery {
+		return nil
+	}
+	if err := ensureHostInput(ctx); err != nil {
+		return err
+	}
+	if p.applied != nil {
+		intact, err := rulesIntact()
+		if err != nil {
+			return err
+		}
+		if !intact {
+			e.logger().Warn("the firewall rules for containers were removed, putting them back")
+			p.applied = nil
+		}
+	}
+	if p.applied != nil {
+		if err := ensureHostForward(ctx, p.applied.forwards, false); err != nil {
+			return err
+		}
+	}
+	p.inputAt = time.Now()
+	return nil
+}
+
+// keepHostRules checks the host's rules without a container having changed or
+// asked for a name, and puts back what is missing. The caller decides when;
+// refreshing the containers is the price of applying the rules again.
+func (e *Engine) keepHostRules(ctx context.Context) {
+	p := &e.peers
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if time.Since(p.inputAt) < hostInputEvery {
+		return
+	}
+	if err := e.refreshLocked(ctx); err != nil {
+		e.logger().Error("check the firewall rules for containers", "err", err)
+	}
+}
+
+// endStaleFlows ends the tracked UDP flows that still lead to a container a
+// forward no longer points at (see dropStaleFlows). It runs after the new
+// rules are in, so no flow can start on the old ones. A failure is logged and
+// does not undo the change that caused it.
+func (e *Engine) endStaleFlows(old, now *firewall) {
+	var was []portMap
+	if old != nil {
+		was = old.forwards
+	}
+	if old != nil && slices.Equal(was, now.forwards) {
+		return
+	}
+	if !hasUDP(was) && !hasUDP(now.forwards) {
+		return
+	}
+	if err := dropStaleForwards(was, now.forwards); err != nil {
+		e.logger().Error("end UDP flows to forwards that moved", "err", err)
+	}
+}
+
+func hasUDP(list []portMap) bool {
+	return slices.ContainsFunc(list, func(f portMap) bool { return f.Proto == "udp" })
 }
 
 func (p *peers) addrs(app string) []netip.Addr {

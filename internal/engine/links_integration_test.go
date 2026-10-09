@@ -12,6 +12,7 @@ import (
 
 	"github.com/containerd/containerd/v2/pkg/netns"
 	cnins "github.com/containernetworking/plugins/pkg/ns"
+	"github.com/google/nftables"
 	"github.com/miekg/dns"
 )
 
@@ -173,5 +174,37 @@ func waitFor(t *testing.T, f func() error) {
 			t.Fatal(err)
 		}
 		time.Sleep(300 * time.Millisecond)
+	}
+}
+
+// Another firewall reloading, or a flushed ruleset, takes Zelie's tables
+// away. The next check puts them back.
+func TestFirewallIsPutBack(t *testing.T) {
+	e := connect(t)
+	ctx := context.Background()
+	if err := e.refresh(ctx); err != nil {
+		t.Fatal(err)
+	}
+	c, err := nftables.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.DelTable(&nftables.Table{Family: nftables.TableFamilyINet, Name: "zelie"})
+	c.DelTable(&nftables.Table{Family: nftables.TableFamilyIPv4, Name: "zelie-nat"})
+	if err := c.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := firewallIntact(); ok || err != nil {
+		t.Fatalf("after deleting the tables: intact %v, %v", ok, err)
+	}
+
+	e.peers.mu.Lock()
+	e.peers.inputAt = time.Time{}
+	e.peers.mu.Unlock()
+	if err := e.refresh(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := firewallIntact(); !ok || err != nil {
+		t.Errorf("after the next check: intact %v, %v", ok, err)
 	}
 }

@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { say, t, type Msg } from '$lib/i18n';
+	import { withCutNotes } from '$lib/logs';
 
 	// LogStream shows server-sent output as it arrives: "output" events
 	// carry text, "notice" and "done" end the stream.
@@ -11,6 +12,7 @@
 	let output = $state('');
 	let notice = $state('');
 	let pre = $state<HTMLPreElement>();
+	const shown = $derived(withCutNotes(output, t('console.logCut')));
 
 	// The parent builds url from objects that are replaced on every refresh.
 	// A derived value only changes when the string does, so the stream is
@@ -41,6 +43,6 @@
 
 <pre
 	bind:this={pre}
-	class="{height} overflow-auto rounded-2xl bg-panel p-4 font-mono text-[13px] leading-relaxed break-all whitespace-pre-wrap">{output ||
+	class="{height} overflow-auto rounded-2xl bg-panel p-4 font-mono text-[13px] leading-relaxed break-all whitespace-pre-wrap">{shown ||
 		notice ||
 		t('app.noOutput')}</pre>

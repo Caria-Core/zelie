@@ -14,3 +14,7 @@ func deleteLink(string) error { return nil }
 func ensureHostInput(context.Context) error { return nil }
 
 func ensureHostForward(context.Context, []portMap, bool) error { return nil }
+
+func firewallIntact() (bool, error) { return true, nil }
+
+func dropStaleForwards(old, current []portMap) error { return nil }

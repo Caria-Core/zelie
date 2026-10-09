@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"time"
 
 	"github.com/Caria-Core/zelie/internal/engine"
 	"github.com/containerd/errdefs"
@@ -118,9 +119,17 @@ func (c *Client) RemoveVolume(ctx context.Context, name string) error {
 	return c.do(ctx, http.MethodDelete, "/v1/volumes/"+url.PathEscape(name), nil, nil)
 }
 
+// MeasureTimeout is how long the panel waits for the core to measure disk use.
+// The core walks files a container controls, and a walk that does not end
+// would otherwise hold up every check that comes after it. A variable so tests
+// can shorten it.
+var MeasureTimeout = 5 * time.Minute
+
 // VolumeSizes returns the disk each volume takes, by name, and the names of
 // the volumes that could not be measured.
 func (c *Client) VolumeSizes(ctx context.Context) (sizes map[string]int64, unmeasured []string, err error) {
+	ctx, cancel := context.WithTimeout(ctx, MeasureTimeout)
+	defer cancel()
 	var list []volumeJSON
 	if err := c.do(ctx, http.MethodGet, "/v1/volumes", nil, &list); err != nil {
 		return nil, nil, err

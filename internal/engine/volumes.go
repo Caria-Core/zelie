@@ -68,35 +68,80 @@ func (e *Engine) CreateVolume(name string) error {
 	return err
 }
 
+// removedPrefix starts the name of a directory a volume waits in while its
+// files are deleted. No volume name starts with a dot.
+const removedPrefix = ".removing-"
+
 // RemoveVolume deletes a volume and everything in it. A volume a container
 // still has mounted is refused, stopped or not.
 func (e *Engine) RemoveVolume(ctx context.Context, name string) error {
 	if !validID().MatchString(name) {
 		return fmt.Errorf("invalid volume name %q", name)
 	}
+	waiting, err := e.moveVolumeAside(ctx, name)
+	if err != nil {
+		return err
+	}
+	// A big volume takes minutes to delete. Starting and removing containers
+	// must not wait for that, so the lock is gone by now.
+	return os.RemoveAll(waiting)
+}
+
+// moveVolumeAside checks that no container uses the volume and renames it, so
+// the name is free at once. The check and the rename happen under createMu: no
+// container can be created with the volume in between. It returns the
+// directory that now holds the files.
+func (e *Engine) moveVolumeAside(ctx context.Context, name string) (string, error) {
 	ctx = e.ctx(ctx)
 	e.createMu.Lock()
 	defer e.createMu.Unlock()
 	containers, err := e.client.Containers(ctx)
 	if err != nil {
-		return err
+		return "", err
 	}
 	for _, c := range containers {
-		labels, err := c.Labels(ctx)
+		labels, err := labelsOf(ctx, c)
 		if err != nil {
-			return err
+			return "", err
 		}
 		for _, v := range strings.Split(labels[labelVolumes], ",") {
 			if v == name {
-				return fmt.Errorf("volume %s is used by container %s: %w", name, c.ID(), errdefs.ErrFailedPrecondition)
+				return "", fmt.Errorf("volume %s is used by container %s: %w", name, c.ID(), errdefs.ErrFailedPrecondition)
 			}
 		}
 	}
-	dir := e.volumeDir(name)
-	if _, err := os.Lstat(dir); errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("volume %s: %w", name, errdefs.ErrNotFound)
+	if _, err := os.Lstat(e.volumeDir(name)); errors.Is(err, fs.ErrNotExist) {
+		return "", fmt.Errorf("volume %s: %w", name, errdefs.ErrNotFound)
 	}
-	return os.RemoveAll(dir)
+	return e.setAside(name)
+}
+
+// setAside renames the volume into a directory of its own, next to the
+// others, and returns that directory.
+func (e *Engine) setAside(name string) (string, error) {
+	waiting, err := os.MkdirTemp(e.paths.Volumes, removedPrefix)
+	if err != nil {
+		return "", err
+	}
+	if err := os.Rename(e.volumeDir(name), filepath.Join(waiting, name)); err != nil {
+		os.Remove(waiting)
+		return "", err
+	}
+	return waiting, nil
+}
+
+// removeLeftovers deletes what volumes still waiting for deletion left behind
+// when the core stopped. It returns at once; the files go in the background.
+func (e *Engine) removeLeftovers() {
+	left, _ := filepath.Glob(filepath.Join(e.paths.Volumes, removedPrefix+"*"))
+	if len(left) == 0 {
+		return
+	}
+	go func() {
+		for _, dir := range left {
+			os.RemoveAll(dir)
+		}
+	}()
 }
 
 // VolumeSizes returns how much disk each volume takes, by name. A volume
@@ -196,7 +241,7 @@ func (e *Engine) OpenVolume(ctx context.Context, name string) (*os.Root, error) 
 		return nil, err
 	}
 	for _, c := range containers {
-		labels, err := c.Labels(ctx)
+		labels, err := labelsOf(ctx, c)
 		if err != nil {
 			return nil, err
 		}

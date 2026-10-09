@@ -118,6 +118,97 @@ echo done; sleep 60`
 	}
 }
 
+// A container may not go past its memory, swap included, and ranks above
+// Zelie's own processes when the host runs out of memory.
+func TestContainerLimitsHold(t *testing.T) {
+	e := connect(t)
+	run(t, e, Spec{ID: "it-limits", Image: testImage, Args: []string{"sleep", "60"},
+		MemoryBytes: 64 << 20, CPUs: 0.5, Pids: 32})
+	st := status(t, e, "it-limits")
+
+	swap, err := os.ReadFile(cgroupRoot + "/zelie-it-limits.scope/memory.swap.max")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(string(swap)); got != "0" {
+		t.Errorf("memory.swap.max = %s, want 0", got)
+	}
+	score, err := os.ReadFile(fmt.Sprintf("/proc/%d/oom_score_adj", st.Pid))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(string(score)); got != fmt.Sprint(containerOOMScoreAdj) {
+		t.Errorf("oom_score_adj = %s, want %d", got, containerOOMScoreAdj)
+	}
+}
+
+// A container that never prints a newline stops being kept in the log once it
+// is past the limit; the log is cut, with a line that says so, and keeps working.
+func TestRunawayOutputIsCapped(t *testing.T) {
+	e := connect(t)
+	oldEvery := logCapEvery
+	logCapEvery = 200 * time.Millisecond
+	t.Cleanup(func() { logCapEvery = oldEvery })
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	e.StartLogCap(ctx)
+
+	run(t, e, Spec{ID: "it-flood", Image: testImage, Args: []string{"sh", "-c", "yes 0123456789abcdef"},
+		MemoryBytes: 32 << 20, CPUs: 0.5, Pids: 8})
+	path := LogPathFor(DefaultPaths, "it-flood")
+	deadline := time.Now().Add(60 * time.Second)
+	for {
+		f, err := os.Open(path)
+		if err == nil {
+			head := make([]byte, 64)
+			f.Read(head)
+			f.Close()
+			if line, _, _ := strings.Cut(string(head), "\n"); IsLogCut(line) {
+				break
+			}
+		}
+		if time.Now().After(deadline) {
+			st, _ := os.Stat(path)
+			t.Fatalf("the log was never cut: %v", st)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if err := e.Stop(context.Background(), "it-flood", time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if st, err := os.Stat(path); err != nil || st.Size() > maxLogBytes+(512<<20) {
+		t.Errorf("log after the cut: %v, %v", st, err)
+	}
+}
+
+// Run makes the network of its container and must give it back when it fails.
+func TestFailedStartFreesItsNetwork(t *testing.T) {
+	e := connect(t)
+	ctx := context.Background()
+	s := Spec{ID: "it-failed", Network: "it-failed", Image: testImage, Args: []string{"/does/not/exist"},
+		MemoryBytes: 32 << 20, CPUs: 0.1, Pids: 8}
+	e.Remove(ctx, s.ID)
+	if err := e.Run(ctx, s); err == nil {
+		e.Remove(ctx, s.ID)
+		t.Fatal("a container with no program to run started")
+	}
+	nets, _ := e.networks.all()
+	for _, nw := range nets {
+		if nw.Name == s.Network {
+			t.Errorf("network %s is still kept after the start failed", nw.Name)
+			e.dns.mu.Lock()
+			_, serving := e.dns.listening[nw.gateway()]
+			e.dns.mu.Unlock()
+			if serving {
+				t.Error("its DNS server is still running")
+			}
+			if _, err := net.InterfaceByName(nw.bridge()); err == nil {
+				t.Errorf("bridge %s is still there", nw.bridge())
+			}
+		}
+	}
+}
+
 func TestRemoveDeletesLog(t *testing.T) {
 	e := connect(t)
 	run(t, e, Spec{ID: "it-rmlog", Image: testImage, Args: []string{"echo", "old output"},

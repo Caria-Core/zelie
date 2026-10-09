@@ -2,6 +2,7 @@ package engine
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
@@ -26,6 +27,9 @@ import (
 //     to that container's port only. The address translation lives in a
 //     second table, since NAT in an inet table needs a newer kernel than
 //     the rest of the rules do.
+//   - Nothing else gets in from outside the bridges: a Docker container
+//     or a machine that routes the range through this host cannot open
+//     connections to containers, or ask the DNS servers on the gateways.
 //
 // The rules live in a table of their own, so they work next to ufw,
 // firewalld or hand-written rules without touching them. The table is
@@ -36,6 +40,17 @@ func applyFirewall(fw *firewall) error {
 	if err != nil {
 		return err
 	}
+	if err := buildFirewall(c, fw); err != nil {
+		return err
+	}
+	if err := c.Flush(); err != nil {
+		return fmt.Errorf("install host firewall rules: %w", err)
+	}
+	return nil
+}
+
+// buildFirewall queues the rules on c without sending them.
+func buildFirewall(c *nftables.Conn, fw *firewall) error {
 	table := &nftables.Table{Family: nftables.TableFamilyINet, Name: "zelie"}
 	c.AddTable(table) // so the delete below never fails on a fresh machine
 	c.DelTable(table)
@@ -82,6 +97,10 @@ func applyFirewall(fw *firewall) error {
 		rule(input, fromBridge, ipv4, l4proto(proto), toContainerRange, dport(53), accept)
 	}
 	rule(input, fromBridge, drop)
+	// The host's own addresses on the bridges answer for anyone who can route
+	// to them. Only the host itself, which arrives on lo, and the bridges may.
+	rule(input, ifname(expr.MetaKeyIIFNAME, "lo"), accept)
+	rule(input, notFromBridge, ipv4, toContainerRange, drop)
 
 	rule(forward, fromBridge, toBridge, established, accept)
 	// Traffic from outside that was sent to a forwarded port. Nothing here
@@ -102,15 +121,48 @@ func applyFirewall(fw *firewall) error {
 		&expr.Lookup{SourceRegister: 1, SetName: links.Name, SetID: links.ID},
 	}, accept)
 	rule(forward, fromBridge, toBridge, drop)
+	// Without this, whatever comes from another interface and is not a
+	// forward falls through to the chain's accept policy: a Docker container,
+	// or a machine on the network that routes the range through this host,
+	// would reach every port of every container. Replies to what a container
+	// started still pass, and the forwards were accepted above.
+	rule(forward, notFromBridge, toBridge, notEstablished, drop)
 
-	if err := addForwards(c, fw.forwards); err != nil {
-		return err
-	}
+	return addForwards(c, fw.forwards)
+}
 
-	if err := c.Flush(); err != nil {
-		return fmt.Errorf("install host firewall rules: %w", err)
+// firewallIntact reports whether the rules applyFirewall installed are still
+// in the kernel. Another firewall reloading, or someone flushing the ruleset,
+// takes them away without a word.
+func firewallIntact() (bool, error) {
+	c, err := nftables.New()
+	if err != nil {
+		return false, err
 	}
-	return nil
+	return tablesIntact(c)
+}
+
+func tablesIntact(c *nftables.Conn) (bool, error) {
+	tables, err := c.ListTables()
+	if err != nil {
+		return false, fmt.Errorf("list nftables tables: %w", err)
+	}
+	var filter, nat *nftables.Table
+	for _, t := range tables {
+		switch {
+		case t.Family == nftables.TableFamilyINet && t.Name == "zelie":
+			filter = t
+		case t.Family == nftables.TableFamilyIPv4 && t.Name == "zelie-nat":
+			nat = t
+		}
+	}
+	if filter == nil || nat == nil {
+		return false, nil
+	}
+	// A flushed table keeps its chains and loses the rules in them. A chain
+	// that cannot be read is as good as gone: the rules are put back.
+	rules, err := c.GetRules(filter, &nftables.Chain{Name: "forward"})
+	return err == nil && len(rules) > 0, nil
 }
 
 // addForwards replaces the NAT table that sends forwarded host ports to
@@ -218,17 +270,9 @@ var (
 		},
 		&expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: []byte{0, 0, 0, 0}},
 	}
-	established = []expr.Any{
-		&expr.Ct{Register: 1, Key: expr.CtKeySTATE},
-		&expr.Bitwise{
-			SourceRegister: 1,
-			DestRegister:   1,
-			Len:            4,
-			Mask:           binaryutil.NativeEndian.PutUint32(expr.CtStateBitESTABLISHED | expr.CtStateBitRELATED),
-			Xor:            binaryutil.NativeEndian.PutUint32(0),
-		},
-		&expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: []byte{0, 0, 0, 0}},
-	}
+	established    = ctEstablished(expr.CmpOpNeq)
+	notEstablished = ctEstablished(expr.CmpOpEq)
+
 	ipv4 = []expr.Any{
 		&expr.Meta{Key: expr.MetaKeyNFPROTO, Register: 1},
 		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{unix.NFPROTO_IPV4}},
@@ -247,6 +291,22 @@ var (
 		}
 	}()
 )
+
+// ctEstablished matches packets of connections that were already going (or
+// are related to one) when op is not-equal, and the rest when it is equal.
+func ctEstablished(op expr.CmpOp) []expr.Any {
+	return []expr.Any{
+		&expr.Ct{Register: 1, Key: expr.CtKeySTATE},
+		&expr.Bitwise{
+			SourceRegister: 1,
+			DestRegister:   1,
+			Len:            4,
+			Mask:           binaryutil.NativeEndian.PutUint32(expr.CtStateBitESTABLISHED | expr.CtStateBitRELATED),
+			Xor:            binaryutil.NativeEndian.PutUint32(0),
+		},
+		&expr.Cmp{Op: op, Register: 1, Data: []byte{0, 0, 0, 0}},
+	}
+}
 
 func l4proto(p byte) []expr.Any {
 	return []expr.Any{
@@ -295,4 +355,18 @@ func deleteLink(name string) error {
 		return fmt.Errorf("delete %s: %w", name, err)
 	}
 	return nil
+}
+
+// dropStaleForwards deletes the tracked flows that do not follow the forwards
+// (see dropStaleFlows).
+func dropStaleForwards(old, current []portMap) error {
+	local, addrErr := hostAddrs()
+	c, err := netlink.Dial(unix.NETLINK_NETFILTER, nil)
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	// Without the host's addresses the flows that were translated are still
+	// found; the error is reported all the same.
+	return errors.Join(addrErr, dropStaleFlows(c, local, old, current))
 }

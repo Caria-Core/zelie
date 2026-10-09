@@ -70,6 +70,7 @@ type appCore struct {
 	// take being stopped.
 	games       map[string]engine.Spec
 	gameLog     map[string]string
+	logEvents   map[string]*logEvents
 	gameExit    map[string]int // what Wait says a game's process exited with
 	failWaits   int            // the next Waits on a game fail, as when the core restarts
 	waitFails   []time.Time    // when each of them was asked
@@ -290,6 +291,55 @@ func (c *appCore) exitLocked(id string) {
 	}
 }
 
+// logEvents counts what happened to a game's log: how often it was cut, how
+// often its readers were dropped, and how many streams were opened.
+type logEvents struct{ cuts, drops, streams, sent int }
+
+// eventsLocked returns the log events of a game; the caller holds mu.
+func (c *appCore) eventsLocked(id string) *logEvents {
+	if c.logEvents == nil {
+		c.logEvents = map[string]*logEvents{}
+	}
+	if c.logEvents[id] == nil {
+		c.logEvents[id] = &logEvents{}
+	}
+	return c.logEvents[id]
+}
+
+// cutLog clears a game's log the way the core does once it is too large: what
+// was printed is gone and the log starts again with the line cut.
+func (c *appCore) cutLog(id, cut string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.gameLog == nil {
+		c.gameLog = map[string]string{}
+	}
+	c.gameLog[id] = cut + "\n"
+	c.eventsLocked(id).cuts++
+}
+
+// dropLogs ends the streams that follow a game's log with an error, as a
+// restart of the core does.
+func (c *appCore) dropLogs(id string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.eventsLocked(id).drops++
+}
+
+// logCaughtUp says the stream that follows a game's log has written all of it.
+func (c *appCore) logCaughtUp(id string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.eventsLocked(id).sent == len(c.gameLog[id])
+}
+
+// logStreams is how many streams of a game's log were opened.
+func (c *appCore) logStreams(id string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.eventsLocked(id).streams
+}
+
 // emit prints to a game container's console.
 func (c *appCore) emit(id, text string) {
 	c.mu.Lock()
@@ -353,15 +403,43 @@ func (c *appCore) Logs(ctx context.Context, id string, follow bool, tail int64, 
 	}
 	c.mu.Unlock()
 	if game {
+		endsLine := true
+		c.mu.Lock()
+		ev := c.eventsLocked(id)
+		ev.streams++
+		cuts, drops := ev.cuts, ev.drops
+		c.mu.Unlock()
 		for {
 			c.mu.Lock()
 			text := c.gameLog[id]
+			ev := c.eventsLocked(id)
+			cut, dropped := ev.cuts != cuts, ev.drops != drops
+			cuts = ev.cuts
 			c.mu.Unlock()
+			if follow && dropped {
+				return errors.New("the core went away")
+			}
+			if cut {
+				// The core ends a line the old log left open, so the cut
+				// line stands alone.
+				if !endsLine {
+					if _, err := io.WriteString(w, "\n"); err != nil {
+						return err
+					}
+					endsLine = true
+				}
+				sent = 0
+			}
 			if len(text) > sent {
 				if _, err := io.WriteString(w, text[sent:]); err != nil {
 					return err
 				}
-				sent = len(text)
+				sent, endsLine = len(text), strings.HasSuffix(text, "\n")
+				if follow {
+					c.mu.Lock()
+					c.eventsLocked(id).sent = sent
+					c.mu.Unlock()
+				}
 			}
 			if !follow {
 				return nil

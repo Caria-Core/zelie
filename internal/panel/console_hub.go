@@ -586,27 +586,30 @@ func (s *Server) watchGame(a store.App, container string, e *egg.Egg, g store.Ga
 				retry = min(2*retry, waitRetryMax*s.watchRetry())
 			}
 		}()
-		skip := 0
+		var pos logCursor
 		if rec != nil {
-			skip = rec.begin(ctx, s.Core, container, resumed)
+			pos.ahead = rec.begin(ctx, s.Core, container, resumed)
 			defer func() { rec.finish(exited.Load(), time.Unix(0, exitAt.Load())) }()
 		}
 		// A dropped stream is read again from its start; the lines already
 		// passed on are skipped.
-		delivered := 0
 		for ctx.Err() == nil {
-			seen := 0
+			first, skipping := true, 0
 			w := &lineSplitter{emit: func(line string) {
-				if seen++; seen <= delivered {
+				if first {
+					first, skipping = false, pos.resume(line)
+				}
+				if skipping > 0 {
+					skipping--
 					return
 				}
-				delivered++
+				pos.passed(line)
 				// Before anything sees the line: the egg's entrypoint prints
 				// the startup command, passwords and all.
 				line = mask(line)
 				h.push(container, "line", line)
 				plain := ansi().ReplaceAllString(line, "")
-				if rec != nil && delivered > skip {
+				if rec != nil && !pos.readBefore() {
 					rec.feed(plain)
 				}
 				if !matched && done.Match(plain) {

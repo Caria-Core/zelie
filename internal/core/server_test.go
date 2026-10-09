@@ -48,6 +48,10 @@ type fakeEngine struct {
 	// More volumes by name, and those a running container holds.
 	volumeDirs  map[string]string
 	usedVolumes map[string]bool
+
+	// measuring holds the measurements until it is closed, as a walk blocked
+	// in the file system does.
+	measuring chan struct{}
 }
 
 func (f *fakeEngine) Exec(_ context.Context, _ string, args []string, stdin io.Reader, stdout, _ io.Writer) (uint32, error) {
@@ -135,6 +139,9 @@ func (f *fakeEngine) RemoveVolume(_ context.Context, name string) error {
 }
 
 func (f *fakeEngine) VolumeSizes() (map[string]int64, map[string]error, error) {
+	if f.measuring != nil {
+		<-f.measuring
+	}
 	return map[string]int64{"data": 4096}, f.unmeasured, nil
 }
 

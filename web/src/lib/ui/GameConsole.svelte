@@ -5,6 +5,7 @@
 	import { parseAnsi, type Span } from '$lib/ansi';
 	import { acceptEula, applyFix, eulaLink, game, gameState, loadDiagnosis, loadGame, power, type Diagnosis, type DiagnosisFix } from '$lib/games.svelte';
 	import { say, t, type Key } from '$lib/i18n';
+	import { isLogCut } from '$lib/logs';
 	import { reload } from '$lib/apps.svelte';
 	import { ask } from '$lib/ask.svelte';
 	import { messageOf } from '$lib/errors';
@@ -187,9 +188,12 @@
 				pending = [];
 				if (!frame) frame = requestAnimationFrame(flush);
 				break;
-			case 'line':
-				add(String(m.data ?? ''), 'line');
+			case 'line': {
+				const data = String(m.data ?? '');
+				if (isLogCut(data)) add(t('console.logCut'), 'notice');
+				else add(data, 'line');
 				break;
+			}
 			case 'install':
 				add(String(m.data ?? ''), 'install');
 				break;

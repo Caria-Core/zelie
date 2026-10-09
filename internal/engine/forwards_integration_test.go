@@ -126,3 +126,62 @@ func TestForwards(t *testing.T) {
 		t.Error("the port is still open after clearing")
 	}
 }
+
+// A player's socket keeps its source port, so its flow stays in the
+// connection tracker. After the game server restarts on a new address the
+// same socket has to reach the new one, whether its flow was translated to
+// the old container or started in the gap while no forward existed.
+func TestForwardedUDPFlowFollowsTheServer(t *testing.T) {
+	e := connect(t)
+	ctx := context.Background()
+	const app = "it-flow"
+	e.SetForwards(ctx, app, nil)
+	t.Cleanup(func() { e.SetForwards(context.Background(), app, nil) })
+
+	spec := Spec{
+		ID: app, App: app, Network: app, Image: testImage, MemoryBytes: 32 << 20, CPUs: 0.1, Pids: 32,
+		Args: []string{"sh", "-c", "while true; do nc -u -l -p 9001 -e cat; done"},
+	}
+	run(t, e, spec)
+	host := freePort(t)
+	if err := e.SetForwards(ctx, app, []Forward{{Port: host, Proto: "udp", Target: 9001}}); err != nil {
+		t.Fatal(err)
+	}
+	to := net.JoinHostPort(gatewayOf(status(t, e, spec.ID).IP).String(), fmt.Sprint(host))
+	ping := func(c net.Conn) error {
+		c.SetDeadline(time.Now().Add(time.Second))
+		if _, err := c.Write([]byte("ping")); err != nil {
+			return err
+		}
+		buf := make([]byte, 16)
+		_, err := c.Read(buf)
+		return err
+	}
+	dial := func() net.Conn {
+		c, err := net.Dial("udp", to)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { c.Close() })
+		return c
+	}
+	translated, started := dial(), dial()
+	waitFor(t, func() error { return ping(translated) })
+
+	// Stopping takes the forward away until the next container runs. A player
+	// who keeps trying meanwhile gets no answer, and the host's connection
+	// tracker keeps the flow of those packets.
+	if err := e.Stop(ctx, spec.ID, 10*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if err := ping(started); err == nil {
+		t.Fatal("the stopped server answered")
+	}
+	if err := e.Remove(ctx, spec.ID); err != nil {
+		t.Fatal(err)
+	}
+	spec.ID = app + "-2"
+	run(t, e, spec)
+	waitFor(t, func() error { return ping(translated) })
+	waitFor(t, func() error { return ping(started) })
+}

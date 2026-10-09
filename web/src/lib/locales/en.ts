@@ -417,6 +417,7 @@ export default {
 	'console.command': 'Command',
 	'console.commandPlaceholder': 'Type a command and press Enter',
 	'console.offline': 'The server is not running.',
+	'console.logCut': 'The log reached its size limit, so the older output was cleared.',
 	'console.send': 'Send',
 	'console.installing': 'Installing…',
 	'console.installingText': 'Zelie is downloading and setting up the game. The log below shows how far it is. This can take a few minutes.',

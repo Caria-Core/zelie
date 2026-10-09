@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/netip"
 	"os"
@@ -218,6 +219,10 @@ func (s Spec) Validate() error {
 
 // Engine runs containers through Zelie's containerd.
 type Engine struct {
+	// log receives what the engine does on its own, such as putting back
+	// firewall rules that were removed. Nil discards it.
+	log *slog.Logger
+
 	client   *containerd.Client
 	paths    Paths
 	networks *networks
@@ -227,9 +232,19 @@ type Engine struct {
 	// createMu makes creating containers one at a time, so two requests
 	// can never pick the same ID range or race on the same name.
 	createMu sync.Mutex
+
+	logs logCap
 }
 
-func Connect(ctx context.Context, p Paths) (*Engine, error) {
+// Option changes how Connect sets up the engine.
+type Option func(*Engine)
+
+// WithLog sends what the engine does on its own to l. It has to be given to
+// Connect: the first firewall refresh runs before Connect returns, and what
+// goes wrong in it would otherwise be lost.
+func WithLog(l *slog.Logger) Option { return func(e *Engine) { e.log = l } }
+
+func Connect(ctx context.Context, p Paths, opts ...Option) (*Engine, error) {
 	c, err := containerd.New(p.Socket, containerd.WithDefaultNamespace(Namespace))
 	if err != nil {
 		return nil, fmt.Errorf("connect to containerd at %s: %w", p.Socket, err)
@@ -239,20 +254,33 @@ func Connect(ctx context.Context, p Paths) (*Engine, error) {
 		c.Close()
 		return nil, err
 	}
-	e := &Engine{client: c, paths: p, networks: newNetworks(p)}
-	e.dns = &dnsServer{lookup: e.lookup}
-	for _, s := range servers {
-		e.dns.upstream = append(e.dns.upstream, net.JoinHostPort(s, "53"))
+	upstream := make([]string, len(servers))
+	for i, s := range servers {
+		upstream[i] = net.JoinHostPort(s, "53")
 	}
+	e := &Engine{client: c, paths: p, networks: newNetworks(p)}
+	for _, o := range opts {
+		o(e)
+	}
+	e.dns = newDNSServer(e.lookup, upstream)
+	e.logs.rules = e.keepHostRules
 	if err := e.refresh(ctx); err != nil {
 		c.Close()
 		return nil, err
 	}
 	e.restoreHolders(ctx)
+	e.removeLeftovers()
 	return e, nil
 }
 
 func (e *Engine) Close() error { return e.client.Close() }
+
+func (e *Engine) logger() *slog.Logger {
+	if e.log == nil {
+		return slog.New(slog.DiscardHandler)
+	}
+	return e.log
+}
 
 func (e *Engine) ctx(ctx context.Context) context.Context {
 	return namespaces.WithNamespace(ctx, Namespace)
@@ -326,6 +354,13 @@ func (e *Engine) Run(ctx context.Context, s Spec) (err error) {
 		if err != nil {
 			return err
 		}
+		// Runs once the container is gone, so a network this call made does
+		// not outlive a failed start. A network other containers use is kept.
+		cleanup = append(cleanup, func() {
+			if err := e.freeNetwork(context.WithoutCancel(ctx), s.Network); err != nil {
+				e.logger().Error("free the network of a container that did not start", "network", s.Network, "err", err)
+			}
+		})
 		if resolv, err = resolvConf(e.paths, nw); err != nil {
 			return err
 		}
@@ -341,9 +376,6 @@ func (e *Engine) Run(ctx context.Context, s Spec) (err error) {
 		oci.WithNoNewPrivileges,
 		seccomp.WithDefaultProfile(),
 		oci.WithDroppedCapabilities([]string{"CAP_NET_RAW", "CAP_MKNOD"}),
-		oci.WithMemoryLimit(uint64(s.MemoryBytes)),
-		oci.WithCPUCFS(int64(s.CPUs*100000), 100000),
-		oci.WithPidsLimit(s.Pids),
 		oci.WithCgroup("zelie.slice:zelie:" + s.ID),
 		// A private cgroup namespace lets the container read its own limits
 		// from /sys/fs/cgroup. Runtimes such as the JVM size themselves from
@@ -364,6 +396,7 @@ func (e *Engine) Run(ctx context.Context, s Spec) (err error) {
 			{Destination: "/etc/hosts", Type: "bind", Source: hostsFile, Options: []string{"rbind", "ro"}},
 		}),
 	}
+	specOpts = append(specOpts, limitOpts(s)...)
 	vols, err := e.volumeMounts(s.Volumes, idmap)
 	if err != nil {
 		return err
@@ -504,6 +537,7 @@ func (e *Engine) Run(ctx context.Context, s Spec) (err error) {
 	if err := task.Start(ctx); err != nil {
 		return fmt.Errorf("start %s: %w", s.ID, err)
 	}
+	e.watchLogs()
 	return nil
 }
 
@@ -621,6 +655,36 @@ func namesDigest(name string, digest digest.Digest) bool {
 	return ok && c.Digest() == digest
 }
 
+// containerOOMScoreAdj is the OOM score adjustment of container processes.
+// Containers would otherwise inherit containerd's -998 through the shim, and
+// when the host runs out of memory the kernel would kill Zelie's own
+// processes, which sit at 0, before any container.
+const containerOOMScoreAdj = 500
+
+// limitOpts holds the container to its limits.
+func limitOpts(s Spec) []oci.SpecOpts {
+	return []oci.SpecOpts{
+		oci.WithMemoryLimit(uint64(s.MemoryBytes)),
+		// Memory plus swap equal to the memory limit leaves no room for swap.
+		// Without it a container could go far past its limit by filling the
+		// host's swap, and the memory it shows would stay at the limit.
+		oci.WithMemorySwap(s.MemoryBytes),
+		oci.WithCPUCFS(int64(s.CPUs*100000), 100000),
+		oci.WithPidsLimit(s.Pids),
+		withOOMScoreAdj(containerOOMScoreAdj),
+	}
+}
+
+func withOOMScoreAdj(score int) oci.SpecOpts {
+	return func(_ context.Context, _ oci.Client, _ *containers.Container, s *specs.Spec) error {
+		if s.Process == nil {
+			s.Process = &specs.Process{}
+		}
+		s.Process.OOMScoreAdj = &score
+		return nil
+	}
+}
+
 // nestingOpts gives a builder what it needs to run build steps as containers
 // of its own. Everything added is confined to the container's user
 // namespace; none of it is a privilege on the host. With these BuildKit runs
@@ -661,7 +725,7 @@ func (e *Engine) builderBaseFree(ctx context.Context) error {
 		return err
 	}
 	for _, c := range containers {
-		labels, err := c.Labels(ctx)
+		labels, err := labelsOf(ctx, c)
 		if err != nil {
 			return err
 		}
@@ -685,7 +749,7 @@ func (e *Engine) freeUsernsBase(ctx context.Context) (uint32, error) {
 	}
 	used := make(map[uint32]bool, len(containers))
 	for _, c := range containers {
-		labels, err := c.Labels(ctx)
+		labels, err := labelsOf(ctx, c)
 		if err != nil {
 			return 0, err
 		}
@@ -830,28 +894,45 @@ func (e *Engine) List(ctx context.Context) ([]Status, error) {
 	}
 	out := make([]Status, 0, len(containers))
 	for _, c := range containers {
-		info, err := c.Info(ctx)
+		st, err := statusOf(ctx, c)
 		if err != nil {
 			return nil, err
-		}
-		// A container without a task has been stopped: Stop deletes the
-		// task once the process has exited.
-		st := Status{ID: c.ID(), Image: info.Image, State: "stopped"}
-		if v, err := strconv.ParseUint(info.Labels[labelUsernsBase], 10, 32); err == nil {
-			st.Userns = uint32(v)
-		}
-		st.Network = info.Labels[labelNetwork]
-		st.App = info.Labels[labelApp]
-		st.IP, _ = netip.ParseAddr(info.Labels[labelIP])
-		if task, err := c.Task(ctx, nil); err == nil {
-			if s, err := task.Status(ctx); err == nil {
-				st.State = string(s.Status)
-			}
-			st.Pid = task.Pid()
 		}
 		out = append(out, st)
 	}
 	return out, nil
+}
+
+// labelsOf returns the labels containerd listed with the container. Reading
+// them again would fail for a container removed in the meantime, and with it
+// every scan of all containers, such as a start that happens to overlap
+// someone else's removal.
+func labelsOf(ctx context.Context, c containerd.Container) (map[string]string, error) {
+	info, err := c.Info(ctx, containerd.WithoutRefreshedMetadata)
+	return info.Labels, err
+}
+
+func statusOf(ctx context.Context, c containerd.Container) (Status, error) {
+	info, err := c.Info(ctx, containerd.WithoutRefreshedMetadata)
+	if err != nil {
+		return Status{}, err
+	}
+	// A container without a task has been stopped: Stop deletes the
+	// task once the process has exited.
+	st := Status{ID: c.ID(), Image: info.Image, State: "stopped"}
+	if v, err := strconv.ParseUint(info.Labels[labelUsernsBase], 10, 32); err == nil {
+		st.Userns = uint32(v)
+	}
+	st.Network = info.Labels[labelNetwork]
+	st.App = info.Labels[labelApp]
+	st.IP, _ = netip.ParseAddr(info.Labels[labelIP])
+	if task, err := c.Task(ctx, nil); err == nil {
+		if s, err := task.Status(ctx); err == nil {
+			st.State = string(s.Status)
+		}
+		st.Pid = task.Pid()
+	}
+	return st, nil
 }
 
 func volumeNames(vols []VolumeMount) string {

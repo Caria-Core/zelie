@@ -562,9 +562,13 @@ func (e *StepError) Error() string {
 }
 
 // copyLog follows a step's log file until done is closed, then copies what
-// is left.
+// is left. The core clears a log that grows too large; the copy then starts
+// again from the beginning of the new one, whose first line says so, instead
+// of waiting for it to grow past the place it had reached.
 func copyLog(path string, out io.Writer, done <-chan struct{}) error {
 	var f *os.File
+	var pos int64
+	w := &lineEnd{Writer: out}
 	t := time.NewTicker(200 * time.Millisecond)
 	defer t.Stop()
 	for {
@@ -585,11 +589,42 @@ func copyLog(path string, out io.Writer, done <-chan struct{}) error {
 			}
 			defer f.Close()
 		}
-		if _, err := io.Copy(out, f); err != nil {
+		st, err := f.Stat()
+		if err != nil {
+			return err
+		}
+		if st.Size() < pos {
+			if _, err := f.Seek(0, io.SeekStart); err != nil {
+				return err
+			}
+			pos = 0
+			// The new log opens with a line of its own.
+			if w.open {
+				if _, err := io.WriteString(w, "\n"); err != nil {
+					return err
+				}
+			}
+		}
+		n, err := io.Copy(w, f)
+		pos += n
+		if err != nil {
 			return err
 		}
 		if finished {
 			return nil
 		}
 	}
+}
+
+// lineEnd remembers whether what was written last left a line open.
+type lineEnd struct {
+	io.Writer
+	open bool
+}
+
+func (l *lineEnd) Write(p []byte) (int, error) {
+	if len(p) > 0 {
+		l.open = p[len(p)-1] != '\n'
+	}
+	return l.Writer.Write(p)
 }

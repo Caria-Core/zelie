@@ -205,8 +205,9 @@ func TestRecorderBeginReadsTheOldConsoleOnResume(t *testing.T) {
 	e.core.containers = map[string]engine.Status{"game-1": {ID: "game-1", App: "game", State: "running"}}
 	e.core.mu.Unlock()
 	e.core.emit("game-1", "[12:00:00 INFO]: UUID of player Steve is 069a79f4-44e9-4726-a5be-fca90e38aaf5\n[12:00:01 INFO]: Steve joined the game\n")
-	if skip := r.begin(context.Background(), e.s.Core, "game-1", true); skip != 2 {
-		t.Fatalf("skip %d", skip)
+	read := r.begin(context.Background(), e.s.Core, "game-1", true)
+	if read.lines != 2 || read.first != "[12:00:00 INFO]: UUID of player Steve is 069a79f4-44e9-4726-a5be-fca90e38aaf5" {
+		t.Fatalf("read %d lines, first %q", read.lines, read.first)
 	}
 	// Nothing was recorded from the old lines, but the parser knows the id.
 	r.feed("[12:05:00 INFO]: <Steve> hi")
@@ -260,8 +261,8 @@ func TestRecorderCatchesUpOnWhatTheGamePrintedWhilePanelWasOff(t *testing.T) {
 	}
 
 	r = e.recorder(t)
-	if skip := r.begin(ctx, e.s.Core, "game-1", true); skip != 5 {
-		t.Fatalf("skip %d", skip)
+	if read := r.begin(ctx, e.s.Core, "game-1", true); read.lines != 5 {
+		t.Fatalf("read %d lines", read.lines)
 	}
 	r.finish(false, time.Time{})
 	steve, _ := e.s.Store.Player(ctx, "game", "name:Steve")
@@ -284,6 +285,99 @@ func TestRecorderCatchesUpOnWhatTheGamePrintedWhilePanelWasOff(t *testing.T) {
 	}
 	if sess, _ := e.s.Store.PlayerSessions(ctx, "game", "name:Alex", 10); len(sess) != 1 {
 		t.Errorf("sessions after another restart: %+v", sess)
+	}
+}
+
+// The core clears a log that grows too large and starts it again with a cut
+// line. The position the recorder saves counts from that line, as the next
+// panel counts the lines of the log it finds.
+func TestRecorderPositionCountsFromTheStartOfAClearedLog(t *testing.T) {
+	r, e := newRecorder(t, "minecraft-paper")
+	ctx := context.Background()
+	before := []string{"[12:00:00 INFO]: Steve joined the game", "[12:00:01 INFO]: Alex joined the game"}
+	for i := range 5 {
+		before = append(before, fmt.Sprintf("[12:00:%02d INFO]: Saving the world %d", i+2, i))
+	}
+	e.onConsole("game-1", before...)
+	r.begin(ctx, e.s.Core, "game-1", false)
+	for _, line := range before {
+		r.feed(line)
+	}
+	e.core.cutLog("game-1", cutOne)
+	e.core.emit("game-1", "[12:10:00 INFO]: Bob joined the game\n")
+	r.feed(cutOne)
+	r.feed("[12:10:00 INFO]: Bob joined the game")
+	r.finish(false, time.Time{})
+	if c, n, err := e.s.Store.PlayerLogPos(ctx, "game"); err != nil || c != "game-1" || n != 2 {
+		t.Fatalf("position %q %d %v, want line 2 of the new log", c, n, err)
+	}
+
+	// Two players leave while the panel is off.
+	e.core.emit("game-1", "[12:20:00 INFO]: Steve left the game\n[12:20:01 INFO]: Alex left the game\n")
+	r = e.recorder(t)
+	if read := r.begin(ctx, e.s.Core, "game-1", true); read.lines != 4 {
+		t.Fatalf("read %d lines", read.lines)
+	}
+	r.finish(false, time.Time{})
+	for name, online := range map[string]bool{"Steve": false, "Alex": false, "Bob": true} {
+		if p, _ := e.s.Store.Player(ctx, "game", "name:"+name); p.Online != online {
+			t.Errorf("%s: online %v, want %v", name, p.Online, online)
+		}
+	}
+}
+
+// A cut with no player event after it still moves the saved position, or a
+// panel that starts before the next event would hold the new log to the old
+// one's length.
+func TestRecorderNotesACutWithNothingElseToWrite(t *testing.T) {
+	// Every flush here is called by hand. A timer that could fire between two
+	// lines would make the test depend on how fast the machine is.
+	old := playerFlushEvery
+	playerFlushEvery = time.Hour
+	t.Cleanup(func() { playerFlushEvery = old })
+	r, e := newRecorder(t, "minecraft-paper")
+	ctx := context.Background()
+	before := []string{"[12:00:00 INFO]: Steve joined the game"}
+	for i := range 6 {
+		before = append(before, fmt.Sprintf("[12:00:%02d INFO]: Saving the world %d", i+1, i))
+	}
+	e.onConsole("game-1", before...)
+	r.begin(ctx, e.s.Core, "game-1", false)
+	for _, line := range before {
+		r.feed(line)
+	}
+	r.flush()
+	if _, n, err := e.s.Store.PlayerLogPos(ctx, "game"); err != nil || n != 7 {
+		t.Fatalf("position %d %v, want 7", n, err)
+	}
+	e.core.cutLog("game-1", cutOne)
+	e.core.emit("game-1", "[12:10:00 INFO]: Saving the world\n")
+	r.feed(cutOne)
+	r.feed("[12:10:00 INFO]: Saving the world")
+	r.mu.Lock()
+	armed := r.timer != nil
+	r.mu.Unlock()
+	if !armed {
+		t.Fatal("a cut with nothing else to write did not arm the flush")
+	}
+	r.flush()
+	if _, n, err := e.s.Store.PlayerLogPos(ctx, "game"); err != nil || n != 2 {
+		t.Fatalf("position %d %v, want 2", n, err)
+	}
+	r.mu.Lock()
+	timer := r.timer
+	r.mu.Unlock()
+	if timer != nil {
+		t.Error("timer left running")
+	}
+	r.finish(false, time.Time{})
+
+	e.core.emit("game-1", "[12:20:00 INFO]: Steve left the game\n")
+	r = e.recorder(t)
+	r.begin(ctx, e.s.Core, "game-1", true)
+	r.finish(false, time.Time{})
+	if p, _ := e.s.Store.Player(ctx, "game", "name:Steve"); p.Online {
+		t.Error("Steve left while the panel was off and is still online")
 	}
 }
 
@@ -319,8 +413,8 @@ func TestRecorderCatchUpReadsTheConsoleAgainWhenItFails(t *testing.T) {
 		r.finish(false, time.Time{})
 
 		r = e.recorder(t)
-		if skip := r.begin(ctx, &failingLogs{logReader: e.s.Core, failAfter: cut}, "game-1", true); skip != 4 {
-			t.Fatalf("skip %d", skip)
+		if read := r.begin(ctx, &failingLogs{logReader: e.s.Core, failAfter: cut}, "game-1", true); read.lines != 4 {
+			t.Fatalf("read %d lines", read.lines)
 		}
 		r.finish(false, time.Time{})
 		if chat, _ := e.s.Store.PlayerChat(ctx, "game", "", 0, 10); len(chat) != 2 {
@@ -341,8 +435,8 @@ func TestRecorderCatchUpReadsTheConsoleAgainWhenItFails(t *testing.T) {
 		r, e := newRecorder(t, "minecraft-paper")
 		ctx := context.Background()
 		e.onConsole("game-1", lines...)
-		if skip := r.begin(ctx, &failingLogs{logReader: e.s.Core, failAfter: cut}, "game-1", true); skip != 4 {
-			t.Fatalf("skip %d", skip)
+		if read := r.begin(ctx, &failingLogs{logReader: e.s.Core, failAfter: cut}, "game-1", true); read.lines != 4 {
+			t.Fatalf("read %d lines", read.lines)
 		}
 		r.finish(false, time.Time{})
 		// Everything the console holds is old, and the read that failed
@@ -424,8 +518,8 @@ func TestRecorderCatchUpTakesAMissingLogForAnEmptyConsole(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	logs := &brokenLogs{status: 404}
-	if skip := r.begin(ctx, logs, "game-1", true); skip != 0 {
-		t.Fatalf("skip %d", skip)
+	if read := r.begin(ctx, logs, "game-1", true); read.lines != 0 {
+		t.Fatalf("read %d lines", read.lines)
 	}
 	r.finish(false, time.Time{})
 	if logs.reads != 1 {
@@ -491,8 +585,8 @@ func TestRecorderDoesNotReplayWhatAnOlderVersionRecorded(t *testing.T) {
 	}
 
 	r = e.recorder(t)
-	if skip := r.begin(ctx, e.s.Core, "game-1", true); skip != 2 {
-		t.Fatalf("skip %d", skip)
+	if read := r.begin(ctx, e.s.Core, "game-1", true); read.lines != 2 {
+		t.Fatalf("read %d lines", read.lines)
 	}
 	r.finish(false, time.Time{})
 	if chat, _ := e.s.Store.PlayerChat(ctx, "game", "", 0, 10); len(chat) != 1 {
