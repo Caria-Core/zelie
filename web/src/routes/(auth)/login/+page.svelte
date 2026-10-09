@@ -60,19 +60,23 @@
 	const submitPassword = (e: SubmitEvent) => {
 		e.preventDefault();
 		run(async () => {
-			try {
-				route(await api<Me>('POST', '/login', { email, password }));
-			} catch (err) {
-				// After a few wrong passwords the panel wants a puzzle solved,
-				// then the same request again.
-				if (!(err instanceof ApiError && err.msg.code === 'login.pow')) throw err;
-				checking = true;
+			let pow: { challenge: string; nonce: string } | undefined;
+			// After a few wrong passwords from here or for this account the panel
+			// wants a puzzle solved, then the same request again. Other guesses
+			// can make it bigger meanwhile, so it may ask again.
+			for (let round = 0; ; round++) {
 				try {
-					const p = err.msg.params ?? {};
-					const pow = await solvePow(String(p.challenge), Number(p.bits));
 					route(await api<Me>('POST', '/login', { email, password, pow }));
-				} finally {
-					checking = false;
+					return;
+				} catch (err) {
+					if (!(err instanceof ApiError && err.msg.code === 'login.pow') || round === 2) throw err;
+					checking = true;
+					try {
+						const p = err.msg.params ?? {};
+						pow = await solvePow(String(p.challenge), Number(p.bits));
+					} finally {
+						checking = false;
+					}
 				}
 			}
 		});

@@ -152,6 +152,9 @@ func (s *Server) loginPasskeyOptions(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) loginPasskey(w http.ResponseWriter, r *http.Request) {
+	if !readBody(w, r) {
+		return
+	}
 	if l, unlock, ok := s.halfLogin(w, r); ok {
 		defer unlock()
 		if s.finishPasskeyCheck(w, r, l, "passkey-login") {
@@ -186,8 +189,9 @@ func (s *Server) beginPasskeyCheck(w http.ResponseWriter, r *http.Request, l log
 	writeJSON(w, http.StatusOK, opts)
 }
 
-// finishPasskeyCheck checks the signed challenge. When it reports false it
-// has written the response.
+// finishPasskeyCheck checks the signed challenge. The caller has read the
+// body already, and holds the account's second-step lock. When it reports
+// false it has written the response.
 func (s *Server) finishPasskeyCheck(w http.ResponseWriter, r *http.Request, l login, kind string) bool {
 	v, ok := s.guards.pending.take(l.session.Hash, kind, s.now())
 	if !ok {
@@ -204,7 +208,6 @@ func (s *Server) finishPasskeyCheck(w http.ResponseWriter, r *http.Request, l lo
 		s.fail(w, "load passkeys", err)
 		return false
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
 	cred, err := rp.FinishLogin(u, *v.(*webauthn.SessionData), r)
 	if err != nil {
 		s.Log.Warn("passkey check failed", "user", l.account.ID, "err", err)

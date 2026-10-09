@@ -119,6 +119,9 @@ func (s *Server) confirmPasskeyOptions(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) confirmPasskey(w http.ResponseWriter, r *http.Request) {
+	if !readBody(w, r) {
+		return
+	}
 	l := loginFrom(r.Context())
 	if unlock, ok := s.secondStepAllowed(w, r, l); ok {
 		defer unlock()

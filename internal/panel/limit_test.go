@@ -103,19 +103,22 @@ func TestKeyLocks(t *testing.T) {
 	}
 }
 
+// Guessers on many addresses reach the account at once. Only a few get
+// their password checked; the rest are asked for a puzzle, as they would be
+// one after another.
 func TestParallelWrongPasswordsOfAnAccountAreCounted(t *testing.T) {
 	_, h, _ := newAuthServer(t)
 	b := &browser{t: t, h: h, ip: "198.51.100.7"}
 	b.do("POST", "/api/setup", map[string]string{"token": setupToken(t, h), "email": "a@example.com", "password": "long enough pw"})
 	b.do("POST", "/api/logout", nil)
 
-	// From many addresses, so only the account's limit applies.
+	// From many addresses, so only the account's count matters.
 	wrong := map[string]string{"email": "a@example.com", "password": "wrong password"}
 	got := tally(inParallel(200, func(i int) answer {
 		guesser := &browser{t: t, h: h, ip: fmt.Sprintf("203.0.%d.%d", 113+i/250, 1+i%250)}
 		return answerOf(guesser.do("POST", "/api/login", wrong))
 	}))
-	if want := (map[answer]int{{http.StatusUnauthorized, "login.wrong"}: 10, {http.StatusTooManyRequests, "login.too_many"}: 190}); fmt.Sprint(got) != fmt.Sprint(want) {
+	if want := (map[answer]int{{http.StatusUnauthorized, "login.wrong"}: powAfter, {http.StatusForbidden, "login.pow"}: 200 - powAfter}); fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Errorf("answers %v, want %v", got, want)
 	}
 }
@@ -222,9 +225,12 @@ func TestLoginLimitsCountAnIPv6PrefixAsOne(t *testing.T) {
 	b := &browser{t: t, h: h, ip: "198.51.100.7"}
 	b.do("POST", "/api/setup", map[string]string{"token": setupToken(t, h), "email": "a@example.com", "password": "long enough pw"})
 	b.do("POST", "/api/logout", nil)
+	// Each try is for another account, so only the address is counted.
+	tries := 0
 	login := func(ip string) (int, map[string]any) {
 		b.ip = ip
-		return b.do("POST", "/api/login", map[string]string{"email": "a@example.com", "password": "wrong password"})
+		tries++
+		return b.do("POST", "/api/login", map[string]string{"email": fmt.Sprintf("guess%d@example.com", tries), "password": "wrong password"})
 	}
 
 	// A customer with a /64 can use any address in it; each one is the same

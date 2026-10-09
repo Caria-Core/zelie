@@ -220,7 +220,7 @@ func TestGameBackupFilesComeOnlyFromThePanelsOwnPage(t *testing.T) {
 	download := fmt.Sprintf("/api/games/one/backups/%d/download", id)
 	for _, site := range []string{"cross-site", "same-site", "none"} {
 		e.b.site = site
-		if code, out := e.b.do("GET", download, nil); code != http.StatusForbidden || out["code"] != "request.own_page_only" {
+		if code, out := e.b.do("GET", download, nil); code != http.StatusForbidden || out["code"] != "server.own_page_only" {
 			t.Errorf("GET %s from %s: %d %v", download, site, code, out)
 		}
 	}

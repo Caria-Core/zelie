@@ -48,14 +48,21 @@ panel asks again, so a browser left open or a stolen cookie is not enough to tak
 account over. A password alone does not count, and the last second step on an account
 cannot be removed. Changing the password logs out every other browser.
 
-Wrong passwords and codes are counted in the database, per address and per account, so
-restarting the panel does not reset them. An IPv6 /64 counts as one address. After a few
-failures from one address, each further try must come with a small proof of work the
-browser solves, about a second on a phone, which grows as the failures do; nothing is
-sent to a third party. An owner locked out for good runs `zelie reset-login` on the
-server: root can read everything anyway, so the link it prints may set a new password.
-It works once, for an hour, and removes the account's SSH keys and its second steps. A
-second step has to be set up again before anything else.
+Wrong passwords and codes are counted in the database, so restarting the panel does not
+reset them. An IPv6 /64 counts as one address. Thirty wrong passwords from an address block
+that address for up to 15 minutes; ten for one account block that account from that
+address. An account is never blocked as a whole, since then anyone who knew its email could
+keep its owner out; the owner can log in from another address. After a few failures from
+one address, or for one account from anywhere, each further try must come with a small
+proof of work the browser solves, about a second on a phone. It grows as the failures do,
+so guessing from many addresses at once gets slow too; nothing is sent to a third party.
+Wrong codes of the second step are limited per account, but trying one needs the password
+first.
+
+An owner locked out for good runs `zelie reset-login` on the server: root can read
+everything anyway, so the link it prints may set a new password. It works once, for an
+hour, and removes the account's SSH keys and second steps; a new second step must be set up
+before doing anything else.
 
 ## Memory
 

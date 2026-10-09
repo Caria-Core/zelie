@@ -15,16 +15,23 @@ import (
 	"github.com/Caria-Core/zelie/internal/msg"
 )
 
-// After this many failed logins from an address, each further attempt
-// must come with a solved puzzle: a hash with some leading zero bits. At
-// 16 bits a browser on a laptop takes about 0.3 s and a phone about a
-// second; every third failure doubles it, up to 20 bits. A guesser pays
-// that for every guess. Nothing goes to a third party.
+// After this many failed logins from an address, or for an account from
+// anywhere, each further attempt must come with a solved puzzle: a hash
+// with some leading zero bits. At 16 bits a browser on a laptop takes about
+// 0.3 s and a phone about a second; every third failure doubles it, up to
+// 20 bits. A guesser pays that for every guess. The account's count is what
+// slows a guesser who spreads over many addresses, since no one address has
+// many failures. Nothing goes to a third party.
 const (
 	powAfter   = 3
 	powMinBits = 16
 	powMaxBits = 20
 	powTTL     = 2 * time.Minute
+
+	// powTopAt is the count of failures at which the puzzle is as big as it
+	// gets. The account's counter uses it as its maximum, so when the count
+	// cannot be read the puzzle is the biggest.
+	powTopAt = powAfter + 3*(powMaxBits-powMinBits)
 )
 
 var errPow = msg.Define(http.StatusForbidden, "login.pow", "Your browser has to solve a short check first.")
@@ -32,6 +39,16 @@ var errPow = msg.Define(http.StatusForbidden, "login.pow", "Your browser has to 
 // powBits grows with the failures, so guessing gets slower as it goes on.
 func powBits(failures int) int {
 	return min(powMinBits+(failures-powAfter)/3, powMaxBits)
+}
+
+// powNeeded is the size of the puzzle a login must solve, or zero when it
+// need not yet, given the failures from its address and for its account.
+func powNeeded(fromAddress, forAccount int) int {
+	n := max(fromAddress, forAccount)
+	if n < powAfter {
+		return 0
+	}
+	return powBits(n)
 }
 
 type powChallenge struct {

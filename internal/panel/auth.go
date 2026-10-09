@@ -1,11 +1,13 @@
 package panel
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/mail"
@@ -37,19 +39,27 @@ var (
 // guards holds the state of logging in. The limits are kept in the
 // database; what is pending is not, since at worst a half-finished login
 // starts over.
+//
+// An account is never locked for everyone: that would let a stranger who
+// knows an email keep its owner out. Its wrong passwords block only the
+// address they came from (byAccountIP), and from anywhere they make the
+// puzzle bigger (byAccount), which is what slows a guesser with many
+// addresses.
 type guards struct {
-	byIP      *failures
-	byAccount *failures
-	second    *failures
-	pending   pending
+	byIP        *failures // from one address, for any account
+	byAccountIP *failures // for one account, from one address
+	byAccount   *failures // for one account, from anywhere; it never blocks
+	second      *failures
+	pending     pending
 }
 
 func newGuards(st *store.Store, log *slog.Logger) *guards {
 	return &guards{
-		byIP:      newFailures(st, log, "ip", 30, 15*time.Minute),
-		byAccount: newFailures(st, log, "account", 10, 15*time.Minute),
-		second:    newFailures(st, log, "second", 10, 15*time.Minute),
-		pending:   pending{m: map[string]pendingItem{}},
+		byIP:        newFailures(st, log, "ip", 30, 15*time.Minute),
+		byAccountIP: newFailures(st, log, "account-ip", 10, 15*time.Minute),
+		byAccount:   newFailures(st, log, "account", powTopAt, 15*time.Minute),
+		second:      newFailures(st, log, "second", 10, 15*time.Minute),
+		pending:     pending{m: map[string]pendingItem{}},
 	}
 }
 
@@ -164,18 +174,22 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	ip := clientIP(r)
 	ipKey := sftpd.LimitKey(ip)
 	account := strings.ToLower(req.Email)
+	// The address's lock also covers this pair, since every request of the
+	// pair comes from that address.
+	pair := account + "\x00" + ipKey
 	unlock, err := lockBoth(r.Context(), s.guards.byIP, ipKey, s.guards.byAccount, account)
 	if err != nil {
 		return // the client has gone
 	}
 	defer unlock()
 	now := s.now()
-	if wait := max(s.guards.byIP.Wait(ipKey, now), s.guards.byAccount.Wait(account, now)); wait > 0 {
+	if wait := max(s.guards.byIP.Wait(ipKey, now), s.guards.byAccountIP.Wait(pair, now)); wait > 0 {
 		writeError(w, tooMany(wait))
 		return
 	}
-	if fails := s.guards.byIP.Count(ipKey, now); fails >= powAfter && !s.powSolved(req.Pow, ipKey, powBits(fails), now) {
-		writeError(w, s.newPow(ipKey, powBits(fails), now))
+	bits := powNeeded(s.guards.byIP.Count(ipKey, now), s.guards.byAccount.Count(account, now))
+	if bits > 0 && !s.powSolved(req.Pow, ipKey, bits, now) {
+		writeError(w, s.newPow(ipKey, bits, now))
 		return
 	}
 	a, err := s.Store.AccountByEmail(r.Context(), req.Email)
@@ -188,13 +202,15 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil || !auth.CheckPassword(a.Password, req.Password) {
 		s.Log.Warn("failed login", "ip", ip)
-		if err := errors.Join(s.guards.byIP.Add(ipKey, now), s.guards.byAccount.Add(account, now)); err != nil {
+		err := errors.Join(s.guards.byIP.Add(ipKey, now), s.guards.byAccountIP.Add(pair, now), s.guards.byAccount.Add(account, now))
+		if err != nil {
 			s.fail(w, "login", err)
 			return
 		}
 		writeError(w, errBadLogin.Err())
 		return
 	}
+	s.guards.byAccountIP.Reset(pair)
 	s.guards.byAccount.Reset(account)
 	if err := s.startSession(w, r, a.ID, false); err != nil {
 		s.fail(w, "start session", err)
@@ -436,6 +452,20 @@ func checkEmail(s string) (string, *msg.Error) {
 		return "", errBadEmail.Err()
 	}
 	return s, nil
+}
+
+// readBody reads a small body into memory and puts it back for whoever
+// reads it next. Taking a lock only after this means a client that sends
+// its body slowly is waited for without holding anyone up. On failure it
+// has written the response.
+func readBody(w http.ResponseWriter, r *http.Request) bool {
+	b, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 64<<10))
+	if err != nil {
+		writeError(w, errBadBody.Err())
+		return false
+	}
+	r.Body = io.NopCloser(bytes.NewReader(b))
+	return true
 }
 
 // decode reads a small JSON body and rejects unknown fields. On failure it

@@ -9,6 +9,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -43,12 +44,15 @@ func (b *browser) do(method, path string, body any) (int, map[string]any) {
 func (b *browser) record(method, path string, body any) *httptest.ResponseRecorder {
 	b.t.Helper()
 	var buf bytes.Buffer
+	var in io.Reader = &buf
 	if raw, ok := body.([]byte); ok {
 		buf.Write(raw) // sent as it is, not as JSON
+	} else if rd, ok := body.(io.Reader); ok {
+		in = rd // for a body that is sent slowly
 	} else if body != nil {
 		json.NewEncoder(&buf).Encode(body)
 	}
-	req := httptest.NewRequest(method, "https://panel.example.com"+path, &buf)
+	req := httptest.NewRequest(method, "https://panel.example.com"+path, in)
 	req = req.WithContext(peer.WithPeer(req.Context(), peer.Peer{UID: proxyUID}))
 	req.Header.Set("X-Forwarded-For", b.ip)
 	if b.origin != "" {
@@ -187,30 +191,145 @@ func TestSetupAndLogin(t *testing.T) {
 	}
 }
 
+// loginSolving logs in the way the page does: when the panel asks for a
+// puzzle it is solved and the same request sent again. It also returns the
+// size of the puzzle, zero when there was none.
+func loginSolving(b *browser, email, password string) (code int, out map[string]any, bits int) {
+	b.t.Helper()
+	req := map[string]any{"email": email, "password": password}
+	code, out = b.do("POST", "/api/login", req)
+	if out["code"] != "login.pow" {
+		return code, out, 0
+	}
+	bits = int(out["params"].(map[string]any)["bits"].(float64))
+	req["pow"] = solvePow(b.t, out)
+	code, out = b.do("POST", "/api/login", req)
+	return code, out, bits
+}
+
+// A stranger who knows the owner's email can lock their own address out of
+// the account, but not the owner, who comes from somewhere else.
 func TestLoginLimits(t *testing.T) {
 	s, h, now := newAuthServer(t)
 	b := &browser{t: t, h: h, ip: "198.51.100.7"}
 	b.do("POST", "/api/setup", map[string]string{"token": setupToken(t, h), "email": "a@example.com", "password": "long enough pw"})
 	b.do("POST", "/api/logout", nil)
 
-	// From many addresses, as a spread-out guesser would, so the puzzle
-	// one address gets after a few failures does not come first.
+	stranger := &browser{t: t, h: h, ip: "203.0.113.5"}
 	for i := range 10 {
-		b.ip = fmt.Sprintf("198.51.100.%d", 10+i)
-		b.do("POST", "/api/login", map[string]string{"email": "a@example.com", "password": "wrong password"})
+		if code, out, _ := loginSolving(stranger, "a@example.com", "wrong password"); code != http.StatusUnauthorized {
+			t.Fatalf("guess %d: %d %v", i, code, out)
+		}
 		*now = now.Add(time.Second)
 	}
-	// Blocked even with the right password, from any address, and after
-	// the panel restarts.
-	b.h = s.Handler()
-	b.ip = "203.0.113.5"
-	code, out := b.do("POST", "/api/login", map[string]string{"email": "a@example.com", "password": "long enough pw"})
-	if code != http.StatusTooManyRequests || out["code"] != "login.too_many" || out["params"].(map[string]any)["minutes"] != 15.0 {
-		t.Fatalf("after 10 failures: %d %v", code, out)
+	// After ten wrong passwords that address is out of tries for the
+	// account, even with the right one, and stays so after a restart.
+	h = s.Handler()
+	stranger.h = h
+	for _, password := range []string{"wrong password", "long enough pw"} {
+		code, out := stranger.do("POST", "/api/login", map[string]string{"email": "a@example.com", "password": password})
+		if code != http.StatusTooManyRequests || out["code"] != "login.too_many" || out["params"].(map[string]any)["minutes"] != 15.0 {
+			t.Fatalf("after 10 failures, with %q: %d %v", password, code, out)
+		}
+	}
+
+	// The owner gets in from another address, with a bigger puzzle since
+	// the account has had ten wrong passwords.
+	owner := &browser{t: t, h: h, ip: "198.51.100.7"}
+	code, out, bits := loginSolving(owner, "a@example.com", "long enough pw")
+	if code != http.StatusOK {
+		t.Fatalf("the owner: %d %v", code, out)
+	}
+	if want := powBits(10); bits != want {
+		t.Errorf("the owner's puzzle had %d bits, want %d", bits, want)
+	}
+	// Getting in clears the account's count, so the puzzle is gone, but not
+	// the stranger's address, which is still out.
+	owner.do("POST", "/api/logout", nil)
+	if code, out, bits := loginSolving(owner, "a@example.com", "long enough pw"); code != http.StatusOK || bits != 0 {
+		t.Errorf("the owner again: %d %v, a puzzle of %d bits", code, out, bits)
+	}
+	if code, _ := stranger.do("POST", "/api/login", map[string]string{"email": "a@example.com", "password": "wrong password"}); code != http.StatusTooManyRequests {
+		t.Errorf("the stranger after the owner got in: %d", code)
 	}
 	*now = now.Add(15 * time.Minute)
-	if code, _ := b.do("POST", "/api/login", map[string]string{"email": "a@example.com", "password": "long enough pw"}); code != http.StatusOK {
-		t.Fatalf("after waiting: %d", code)
+	if code, _, _ := loginSolving(stranger, "a@example.com", "wrong password"); code != http.StatusUnauthorized {
+		t.Errorf("the stranger after waiting: %d", code)
+	}
+}
+
+// Wrong passwords for an account from many addresses lock no one out, but
+// make the puzzle bigger for everyone who logs in to it, up to a limit.
+func TestLoginPuzzleGrowsWithAnAccountsFailures(t *testing.T) {
+	s, h, now := newAuthServer(t)
+	b := &browser{t: t, h: h, ip: "198.51.100.7"}
+	b.do("POST", "/api/setup", map[string]string{"token": setupToken(t, h), "email": "a@example.com", "password": "long enough pw"})
+	b.do("POST", "/api/logout", nil)
+
+	for _, n := range []int{0, powAfter - 1, powAfter, powAfter + 3, powAfter + 6, powTopAt - 1, powTopAt, 3 * powTopAt} {
+		// Counted as the login counts them, each from an address of its own.
+		s.guards.byAccount.Reset("a@example.com")
+		for range n {
+			if err := s.guards.byAccount.Add("a@example.com", *now); err != nil {
+				t.Fatal(err)
+			}
+		}
+		// A visitor whose own address has not failed once.
+		visitor := &browser{t: t, h: h, ip: fmt.Sprintf("192.0.2.%d", 1+n%250)}
+		code, out := visitor.do("POST", "/api/login", map[string]string{"email": "a@example.com", "password": "long enough pw"})
+		params, _ := out["params"].(map[string]any)
+		bits, _ := params["bits"].(float64)
+		if want := powNeeded(0, n); want == 0 {
+			if code != http.StatusOK {
+				t.Errorf("after %d failures for the account: %d %v", n, code, out)
+			}
+			visitor.do("POST", "/api/logout", nil)
+		} else if code != http.StatusForbidden || out["code"] != "login.pow" || int(bits) != want {
+			t.Errorf("after %d failures for the account: %d %v, want a puzzle of %d bits", n, code, out, want)
+		}
+	}
+}
+
+func TestPowNeeded(t *testing.T) {
+	for _, c := range []struct{ address, account, want int }{
+		{0, 0, 0},
+		{powAfter - 1, powAfter - 1, 0},
+		{powAfter, 0, powMinBits},
+		{0, powAfter, powMinBits},
+		{powAfter + 3, 0, powMinBits + 1},
+		{0, powAfter + 3, powMinBits + 1},
+		{powAfter + 3, powAfter + 6, powMinBits + 2},
+		{powTopAt, 0, powMaxBits},
+		{0, powTopAt, powMaxBits},
+		{0, 1000, powMaxBits},
+	} {
+		if got := powNeeded(c.address, c.account); got != c.want {
+			t.Errorf("powNeeded(%d, %d) = %d, want %d", c.address, c.account, got, c.want)
+		}
+	}
+}
+
+// Thirty wrong passwords from an address, whichever accounts they were
+// for, block the address.
+func TestLoginLimitOfAnAddress(t *testing.T) {
+	s, h, now := newAuthServer(t)
+	b := &browser{t: t, h: h, ip: "198.51.100.7"}
+	b.do("POST", "/api/setup", map[string]string{"token": setupToken(t, h), "email": "a@example.com", "password": "long enough pw"})
+	b.do("POST", "/api/logout", nil)
+
+	for i := range 30 {
+		if err := s.guards.byIP.Add("203.0.113.5", *now); err != nil {
+			t.Fatalf("failure %d: %v", i, err)
+		}
+	}
+	guesser := &browser{t: t, h: h, ip: "203.0.113.5"}
+	code, out := guesser.do("POST", "/api/login", map[string]string{"email": "other@example.com", "password": "wrong password"})
+	if code != http.StatusTooManyRequests || out["code"] != "login.too_many" {
+		t.Errorf("after 30 failures: %d %v", code, out)
+	}
+	guesser.ip = "203.0.113.6"
+	if code, _ := guesser.do("POST", "/api/login", map[string]string{"email": "other@example.com", "password": "wrong password"}); code != http.StatusUnauthorized {
+		t.Errorf("another address: %d", code)
 	}
 }
 

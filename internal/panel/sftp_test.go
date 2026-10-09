@@ -10,6 +10,7 @@ import (
 	"crypto/rsa"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -257,6 +258,29 @@ func TestWrongSFTPPasswordsAreLimited(t *testing.T) {
 	// Keys cannot be guessed, so they are not held up.
 	if code, _ := e.login(t, sftpd.AuthRequest{Key: pub.Marshal()}); code != http.StatusOK {
 		t.Errorf("a key while passwords are limited: %d", code)
+	}
+}
+
+// Guesses that arrive together are let in one at a time. Without that, all
+// of them would be checked before any is counted.
+func TestParallelWrongSFTPPasswordsAreCounted(t *testing.T) {
+	e := newSFTPEnv(t)
+	_, out := e.b.do("POST", "/api/games/survival/sftp/password", nil)
+	pw := out["password"].(string)
+
+	// A few past the limit are enough, and each wrong password is hashed in
+	// turn, which is slow under the race detector.
+	got := tally(inParallel(12, func(int) answer {
+		return answerOf(e.login(t, sftpd.AuthRequest{Password: "wrong"}))
+	}))
+	want := map[answer]int{{http.StatusForbidden, "sftp.denied"}: 10, {http.StatusTooManyRequests, "sftp.wait"}: 2}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("answers %v, want %v", got, want)
+	}
+	// The guesser's address is out of tries, the owner's is not.
+	owner := sftpd.AuthRequest{Server: "survival", Password: pw, IP: "198.51.100.77"}
+	if code, out := sftpAsk(e, sftpUID, "POST", "/local/sftp/auth", owner); code != http.StatusOK {
+		t.Errorf("the right password from another address after the burst: %d %v", code, out)
 	}
 }
 

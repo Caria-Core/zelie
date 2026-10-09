@@ -196,9 +196,12 @@ For Rust and Minecraft servers, and as a plain list for some other Steam games.
   with ten recovery codes as a fallback.
 - Changing any of these, restoring a backup or exporting data asks for a fresh second
   step.
-- Too many wrong passwords from one address or for one account lock logins for a while.
-  After a few, each attempt also needs a small proof of work the browser solves, which
-  slows a script down and sends nothing to a third party.
+- Too many wrong passwords from one address lock that address out for a while, and too
+  many for one account lock that account out from that address. An account is never locked
+  for everyone, so a stranger who knows an email cannot keep its owner out. After a few
+  wrong passwords from one address or for one account, each attempt also needs a small
+  proof of work the browser solves. It grows with the failures, which slows a script down
+  even when it uses many addresses, and sends nothing to a third party.
 - The Account page lists every browser that is logged in and can log any of them out.
 - Locked out for good, `zelie reset-login` on the server prints a link to start again.
 

@@ -397,7 +397,7 @@ func TestBackupFilesComeOnlyFromThePanelsOwnPage(t *testing.T) {
 	for _, site := range []string{"cross-site", "same-site", "none"} {
 		e.b.site = site
 		for _, path := range []string{download, "/api/backups/recovery"} {
-			if code, out := e.b.do("GET", path, nil); code != http.StatusForbidden || out["code"] != "request.own_page_only" {
+			if code, out := e.b.do("GET", path, nil); code != http.StatusForbidden || out["code"] != "server.own_page_only" {
 				t.Errorf("GET %s from %s: %d %v", path, site, code, out)
 			}
 		}

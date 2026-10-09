@@ -512,7 +512,7 @@ func secureHeaders(next http.Handler) http.Handler {
 	})
 }
 
-var errOwnPageOnly = msg.Define(http.StatusForbidden, "request.own_page_only", "This only works from the panel's own page.")
+var errOwnPageOnly = msg.Define(http.StatusForbidden, "server.own_page_only", "This only works from the panel's own page.")
 
 // ownPageOnly is for GET routes that do more than read. The cross-origin
 // check leaves GET alone, and the session cookie is SameSite=Lax, so it still
