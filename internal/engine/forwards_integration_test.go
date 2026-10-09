@@ -140,7 +140,9 @@ func TestForwardedUDPFlowFollowsTheServer(t *testing.T) {
 
 	spec := Spec{
 		ID: app, App: app, Network: app, Image: testImage, MemoryBytes: 32 << 20, CPUs: 0.1, Pids: 32,
-		Args: []string{"sh", "-c", "while true; do nc -u -l -p 9001 -e cat; done"},
+		// udpsvd answers every sender; nc -u -l only the first one, and two
+		// players are sent from here.
+		Args: []string{"udpsvd", "-E", "0.0.0.0", "9001", "cat"},
 	}
 	run(t, e, spec)
 	host := freePort(t)

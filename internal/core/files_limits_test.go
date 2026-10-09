@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -810,8 +811,10 @@ func TestExtractCountsASparseEntryByItsLength(t *testing.T) {
 		start := time.Now()
 		code, body := e.extract("huge.tar.gz", "into", room)
 		runtime.ReadMemStats(&after)
-		want := map[string]string{"with room": "files.volume_full", "without": "files.archive_too_large"}[name]
-		if code != http.StatusConflict && code != http.StatusUnprocessableEntity || fileCode(body) != want {
+		// Without a volume limit, the archive limit refuses it, or the free
+		// space of the machine does first where little is left.
+		want := map[string][]string{"with room": {"files.volume_full"}, "without": {"files.archive_too_large", "files.no_room"}}[name]
+		if code != http.StatusConflict && code != http.StatusUnprocessableEntity || !slices.Contains(want, fileCode(body)) {
 			t.Errorf("%s: %d %s", name, code, body)
 		}
 		if took := time.Since(start); took > 3*time.Second {
