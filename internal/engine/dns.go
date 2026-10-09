@@ -3,11 +3,13 @@ package engine
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/miekg/dns"
@@ -123,11 +125,11 @@ func (d *dnsServer) listen(addr netip.Addr) error {
 	lc := freebind()
 	port := cmp.Or(d.port, 53)
 	hostport := netip.AddrPortFrom(addr, port).String()
-	pc, err := lc.ListenPacket(d.ctx, "udp4", hostport)
+	pc, err := retryInUse(func() (net.PacketConn, error) { return lc.ListenPacket(d.ctx, "udp4", hostport) })
 	if err != nil {
 		return err
 	}
-	tl, err := lc.Listen(d.ctx, "tcp4", hostport)
+	tl, err := retryInUse(func() (net.Listener, error) { return lc.Listen(d.ctx, "tcp4", hostport) })
 	if err != nil {
 		pc.Close()
 		return err
@@ -162,6 +164,21 @@ func (d *dnsServer) listen(addr netip.Addr) error {
 }
 
 // stop shuts the server on addr down, for a network that is gone.
+// retryInUse binds again for a short while when the address is in use. A
+// network that is freed and made again at once, as with every build, binds
+// the port its old server just closed, and Linux can take about a
+// millisecond after the close to let go of a UDP port.
+func retryInUse[T any](bind func() (T, error)) (T, error) {
+	deadline := time.Now().Add(time.Second)
+	for {
+		v, err := bind()
+		if err == nil || !errors.Is(err, syscall.EADDRINUSE) || time.Now().After(deadline) {
+			return v, err
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}
+
 func (d *dnsServer) stop(addr netip.Addr) {
 	d.mu.Lock()
 	l := d.listening[addr]

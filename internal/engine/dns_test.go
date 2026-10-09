@@ -497,14 +497,15 @@ func TestDNSServersCanBeStoppedAndStartedAgain(t *testing.T) {
 	}
 
 	// Stopped means the sockets are free again, even if the stop came right
-	// after the start.
+	// after the start, give or take the moment Linux can take to let go of
+	// a UDP port (see retryInUse).
 	hostport := net.JoinHostPort("127.0.0.1", strconv.Itoa(int(d.port)))
-	pc, err := net.ListenPacket("udp4", hostport)
+	pc, err := retryInUse(func() (net.PacketConn, error) { return net.ListenPacket("udp4", hostport) })
 	if err != nil {
 		t.Fatalf("UDP port still taken: %v", err)
 	}
 	pc.Close()
-	l, err := net.Listen("tcp4", hostport)
+	l, err := retryInUse(func() (net.Listener, error) { return net.Listen("tcp4", hostport) })
 	if err != nil {
 		t.Fatalf("TCP port still taken: %v", err)
 	}
