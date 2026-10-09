@@ -52,8 +52,9 @@ var (
 
 // steamTracker holds what the panel last learned from Steam.
 type steamTracker struct {
-	mu        sync.Mutex
-	latest    map[int64]string
+	mu sync.Mutex
+	// latest is the newest build of each branch, by app and then by branch.
+	latest    map[int64]map[string]string
 	checkedAt time.Time // when the builds in latest were read
 	triedAt   time.Time // when Steam was last asked, whether or not it answered
 	// updated is the build each server was last updated to on its own, so a
@@ -61,10 +62,15 @@ type steamTracker struct {
 	updated map[string]string
 }
 
-func (t *steamTracker) build(app int64) (string, time.Time) {
+// build is the latest build of the app on a branch, empty when Steam did not
+// list the branch.
+func (t *steamTracker) build(app int64, branch string) (string, time.Time) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return t.latest[app], t.checkedAt
+	if branch == "" {
+		branch = steam.PublicBranch
+	}
+	return t.latest[app][branch], t.checkedAt
 }
 
 // srcdsAppID is the variable Pterodactyl's Steam eggs keep the app in.
@@ -105,7 +111,9 @@ func (s *Server) steamApp(ctx context.Context, g store.GameServer, e *egg.Egg) i
 type gameSteamJSON struct {
 	AppID int64 `json:"app_id"`
 	// InstalledBuild is the build in the server's files, and LatestBuild the
-	// newest one on Steam's public branch. Either is empty when not known.
+	// newest one on the branch they came from, which is the public branch
+	// unless the server was installed from a beta. Either is empty when not
+	// known.
 	InstalledBuild  string     `json:"installed_build"`
 	LatestBuild     string     `json:"latest_build"`
 	UpdateAvailable bool       `json:"update_available"`
@@ -113,21 +121,21 @@ type gameSteamJSON struct {
 	AutoUpdate      bool       `json:"auto_update"`
 }
 
-// installedBuild reads the build id SteamCMD left in the server's files. It
-// is empty when the server has not been installed or the file is not there.
-// It reads the way the file manager does, which works while the server
-// runs; a peek into the volume would be refused then.
-func (s *Server) installedBuild(ctx context.Context, a store.App, g store.GameServer, appID int64) string {
+// installedBuild reads the build id and branch SteamCMD left in the server's
+// files. The build is empty when the server has not been installed or the
+// file is not there. It reads the way the file manager does, which works
+// while the server runs; a peek into the volume would be refused then.
+func (s *Server) installedBuild(ctx context.Context, a store.App, g store.GameServer, appID int64) steam.Manifest {
 	if g.InstallState != store.InstallDone {
-		return ""
+		return steam.Manifest{}
 	}
 	vols, err := s.Store.Volumes(ctx, a.ID)
 	if err != nil {
-		return ""
+		return steam.Manifest{}
 	}
 	i := slices.IndexFunc(vols, func(v store.Volume) bool { return v.Path == gameVolumePath })
 	if i < 0 {
-		return ""
+		return steam.Manifest{}
 	}
 	ref := core.FileRef{Volume: vols[i].Name, FileOwner: core.FileOwner{UID: gameUID, GID: gameGID}}
 	manifest, err := s.Core.ReadFile(ctx, ref, steam.ManifestPath(appID))
@@ -135,14 +143,14 @@ func (s *Server) installedBuild(ctx context.Context, a store.App, g store.GameSe
 		if !isNotFound(err) {
 			s.Log.Warn("read steam manifest", "server", a.ID, "err", err)
 		}
-		return ""
+		return steam.Manifest{}
 	}
-	build, err := steam.InstalledBuild(manifest)
+	m, err := steam.ParseManifest(manifest)
 	if err != nil {
 		s.Log.Warn("read steam manifest", "server", a.ID, "err", err)
-		return ""
+		return steam.Manifest{}
 	}
-	return build
+	return m
 }
 
 func (s *Server) steamOut(ctx context.Context, a store.App, g store.GameServer, e *egg.Egg) *gameSteamJSON {
@@ -151,8 +159,9 @@ func (s *Server) steamOut(ctx context.Context, a store.App, g store.GameServer, 
 		return nil
 	}
 	out := &gameSteamJSON{AppID: app, AutoUpdate: g.SteamAutoUpdate}
-	out.InstalledBuild = s.installedBuild(ctx, a, g, app)
-	latest, at := s.steam.build(app)
+	installed := s.installedBuild(ctx, a, g, app)
+	out.InstalledBuild = installed.Build
+	latest, at := s.steam.build(app, installed.Branch)
 	out.LatestBuild = latest
 	if !at.IsZero() {
 		out.CheckedAt = &at
@@ -237,8 +246,8 @@ func (s *Server) steamUpdate(ctx context.Context, a store.App, g store.GameServe
 		return 0, errNotInstalled.Err()
 	}
 	installed := s.installedBuild(ctx, a, g, app)
-	latest, _ := s.steam.build(app)
-	if installed == "" || latest == "" || installed == latest {
+	latest, _ := s.steam.build(app, installed.Branch)
+	if installed.Build == "" || latest == "" || installed.Build == latest {
 		return 0, errNoSteamUpdate.Err()
 	}
 
@@ -249,7 +258,7 @@ func (s *Server) steamUpdate(ctx context.Context, a store.App, g store.GameServe
 		if bad != nil {
 			return 0, bad
 		}
-		s.Log.Info("steam update", "server", a.ID, "from", installed, "to", latest, "how", "restart", "user", user)
+		s.Log.Info("steam update", "server", a.ID, "from", installed.Build, "to", latest, "how", "restart", "user", user)
 		return res.Deployment, nil
 	}
 	if running {
@@ -276,7 +285,7 @@ func (s *Server) steamUpdate(ctx context.Context, a store.App, g store.GameServe
 		s.Store.SetInstall(context.WithoutCancel(ctx), a.ID, g.InstallState, g.InstallID, time.Time{})
 		return 0, s.internalError("start install", err)
 	}
-	s.Log.Info("steam update", "server", a.ID, "from", installed, "to", latest, "how", "install", "user", user)
+	s.Log.Info("steam update", "server", a.ID, "from", installed.Build, "to", latest, "how", "install", "user", user)
 	return id, nil
 }
 
@@ -363,7 +372,7 @@ func (s *Server) steamRound(ctx context.Context) bool {
 		} else {
 			s.steam.mu.Lock()
 			if s.steam.latest == nil {
-				s.steam.latest = map[int64]string{}
+				s.steam.latest = map[int64]map[string]string{}
 			}
 			for id, b := range builds {
 				s.steam.latest[id] = b
@@ -376,9 +385,9 @@ func (s *Server) steamRound(ctx context.Context) bool {
 	return true
 }
 
-// fetchSteamBuilds asks Steam for the newest public build of each app, in a
-// container that lives for that one question.
-func (s *Server) fetchSteamBuilds(ctx context.Context, ids []int64) (map[int64]string, error) {
+// fetchSteamBuilds asks Steam for the newest build of each branch of each
+// app, in a container that lives for that one question.
+func (s *Server) fetchSteamBuilds(ctx context.Context, ids []int64) (map[int64]map[string]string, error) {
 	bg := context.WithoutCancel(ctx)
 	// A container left by a panel that stopped in the middle.
 	s.Core.Remove(bg, steamContainer)
@@ -423,12 +432,9 @@ func (s *Server) updateEmptyServers(ctx context.Context, servers []steamServer) 
 		if !sv.game.SteamAutoUpdate || sv.game.InstallState != store.InstallDone {
 			continue
 		}
-		latest, _ := s.steam.build(sv.id)
-		if latest == "" {
-			continue
-		}
 		installed := s.installedBuild(ctx, sv.app, sv.game, sv.id)
-		if installed == "" || installed == latest {
+		latest, _ := s.steam.build(sv.id, installed.Branch)
+		if latest == "" || installed.Build == "" || installed.Build == latest {
 			continue
 		}
 		s.steam.mu.Lock()
@@ -455,7 +461,7 @@ func (s *Server) updateEmptyServers(ctx context.Context, servers []steamServer) 
 			s.Log.Warn("steam: automatic update", "server", sv.app.ID, "err", bad.Text)
 			continue
 		}
-		s.Log.Info("steam: updated an empty server", "server", sv.app.ID, "from", installed, "to", latest)
+		s.Log.Info("steam: updated an empty server", "server", sv.app.ID, "from", installed.Build, "to", latest)
 	}
 }
 

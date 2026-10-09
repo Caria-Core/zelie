@@ -39,14 +39,21 @@ func (s *Server) gameBlock(ctx context.Context, g store.GameServer) int {
 	return blockSize(stored.Source)
 }
 
+// addrPort is a port on one address of the pool. The same number may be in
+// the pool on several addresses.
+type addrPort struct {
+	ip   string
+	port int
+}
+
 // runAt lists the n allocations of the pool that start at first: the same
 // address and the ports one after the other. ok is false when one is missing
 // or the usable check turns one down.
-func runAt(byPort map[int]store.Allocation, first store.Allocation, n int, usable func(store.Allocation) bool) ([]store.Allocation, bool) {
+func runAt(byAddr map[addrPort]store.Allocation, first store.Allocation, n int, usable func(store.Allocation) bool) ([]store.Allocation, bool) {
 	run := []store.Allocation{first}
 	for i := 1; i < n; i++ {
-		a, ok := byPort[first.Port+i]
-		if !ok || a.IP != first.IP || !usable(a) {
+		a, ok := byAddr[addrPort{first.IP, first.Port + i}]
+		if !ok || !usable(a) {
 			return nil, false
 		}
 		run = append(run, a)
@@ -54,10 +61,10 @@ func runAt(byPort map[int]store.Allocation, first store.Allocation, n int, usabl
 	return run, true
 }
 
-func portIndex(list []store.Allocation) map[int]store.Allocation {
-	m := make(map[int]store.Allocation, len(list))
+func portIndex(list []store.Allocation) map[addrPort]store.Allocation {
+	m := make(map[addrPort]store.Allocation, len(list))
 	for _, a := range list {
-		m[a.Port] = a
+		m[addrPort{a.IP, a.Port}] = a
 	}
 	return m
 }
@@ -90,13 +97,13 @@ func placeBlock(list []store.Allocation, w needs) (placement, error) {
 		inVars[id] = true
 	}
 	free := func(a store.Allocation) bool { return a.AppID == "" && !inVars[a.ID] }
-	byPort := portIndex(list)
+	byAddr := portIndex(list)
 
 	var run []store.Allocation
 	if w.Primary {
 		first := list[slices.IndexFunc(list, func(a store.Allocation) bool { return a.ID == w.Chosen[0] })]
 		var ok bool
-		if run, ok = runAt(byPort, first, w.Block, free); !ok {
+		if run, ok = runAt(byAddr, first, w.Block, free); !ok {
 			return placement{}, errBrokenBlock.Err("port", first.Port, "count", w.Block)
 		}
 	} else {
@@ -104,7 +111,7 @@ func placeBlock(list []store.Allocation, w needs) (placement, error) {
 			if !free(a) {
 				continue
 			}
-			if r, ok := runAt(byPort, a, w.Block, free); ok {
+			if r, ok := runAt(byAddr, a, w.Block, free); ok {
 				run = r
 				break
 			}

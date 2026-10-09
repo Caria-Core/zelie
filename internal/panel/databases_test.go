@@ -2,10 +2,12 @@ package panel
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -265,5 +267,153 @@ func TestGameServersLinkToDatabases(t *testing.T) {
 	}
 	if value(env, "PORT") != "" {
 		t.Errorf("a game server got PORT: %v", env)
+	}
+}
+
+// The egg's values win over a database link's, the ones made from its
+// password too: the container must not get a name twice.
+func TestEggVariablesWinOverLinkedOnes(t *testing.T) {
+	e, eggs := newGameEnv(t)
+	eggs.files["minecraft-paper"] = strings.Replace(testEgg, `"variables": [`,
+		`"variables": [
+		{"name": "Database", "env_variable": "DATABASE_URL", "default_value": "file:local.db", "user_viewable": true, "user_editable": true, "rules": "required|string"},
+		{"name": "Host", "env_variable": "PGHOST", "default_value": "localhost", "user_viewable": true, "user_editable": true, "rules": "required|string"},`, 1)
+	e.b.do("POST", "/api/databases", map[string]any{"id": "pg", "engine": "postgres"})
+	e.settle(t, "pg")
+	if code, out := e.b.do("POST", "/api/games", map[string]any{"name": "survival", "egg": "minecraft-paper"}); code != http.StatusCreated {
+		t.Fatalf("create: %d %v", code, out)
+	}
+	e.install(t, "survival")
+	if code, out := e.b.do("POST", "/api/apps/survival/links", map[string]any{"db": "pg"}); code != http.StatusCreated {
+		t.Fatalf("link: %d %v", code, out)
+	}
+	if code, out := e.b.do("POST", "/api/games/survival/power", map[string]any{"action": "start"}); code != http.StatusAccepted {
+		t.Fatalf("start: %d %v", code, out)
+	}
+	d := e.settle(t, "survival")
+	var env []string
+	for _, spec := range e.core.games {
+		env = spec.Env
+	}
+	for _, name := range []string{"DATABASE_URL", "PGHOST", "PGPASSWORD", "PGUSER"} {
+		n := 0
+		for _, kv := range env {
+			if k, _, _ := strings.Cut(kv, "="); k == name {
+				n++
+			}
+		}
+		if n != 1 {
+			t.Errorf("%s is in the environment %d times: %v", name, n, env)
+		}
+	}
+	if value(env, "DATABASE_URL") != "file:local.db" || value(env, "PGHOST") != "localhost" {
+		t.Errorf("the egg's values lost: %v", env)
+	}
+	// What the egg does not name still comes from the link.
+	if value(env, "PGPASSWORD") == "" || value(env, "PGUSER") == "" {
+		t.Errorf("the link's own variables are missing: %v", env)
+	}
+	rec := e.b.record("GET", "/api/apps/survival/deployments/"+itoa(d.ID)+"/log", nil)
+	if !strings.Contains(rec.Body.String(), "DATABASE_URL is set by the egg") {
+		t.Errorf("log: %s", rec.Body)
+	}
+}
+
+// linksFailCore cannot set links while fail is on. With partial it still
+// keeps them first, as a core does that saved its links and then failed to
+// apply them to the firewall.
+type linksFailCore struct {
+	*appCore
+	fail    atomic.Bool
+	partial bool
+}
+
+func (c *linksFailCore) SetLinks(ctx context.Context, app string, links []engine.Link) error {
+	if !c.fail.Load() {
+		return c.appCore.SetLinks(ctx, app, links)
+	}
+	if c.partial {
+		c.appCore.SetLinks(ctx, app, links)
+	}
+	return errors.New("the core is restarting")
+}
+
+func (e *appEnv) linkedTo(app string) []string {
+	var out []string
+	links, _ := e.s.Store.Links(context.Background(), app, "")
+	for _, l := range links {
+		out = append(out, l.DBID)
+	}
+	return out
+}
+
+func (e *appEnv) coreLinkedTo(app string) []string {
+	e.core.mu.Lock()
+	defer e.core.mu.Unlock()
+	var out []string
+	for _, l := range e.core.links[app] {
+		out = append(out, l.To)
+	}
+	return out
+}
+
+// The panel and the core must agree about a link when closing it fails, and
+// closing it again must work.
+func TestFailedUnlinkCanBeRepeated(t *testing.T) {
+	for name, partial := range map[string]bool{"core kept the link": false, "core dropped it first": true} {
+		t.Run(name, func(t *testing.T) {
+			e := newAppEnv(t)
+			e.b.do("POST", "/api/databases", map[string]any{"id": "pg", "engine": "postgres"})
+			e.settle(t, "pg")
+			e.b.do("POST", "/api/apps", map[string]any{"id": "web", "source": "image", "image": "nginx"})
+			e.settle(t, "web")
+			if code, out := e.b.do("POST", "/api/apps/web/links", map[string]any{"db": "pg"}); code != http.StatusCreated {
+				t.Fatalf("link: %d %v", code, out)
+			}
+			lc := &linksFailCore{appCore: e.core, partial: partial}
+			e.s.Core = lc
+
+			lc.fail.Store(true)
+			if code, out := e.b.do("DELETE", "/api/apps/web/links/pg", nil); code != http.StatusBadGateway {
+				t.Fatalf("unlink: %d %v", code, out)
+			}
+			// Still listed, and open in the core; a link that vanished from
+			// the list could not be closed again.
+			if got := e.linkedTo("web"); !slices.Equal(got, []string{"pg"}) {
+				t.Errorf("links after the failure: %v", got)
+			}
+			lc.fail.Store(false)
+			if partial {
+				// The core saved the removal, and the panel told it the
+				// link was still there.
+				if got := e.coreLinkedTo("web"); !slices.Equal(got, []string{"pg"}) {
+					t.Errorf("core links after the failure: %v", got)
+				}
+			}
+			if code, out := e.b.do("DELETE", "/api/apps/web/links/pg", nil); code != http.StatusNoContent {
+				t.Fatalf("unlink again: %d %v", code, out)
+			}
+			if got, inCore := e.linkedTo("web"), e.coreLinkedTo("web"); len(got) != 0 || len(inCore) != 0 {
+				t.Errorf("links %v, core %v", got, inCore)
+			}
+		})
+	}
+}
+
+func TestFailedLinkLeavesNothingInTheCore(t *testing.T) {
+	e := newAppEnv(t)
+	e.b.do("POST", "/api/databases", map[string]any{"id": "pg", "engine": "postgres"})
+	e.settle(t, "pg")
+	e.b.do("POST", "/api/apps", map[string]any{"id": "web", "source": "image", "image": "nginx"})
+	e.settle(t, "web")
+	// The core keeps what it was given even when it fails to apply it.
+	lc := &linksFailCore{appCore: e.core, partial: true}
+	e.s.Core = lc
+	lc.fail.Store(true)
+	if code, out := e.b.do("POST", "/api/apps/web/links", map[string]any{"db": "pg"}); code != http.StatusBadGateway {
+		t.Fatalf("link: %d %v", code, out)
+	}
+	if got, inCore := e.linkedTo("web"), e.coreLinkedTo("web"); len(got) != 0 || len(inCore) != 0 {
+		t.Errorf("links %v, core %v", got, inCore)
 	}
 }

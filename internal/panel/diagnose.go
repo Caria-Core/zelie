@@ -458,8 +458,7 @@ func (s *Server) applyFix(ctx context.Context, a store.App, g store.GameServer, 
 		}
 		// As in the settings page: the app's image is pinned to a build once
 		// it has run, and a new choice starts over from the tag.
-		a.Image = fix.image
-		if err := s.Store.UpdateApp(ctx, a); err != nil {
+		if err := s.Store.SetImage(ctx, a.ID, fix.image); err != nil {
 			return fmt.Errorf("save game image: %w", err)
 		}
 		return nil

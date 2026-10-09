@@ -252,6 +252,16 @@ func (s *Server) startGame(ctx context.Context, app store.App, d store.Deploymen
 			vars[k] = v
 		}
 	}
+	// The core appends the linked variables that carry a secret, so one the
+	// egg has too would be in the environment twice, and programs differ on
+	// which copy they read. The egg wins, as for the plain ones.
+	linked = slices.DeleteFunc(linked, func(l core.LinkedVar) bool {
+		_, set := vars[l.Name]
+		if set {
+			fmt.Fprintf(out, "%s is set by the egg, so the link's value of it is not used.\n", l.Name)
+		}
+		return set
+	})
 	startup := egg.Expand(g.Startup, vars, app.Port)
 	vars["STARTUP"] = startup
 	vars["HOME"] = gameVolumePath
@@ -299,8 +309,9 @@ func (s *Server) startGame(ctx context.Context, app store.App, d store.Deploymen
 		// starts use it from the local store, and a registry that is down or
 		// a tag that moved changes nothing until a reinstall.
 		if !engine.Pinned(app.Image) && engine.Pinned(pinned) {
-			app.Image = pinned
-			if err := s.Store.UpdateApp(ctx, app); err != nil {
+			// The app was read before the pull, which can take minutes. A
+			// limit or an image the user chose meanwhile must stay.
+			if _, err := s.Store.PinImage(ctx, app.ID, app.Image, pinned); err != nil {
 				s.Log.Error("record game server image", "server", app.ID, "err", err)
 			}
 		}
@@ -528,6 +539,11 @@ func (s *Server) internalError(what string, err error) *msg.Error {
 
 // power does what the power endpoint and the console's power message ask.
 func (s *Server) power(ctx context.Context, a store.App, g store.GameServer, action string, user int64) (powerResult, *msg.Error) {
+	// Nothing runs on a server that is being installed or copied, and a stop
+	// would cancel that job, which is the only one the server has then.
+	if (action == "stop" || action == "kill") && g.InstallState == store.InstallRunning {
+		return powerResult{}, errInstalling.Err()
+	}
 	switch action {
 	case "start", "restart":
 		switch g.InstallState {

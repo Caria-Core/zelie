@@ -215,35 +215,65 @@ func ParseAppInfo(out []byte) (map[int64]*Node, error) {
 	return apps, nil
 }
 
-// LatestBuilds returns the build id of each app's public branch, from the
-// output of app_info_print. An app with no public branch is left out.
-func LatestBuilds(out []byte) (map[int64]string, error) {
+// PublicBranch is the branch a game is on unless it was installed from
+// another one.
+const PublicBranch = "public"
+
+// LatestBuilds returns the build id of each branch of each app, by app id
+// and then by lower-case branch name, from the output of app_info_print. A
+// branch with no build id is left out.
+func LatestBuilds(out []byte) (map[int64]map[string]string, error) {
 	apps, err := ParseAppInfo(out)
 	if err != nil {
 		return nil, err
 	}
-	builds := make(map[int64]string, len(apps))
+	builds := make(map[int64]map[string]string, len(apps))
 	for id, n := range apps {
-		if b, ok := n.Text("depots", "branches", "public", "buildid"); ok && validBuild(b) {
-			builds[id] = b
+		branches := n.Get("depots", "branches")
+		if branches == nil {
+			continue
+		}
+		for _, b := range branches.Children {
+			if v, ok := b.Text("buildid"); ok && validBuild(v) {
+				if builds[id] == nil {
+					builds[id] = map[string]string{}
+				}
+				builds[id][strings.ToLower(b.Key)] = v
+			}
 		}
 	}
 	return builds, nil
 }
 
-// InstalledBuild reads the build id from an app manifest,
-// steamapps/appmanifest_<id>.acf, which SteamCMD writes when it installs or
-// updates a game.
-func InstalledBuild(manifest []byte) (string, error) {
+// Manifest is what an app manifest, steamapps/appmanifest_<id>.acf, says of
+// the files in a game's folder. SteamCMD writes it when it installs or
+// updates the game.
+type Manifest struct {
+	Build string
+	// Branch is the lower-case name of the branch the files came from.
+	Branch string
+}
+
+// ParseManifest reads an app manifest.
+func ParseManifest(manifest []byte) (Manifest, error) {
 	doc, err := Parse(bytes.TrimPrefix(manifest, []byte("\xef\xbb\xbf")))
 	if err != nil {
-		return "", err
+		return Manifest{}, err
 	}
 	b, ok := doc.Text("AppState", "buildid")
 	if !ok || !validBuild(b) {
-		return "", errors.New("the manifest has no build id")
+		return Manifest{}, errors.New("the manifest has no build id")
 	}
-	return b, nil
+	m := Manifest{Build: b, Branch: PublicBranch}
+	// The branch that is mounted is the one the files are from; the user
+	// config is what was asked for last.
+	for _, section := range []string{"MountedConfig", "UserConfig"} {
+		if key, ok := doc.Text("AppState", section, "BetaKey"); ok && key != "" {
+			m.Branch = strings.ToLower(key)
+			break
+		}
+	}
+	return m, nil
 }
 
 // validBuild accepts what Steam uses for builds: a number.

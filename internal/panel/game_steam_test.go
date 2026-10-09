@@ -380,6 +380,60 @@ func TestAutoUpdateOffLeavesTheServerAlone(t *testing.T) {
 	}
 }
 
+func manifestOnBranch(build, branch string) string {
+	return `"AppState" { "appid" "258550" "buildid" "` + build + `" "UserConfig" { "BetaKey" "` + branch + `" } }`
+}
+
+// A server installed from a beta is compared with that beta's build, not the
+// public one, which differs from it for good.
+func TestSteamServerOnABetaBranch(t *testing.T) {
+	e, sc := newSteamEnv(t)
+	e.newRust(t)
+	e.startRust(t)
+	ctx := context.Background()
+	e.s.PlayerCount = func(context.Context, bool, netip.AddrPort) (int, error) { return 0, nil }
+	if code, out := e.b.do("PUT", "/api/games/rusty/steam", map[string]any{"auto_update": true}); code != http.StatusOK {
+		t.Fatalf("turn on: %d %v", code, out)
+	}
+	// The fixture has the public branch at 20913457 and aux01 at 20990001.
+	sc.setManifest(manifestOnBranch("20990001", "aux01"))
+	deployments := func() int {
+		list, _ := e.s.Store.Deployments(ctx, "rusty", 50)
+		return len(list)
+	}
+	before := deployments()
+
+	e.s.steamRound(ctx)
+	e.s.deploys.wg.Wait()
+	st := e.steamOf(t, "rusty")
+	if st["installed_build"] != "20990001" || st["latest_build"] != "20990001" || st["update_available"] != false {
+		t.Errorf("up to date on the beta: %v", st)
+	}
+	if code, out := e.b.do("POST", "/api/games/rusty/steam/update", nil); code != http.StatusConflict || out["code"] != "game.no_update" {
+		t.Errorf("update now: %d %v", code, out)
+	}
+	if deployments() != before {
+		t.Errorf("an empty server on the current beta build was restarted")
+	}
+
+	// The beta moves on.
+	sc.setManifest(manifestOnBranch("20980000", "aux01"))
+	if st := e.steamOf(t, "rusty"); st["latest_build"] != "20990001" || st["update_available"] != true {
+		t.Errorf("behind on the beta: %v", st)
+	}
+
+	// A branch Steam does not list says nothing about updates.
+	sc.setManifest(manifestOnBranch("1", "private"))
+	if st := e.steamOf(t, "rusty"); st["latest_build"] != "" || st["update_available"] != false {
+		t.Errorf("unknown branch: %v", st)
+	}
+	e.s.steamRound(ctx)
+	e.s.deploys.wg.Wait()
+	if deployments() != before {
+		t.Errorf("a server on a branch nobody listed was restarted")
+	}
+}
+
 func TestSteamAppID(t *testing.T) {
 	e, _ := newSteamEnv(t)
 	rust, err := egg.Parse([]byte(rustEgg(t)))

@@ -25,9 +25,13 @@ func TestLatestBuilds(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The public branch, not the other branches or the depot's manifests
-	// that are also called public; the app with no public branch is left out.
-	want := map[int64]string{258550: "20913457", 2394010: "20871234"}
+	// Every branch of the app, not the depot's manifests that are also
+	// called public; an app with no branch at all would be left out.
+	want := map[int64]map[string]string{
+		258550:  {"public": "20913457", "aux01": "20990001", "legacy": "11111111"},
+		2394010: {"public": "20871234"},
+		4000000: {"beta": "5"},
+	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("builds %v, want %v", got, want)
 	}
@@ -57,14 +61,34 @@ func TestParseAppInfoWithoutApps(t *testing.T) {
 	}
 }
 
-func TestInstalledBuild(t *testing.T) {
-	got, err := InstalledBuild(fixture(t, "appmanifest_258550.acf"))
-	if err != nil || got != "20913457" {
-		t.Errorf("build %q, %v", got, err)
+func TestParseManifest(t *testing.T) {
+	got, err := ParseManifest(fixture(t, "appmanifest_258550.acf"))
+	if want := (Manifest{Build: "20913457", Branch: "public"}); err != nil || got != want {
+		t.Errorf("manifest %+v, %v, want %+v", got, err, want)
 	}
 	for _, bad := range []string{"", `"AppState" { "appid" "1" }`, `"AppState" { "buildid" "abc" }`, `"AppState" {`} {
-		if _, err := InstalledBuild([]byte(bad)); err == nil {
+		if _, err := ParseManifest([]byte(bad)); err == nil {
 			t.Errorf("%q was accepted", bad)
+		}
+	}
+}
+
+// Games installed from a beta say so in the manifest, and no key at all
+// means the public branch.
+func TestManifestBranch(t *testing.T) {
+	for name, c := range map[string]struct{ text, branch string }{
+		"none":             {`"AppState" { "buildid" "7" }`, "public"},
+		"empty":            {`"AppState" { "buildid" "7" "UserConfig" { "BetaKey" "" } }`, "public"},
+		"user config":      {`"AppState" { "buildid" "7" "UserConfig" { "BetaKey" "Aux01" } }`, "aux01"},
+		"mounted config":   {`"AppState" { "buildid" "7" "MountedConfig" { "BetaKey" "staging" } }`, "staging"},
+		"mounted wins":     {`"AppState" { "buildid" "7" "UserConfig" { "BetaKey" "public" } "MountedConfig" { "BetaKey" "staging" } }`, "staging"},
+		"mounted is empty": {`"AppState" { "buildid" "7" "UserConfig" { "BetaKey" "staging" } "MountedConfig" { "BetaKey" "" } }`, "staging"},
+		"explicit public":  {`"AppState" { "buildid" "7" "UserConfig" { "BetaKey" "public" } }`, "public"},
+		"byte order mark":  {"\xef\xbb\xbf" + `"AppState" { "buildid" "7" "UserConfig" { "BetaKey" "x" } }`, "x"},
+	} {
+		m, err := ParseManifest([]byte(c.text))
+		if err != nil || m.Build != "7" || m.Branch != c.branch {
+			t.Errorf("%s: %+v, %v, want branch %q", name, m, err, c.branch)
 		}
 	}
 }

@@ -351,6 +351,34 @@ func TestInstallTimeout(t *testing.T) {
 	}
 }
 
+// A stop cancels the server's background job, which while it installs is the
+// install. It is refused instead, and a schedule that asks for it finds the
+// server stopped already.
+func TestStopDuringAnInstall(t *testing.T) {
+	e, _ := newGameEnv(t)
+	old := installTimeout
+	installTimeout = 300 * time.Millisecond
+	t.Cleanup(func() { installTimeout = old })
+	e.core.installHang = true
+	if code, out := e.b.do("POST", "/api/games", map[string]any{"name": "srv", "egg": "minecraft-paper"}); code != http.StatusCreated {
+		t.Fatalf("create: %d %v", code, out)
+	}
+	for _, action := range []string{"stop", "kill"} {
+		if code, out := e.b.do("POST", "/api/games/srv/power", map[string]string{"action": action}); code != http.StatusConflict || out["code"] != "game.installing" {
+			t.Errorf("%s: %d %v", action, code, out)
+		}
+		task := store.ScheduleTask{Action: store.TaskPower, Data: action}
+		if err := e.s.runTask(context.Background(), store.Schedule{AppID: "srv"}, task); err != nil {
+			t.Errorf("scheduled %s: %v", action, err)
+		}
+	}
+	// Still the install that ends it, here by its own time limit.
+	d := e.install(t, "srv")
+	if d.State != store.DeployFailed || d.Error == nil || d.Error.Code != "game.install_timeout" {
+		t.Fatalf("deployment %+v %+v", d, d.Error)
+	}
+}
+
 func TestReinstall(t *testing.T) {
 	e, _ := newGameEnv(t)
 	e.core.installExit = 1
@@ -418,6 +446,85 @@ func TestReinstall(t *testing.T) {
 	}
 	if code, out := e.b.do("POST", "/api/games/nope/reinstall", nil); code != http.StatusNotFound || out["code"] != "game.not_found" {
 		t.Errorf("unknown server: %d %v", code, out)
+	}
+}
+
+// The backup before a reinstall runs inside the install, which holds the
+// server's lock; a plan that stops the server for backups must not wait for
+// that lock again.
+func TestReinstallWithAPlanThatStopsTheServer(t *testing.T) {
+	e, _ := newGameEnv(t)
+	e.b.do("POST", "/api/games", map[string]any{"name": "srv", "egg": "minecraft-paper"})
+	e.install(t, "srv")
+	if code, out := e.b.do("PUT", "/api/games/srv/backups/plan", map[string]any{"enabled": true, "minute": 180, "keep_days": 7, "stop": true}); code != http.StatusOK {
+		t.Fatalf("plan: %d %v", code, out)
+	}
+	if code, out := e.b.do("POST", "/api/games/srv/reinstall", nil); code != http.StatusCreated {
+		t.Fatalf("reinstall: %d %v", code, out)
+	}
+	done := make(chan struct{})
+	go func() {
+		e.s.deploys.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the reinstall never finished")
+	}
+	d := e.install(t, "srv")
+	if d.Cause != store.CauseReinstall || d.State != store.DeployInstalled {
+		t.Fatalf("deployment %+v %+v", d, d.Error)
+	}
+	backups, _ := e.s.Store.Backups(context.Background(), "srv")
+	if len(backups) != 1 || backups[0].Reason != store.BackupReinstall || backups[0].State != store.BackupDone {
+		t.Errorf("backups %+v", backups)
+	}
+}
+
+// A start that is still pulling its image has no container yet, so the
+// reinstall has to look at the deployment too, and the install itself has to
+// look again once it has the lock.
+func TestReinstallDuringAStart(t *testing.T) {
+	e := newPowerEnv(t)
+	e.newGame(t, "survival", consoleEggURL, nil)
+	slow := slowStarts(t, e)
+	ctx := context.Background()
+
+	if code, out := e.power(t, "survival", "start"); code != http.StatusAccepted {
+		t.Fatalf("start: %d %v", code, out)
+	}
+	<-slow.entered
+	if code, out := e.b.do("POST", "/api/games/survival/reinstall", nil); code != http.StatusConflict || out["code"] != "game.stop_to_reinstall" {
+		t.Errorf("reinstall while starting: %d %v", code, out)
+	}
+
+	// An install that was queued before the start began its work, as when
+	// the request passed its checks a moment earlier.
+	a, _ := e.s.Store.App(ctx, "survival")
+	g, _ := e.s.Store.GameServer(ctx, "survival")
+	if began, err := e.s.Store.BeginInstall(ctx, a.ID); err != nil || !began {
+		t.Fatalf("begin install: %v %v", began, err)
+	}
+	id, err := e.s.startInstall(ctx, a, store.CauseReinstall, g.InstallState)
+	if err != nil {
+		t.Fatal(err)
+	}
+	slow.let()
+	e.settle(t, "survival")
+
+	d, _ := e.s.Store.Deployment(ctx, "survival", id)
+	if d.State != store.DeployFailed || d.Error == nil || d.Error.Code != "game.stop_to_reinstall" {
+		t.Errorf("install %+v %+v", d, d.Error)
+	}
+	if len(e.core.installs) != 1 {
+		t.Errorf("an installer ran over the server: %d installs", len(e.core.installs))
+	}
+	if g, _ := e.s.Store.GameServer(ctx, "survival"); g.InstallState != store.InstallDone {
+		t.Errorf("install state %q", g.InstallState)
+	}
+	if got := e.running("survival"); len(got) != 1 {
+		t.Errorf("running %v", got)
 	}
 }
 

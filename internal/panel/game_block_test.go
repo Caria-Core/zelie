@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"slices"
+	"strconv"
 	"testing"
 
 	"github.com/Caria-Core/zelie/internal/egg"
@@ -82,6 +83,60 @@ func TestPlaceBlock(t *testing.T) {
 	mixed[1].IP = "192.0.2.1"
 	if _, err = placeBlock(mixed, needs{Ports: 2, Block: 2}); err == nil {
 		t.Error("a run across two addresses")
+	}
+}
+
+// The same port numbers can be in the pool on more than one address, as
+// the store lists them: by port, then address.
+func TestPlaceBlockWithPortsOnSeveralAddresses(t *testing.T) {
+	var list []store.Allocation
+	for _, port := range []int{2456, 2457, 2458} {
+		for _, ip := range []string{"1.2.3.4", "5.6.7.8"} {
+			list = append(list, store.Allocation{ID: int64(len(list) + 1), IP: ip, Port: port})
+		}
+	}
+	addrs := func(p placement) []string {
+		var out []string
+		for _, a := range p.Allocations {
+			out = append(out, a.IP+":"+strconv.Itoa(a.Port))
+		}
+		return out
+	}
+
+	p, err := placeBlock(list, needs{Ports: 2, Block: 2})
+	if want := []string{"1.2.3.4:2456", "1.2.3.4:2457"}; err != nil || !slices.Equal(addrs(p), want) {
+		t.Errorf("first run: %v, %v, want %v", addrs(p), err, want)
+	}
+
+	// With every port of the first address taken, the run is on the other.
+	taken := slices.Clone(list)
+	for i := range taken {
+		if taken[i].IP == "1.2.3.4" {
+			taken[i].AppID = "other"
+		}
+	}
+	if p, err = placeBlock(taken, needs{Ports: 2, Block: 2}); err != nil || addrs(p)[0] != "5.6.7.8:2456" {
+		t.Errorf("second address: %v, %v", addrs(p), err)
+	}
+	// And the other way round, which the index used to hide.
+	for i := range taken {
+		taken[i].AppID = ""
+		if taken[i].IP == "5.6.7.8" {
+			taken[i].AppID = "other"
+		}
+	}
+	if p, err = placeBlock(taken, needs{Ports: 2, Block: 2}); err != nil || addrs(p)[0] != "1.2.3.4:2456" {
+		t.Errorf("first address with the second taken: %v, %v", addrs(p), err)
+	}
+
+	// A game port chosen on either address starts a run on that address.
+	for _, c := range []struct {
+		id   int64
+		want string
+	}{{1, "1.2.3.4:2457"}, {2, "5.6.7.8:2457"}} {
+		if p, err = placeBlock(list, needs{Ports: 2, Block: 2, Primary: true, Chosen: []int64{c.id}}); err != nil || addrs(p)[1] != c.want {
+			t.Errorf("chosen %d: %v, %v", c.id, addrs(p), err)
+		}
 	}
 }
 

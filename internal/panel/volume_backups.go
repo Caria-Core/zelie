@@ -57,8 +57,10 @@ func (s *Server) takeBackup(ctx context.Context, a store.App, id int64, plan sto
 		}
 		return s.Core.CreateBackup(ctx, a.ID, container, a.Engine)
 	}
-	// A restore stops the app before its safety backup.
-	if reason == store.BackupRestore {
+	// A restore stops the app before its safety backup, and a reinstall
+	// only runs with the server stopped. Both hold the app's lock already,
+	// which stopping it again would wait for.
+	if reason == store.BackupRestore || reason == store.BackupReinstall {
 		return s.backUpVolumes(ctx, a, id, false)
 	}
 	if !plan.Stop {

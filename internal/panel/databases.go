@@ -358,6 +358,7 @@ func (s *Server) addLink(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.syncLinks(ctx, a.ID); err != nil {
 		s.Store.DeleteLink(context.WithoutCancel(ctx), a.ID, l.DBID)
+		s.resyncLinks(ctx, a.ID)
 		s.coreFailed(w, "open the link", err)
 		return
 	}
@@ -401,6 +402,16 @@ func (s *Server) deleteLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
+	links, err := s.Store.Links(ctx, a.ID, "")
+	if err != nil {
+		s.fail(w, "list links", err)
+		return
+	}
+	i := slices.IndexFunc(links, func(l store.Link) bool { return l.DBID == r.PathValue("db") })
+	if i < 0 {
+		writeError(w, errNoLink.Err())
+		return
+	}
 	switch err := s.Store.DeleteLink(ctx, a.ID, r.PathValue("db")); {
 	case errors.Is(err, store.ErrNotFound):
 		writeError(w, errNoLink.Err())
@@ -410,6 +421,13 @@ func (s *Server) deleteLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.syncLinks(ctx, a.ID); err != nil {
+		// The core may still let the app reach the database. The link stays
+		// listed, so it can be closed again; a link the list does not show
+		// could not be.
+		if err := s.Store.CreateLink(context.WithoutCancel(ctx), links[i]); err != nil {
+			s.Log.Error("restore link", "app", a.ID, "database", links[i].DBID, "err", err)
+		}
+		s.resyncLinks(ctx, a.ID)
 		s.coreFailed(w, "close the link", err)
 		return
 	}
@@ -520,6 +538,16 @@ func (s *Server) syncLinks(ctx context.Context, appID string) error {
 		out = append(out, engine.Link{Name: db.ID, To: db.ID, Port: uint16(db.Port)})
 	}
 	return s.Core.SetLinks(ctx, appID, out)
+}
+
+// resyncLinks tells the core an app's links once more after the panel took
+// back a change that failed: the core can have saved the change before it
+// failed to apply it. A failure is only logged, since the answer to the
+// user is the first one.
+func (s *Server) resyncLinks(ctx context.Context, appID string) {
+	if err := s.syncLinks(context.WithoutCancel(ctx), appID); err != nil {
+		s.Log.Warn("tell the core the links again", "app", appID, "err", err)
+	}
 }
 
 // linkedEnv returns the variables an app gets from its databases: plain

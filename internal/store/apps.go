@@ -129,6 +129,32 @@ func (s *Store) UpdateApp(ctx context.Context, a App) error {
 	return oneRow(res, uniqueErr(err))
 }
 
+// SetImage points an app at another image and leaves its other settings as
+// they are. UpdateApp would write all of them back from whatever copy of the
+// app the caller holds, which may be older than a change made meanwhile.
+func (s *Store) SetImage(ctx context.Context, appID, image string) error {
+	res, err := s.db.ExecContext(ctx, "UPDATE apps SET image = ? WHERE id = ?", image, appID)
+	return oneRow(res, err)
+}
+
+// PinImage swaps the tag an app started from for the build it ran, unless
+// the app's image was changed meanwhile. It reports whether it did.
+func (s *Store) PinImage(ctx context.Context, appID, tag, pinned string) (bool, error) {
+	res, err := s.db.ExecContext(ctx, "UPDATE apps SET image = ? WHERE id = ? AND image = ?", pinned, appID, tag)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n == 1, err
+}
+
+// SetLimits changes how much memory and how many CPUs the app gets, and
+// nothing else about it.
+func (s *Store) SetLimits(ctx context.Context, appID string, memoryMB int64, cpus float64) error {
+	res, err := s.db.ExecContext(ctx, "UPDATE apps SET memory_mb = ?, cpus = ? WHERE id = ?", memoryMB, cpus, appID)
+	return oneRow(res, err)
+}
+
 // SetEngineVersion moves a database to another version of its engine.
 func (s *Store) SetEngineVersion(ctx context.Context, appID, image, version string) error {
 	res, err := s.db.ExecContext(ctx, "UPDATE apps SET image = ?, engine_version = ? WHERE id = ? AND engine != ''", image, version, appID)

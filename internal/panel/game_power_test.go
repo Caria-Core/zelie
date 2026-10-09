@@ -2,17 +2,21 @@ package panel
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 	"unicode/utf8"
 
 	"github.com/Caria-Core/zelie/internal/core"
 	"github.com/Caria-Core/zelie/internal/egg"
+	"github.com/Caria-Core/zelie/internal/engine"
 	"github.com/Caria-Core/zelie/internal/store"
 )
 
@@ -614,6 +618,52 @@ func TestDeleteStopsARunningServer(t *testing.T) {
 	}
 }
 
+// removeFailsCore cannot remove containers, as a core that is briefly down.
+type removeFailsCore struct {
+	*appCore
+	fail atomic.Bool
+}
+
+func (c *removeFailsCore) Remove(ctx context.Context, id string) error {
+	if c.fail.Load() {
+		return errors.New("the core is restarting")
+	}
+	return c.appCore.Remove(ctx, id)
+}
+
+// A delete that fails leaves the server running, so the panel keeps
+// following it: its state, its console and the players in it.
+func TestFailedDeleteKeepsFollowingTheServer(t *testing.T) {
+	e := newPowerEnv(t)
+	e.newGame(t, "survival", consoleEggURL, nil)
+	e.startGame(t, "survival")
+	rc := &removeFailsCore{appCore: e.core}
+	e.s.Core = rc
+
+	rc.fail.Store(true)
+	if code, out := e.b.do("DELETE", "/api/apps/survival", nil); code != http.StatusBadGateway {
+		t.Fatalf("delete: %d %v", code, out)
+	}
+	if got := e.gameState(t, "survival"); got != "running" {
+		t.Errorf("state %q after a delete that failed", got)
+	}
+	e.s.consoles.mu.Lock()
+	hub := e.s.consoles.m["survival"]
+	e.s.consoles.mu.Unlock()
+	if hub == nil {
+		t.Error("the console was forgotten")
+	}
+
+	// Once the containers are gone the server is forgotten too.
+	rc.fail.Store(false)
+	if code, out := e.b.do("DELETE", "/api/apps/survival", nil); code != http.StatusNoContent {
+		t.Fatalf("delete again: %d %v", code, out)
+	}
+	if _, ok := e.s.gameRuns.get("survival"); ok {
+		t.Error("the deleted server is still tracked")
+	}
+}
+
 func TestRunningServersAreFollowedAfterAPanelRestart(t *testing.T) {
 	e := newPowerEnv(t)
 	e.newGame(t, "survival", consoleEggURL, nil)
@@ -837,5 +887,86 @@ func TestGameConfigFilesAddOnlySetLines(t *testing.T) {
 	}
 	if files[1].Changes[0].Add {
 		t.Error("a properties change was marked Add")
+	}
+}
+
+// slowStartCore holds a game server's RunApp, as a first start does while it
+// pulls the image, until the test lets it go.
+type slowStartCore struct {
+	*appCore
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+// slowStarts makes the env's core hold game starts until let is called,
+// which the test's end does too.
+func slowStarts(t *testing.T, e *appEnv) *slowStartCore {
+	t.Helper()
+	c := &slowStartCore{appCore: e.core, entered: make(chan struct{}, 1), release: make(chan struct{})}
+	e.s.Core = c
+	t.Cleanup(c.let)
+	return c
+}
+
+func (c *slowStartCore) let() { c.once.Do(func() { close(c.release) }) }
+
+func (c *slowStartCore) RunApp(ctx context.Context, s engine.Spec, sealed []string, linked ...core.LinkedVar) (string, error) {
+	if s.Stdin {
+		c.entered <- struct{}{}
+		<-c.release
+	}
+	return c.appCore.RunApp(ctx, s, sealed, linked...)
+}
+
+// What the user changes while the first start pulls the image is not undone
+// when the start records the build it got.
+func TestFirstStartKeepsChangesMadeWhilePulling(t *testing.T) {
+	for name, c := range map[string]struct {
+		put      func(e *appEnv) (int, map[string]any)
+		wantImg  string
+		wantMem  int64
+		wantCPUs float64
+	}{
+		"limits": {
+			put: func(e *appEnv) (int, map[string]any) {
+				return e.b.do("PUT", "/api/games/survival/resources", map[string]any{"memory_mb": 3072, "cpus": 2})
+			},
+			wantImg: javaTag + "@" + javaDigest, wantMem: 3072, wantCPUs: 2,
+		},
+		"image": {
+			put: func(e *appEnv) (int, map[string]any) {
+				return e.b.do("PUT", "/api/games/survival/variables", map[string]any{"image": "Java 17"})
+			},
+			// The pull was of the old tag, so its build is not recorded.
+			wantImg: "ghcr.io/example/java:17", wantMem: 2048, wantCPUs: 1,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			e := newPowerEnv(t)
+			e.s.Eggs.(*fakeEggs).files[consoleEggURL] = strings.Replace(consoleEgg,
+				`{"Java 21": "ghcr.io/example/java:21"}`, `{"Java 21": "ghcr.io/example/java:21", "Java 17": "ghcr.io/example/java:17"}`, 1)
+			e.core.digests = map[string]string{javaTag: javaDigest}
+			e.newGame(t, "survival", consoleEggURL, nil)
+			slow := slowStarts(t, e)
+
+			if code, out := e.power(t, "survival", "start"); code != http.StatusAccepted {
+				t.Fatalf("start: %d %v", code, out)
+			}
+			<-slow.entered
+			if code, out := c.put(e); code != http.StatusOK {
+				t.Fatalf("change: %d %v", code, out)
+			}
+			slow.let()
+			e.settle(t, "survival")
+
+			a, err := e.s.Store.App(context.Background(), "survival")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if a.Image != c.wantImg || a.MemoryMB != c.wantMem || a.CPUs != c.wantCPUs {
+				t.Errorf("app has image %q, %d MB, %v CPUs; want %q, %d, %v", a.Image, a.MemoryMB, a.CPUs, c.wantImg, c.wantMem, c.wantCPUs)
+			}
+		})
 	}
 }

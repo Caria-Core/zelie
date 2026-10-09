@@ -872,8 +872,7 @@ func (s *Server) updateGameSettings(w http.ResponseWriter, r *http.Request) {
 	// The server starts from the app's image, which is pinned to a build
 	// once it has run. A new choice starts over from the tag.
 	if image != g.Image {
-		a.Image = image
-		if err := s.Store.UpdateApp(ctx, a); err != nil {
+		if err := s.Store.SetImage(ctx, a.ID, image); err != nil {
 			s.fail(w, "save game image", err)
 			return
 		}
@@ -964,7 +963,7 @@ func (s *Server) setGameResources(ctx context.Context, a store.App, req gameReso
 	if err := s.checkVolume(ctx, vol); err != nil {
 		return a, err
 	}
-	if err := s.Store.UpdateApp(ctx, a); err != nil {
+	if err := s.Store.SetLimits(ctx, a.ID, a.MemoryMB, a.CPUs); err != nil {
 		return a, fmt.Errorf("save game resources: %w", err)
 	}
 	if err := s.Store.UpdateVolume(ctx, vol); err != nil {
@@ -1033,6 +1032,10 @@ func (s *Server) reinstall(ctx context.Context, a store.App, g store.GameServer)
 			return 0, errStopToInstall.Err()
 		}
 	}
+	// A start that is still pulling its image has no container yet.
+	if s.gameState(ctx, a) == stateStarting {
+		return 0, errStopToInstall.Err()
+	}
 	switch began, err := s.Store.BeginInstall(ctx, a.ID); {
 	case err != nil:
 		return 0, fmt.Errorf("begin install: %w", err)
@@ -1043,7 +1046,7 @@ func (s *Server) reinstall(ctx context.Context, a store.App, g store.GameServer)
 	// so a reinstall is also how a server moves to a newer build.
 	if a.Image != g.Image {
 		a.Image = g.Image
-		if err := s.Store.UpdateApp(ctx, a); err != nil {
+		if err := s.Store.SetImage(ctx, a.ID, a.Image); err != nil {
 			s.Store.SetInstall(context.WithoutCancel(ctx), a.ID, g.InstallState, g.InstallID, time.Time{})
 			return 0, fmt.Errorf("reset image: %w", err)
 		}
@@ -1144,6 +1147,20 @@ func (s *Server) runInstall(ctx context.Context, appID string, id int64, prev st
 	set(store.DeployInstalling)
 
 	if d.Cause == store.CauseReinstall {
+		// The request found the server stopped, but a start can have begun
+		// since and finished while this waited for its turn. The installer
+		// must not rewrite the files of a server that runs.
+		list, err := s.Core.List(ctx)
+		if err != nil {
+			fail(fmt.Errorf("list containers: %w", err), prev)
+			return
+		}
+		if slices.ContainsFunc(list, func(c engine.Status) bool {
+			return c.App == appID && c.State == "running" && !isInstallContainer(c)
+		}) {
+			fail(errStopToInstall.Err(), prev)
+			return
+		}
 		fmt.Fprintln(out, "Backing up the server's files before installing again.")
 		if !s.backupBusy.take(appID) {
 			// The files are as they were, so the server stays as it was.

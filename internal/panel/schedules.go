@@ -458,6 +458,9 @@ func (s *Server) runTask(ctx context.Context, x store.Schedule, t store.Schedule
 			if merr.Code == errAlreadyRunning.Code {
 				return nil
 			}
+			if merr.Code == errInstalling.Code && (t.Data == "stop" || t.Data == "kill") {
+				return nil
+			}
 			return merr
 		}
 		if t.Data == "stop" || t.Data == "kill" {

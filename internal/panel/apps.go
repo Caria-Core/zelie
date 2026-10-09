@@ -897,9 +897,6 @@ func (s *Server) deleteApp(w http.ResponseWriter, r *http.Request) {
 	// A deployment in progress would start a container for an app that no
 	// longer exists.
 	s.deploys.cancel(a.ID)
-	defer s.gameRuns.forget(a.ID)
-	defer s.consoles.forget(a.ID)
-	defer s.consoleHist.forget(a.ID)
 	unlock := s.deploys.lock(a.ID)
 	defer unlock()
 	list, err := s.Core.List(ctx)
@@ -916,6 +913,11 @@ func (s *Server) deleteApp(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	// Not before the containers are gone: a delete that fails leaves the
+	// server running, and the panel has to keep following it.
+	s.gameRuns.forget(a.ID)
+	s.consoles.forget(a.ID)
+	s.consoleHist.forget(a.ID)
 	if err := s.removeAppVolumes(ctx, a.ID); err != nil {
 		s.coreFailed(w, "remove volumes", err)
 		return

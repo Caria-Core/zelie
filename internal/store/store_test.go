@@ -167,6 +167,51 @@ func TestApps(t *testing.T) {
 	}
 }
 
+// The narrow updates change one thing and leave what else the caller's copy
+// of the app has out of date alone.
+func TestAppUpdatesThatChangeOneThing(t *testing.T) {
+	ctx := context.Background()
+	s := open(t)
+	a := App{ID: "srv", Source: SourceImage, Image: "ghcr.io/example/java:21", Port: 25565, MemoryMB: 1024, CPUs: 1, CreatedAt: time.Unix(1_800_000_000, 0)}
+	if err := s.CreateApp(ctx, a); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.SetLimits(ctx, "srv", 2048, 2); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.App(ctx, "srv")
+	if got.MemoryMB != 2048 || got.CPUs != 2 || got.Image != a.Image || got.Port != 25565 {
+		t.Errorf("after SetLimits: %+v", got)
+	}
+
+	// The tag it started from is swapped for the build, once.
+	pinned := a.Image + "@sha256:abc"
+	if ok, err := s.PinImage(ctx, "srv", a.Image, pinned); err != nil || !ok {
+		t.Fatalf("pin: %v, %v", ok, err)
+	}
+	if ok, err := s.PinImage(ctx, "srv", a.Image, "other"); err != nil || ok {
+		t.Errorf("pin from a tag the app no longer has: %v, %v", ok, err)
+	}
+	got, _ = s.App(ctx, "srv")
+	if got.Image != pinned || got.MemoryMB != 2048 {
+		t.Errorf("after PinImage: %+v", got)
+	}
+
+	if err := s.SetImage(ctx, "srv", "ghcr.io/example/java:17"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ = s.App(ctx, "srv"); got.Image != "ghcr.io/example/java:17" || got.CPUs != 2 {
+		t.Errorf("after SetImage: %+v", got)
+	}
+	if err := s.SetImage(ctx, "nope", "x"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("image of a missing app: %v", err)
+	}
+	if err := s.SetLimits(ctx, "nope", 1, 1); !errors.Is(err, ErrNotFound) {
+		t.Errorf("limits of a missing app: %v", err)
+	}
+}
+
 func TestGitHub(t *testing.T) {
 	ctx := context.Background()
 	s := open(t)
