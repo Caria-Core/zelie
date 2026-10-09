@@ -217,8 +217,9 @@ func (r *playerRecorder) feed(line string) {
 	if engine.IsLogCut(line) {
 		// The core starts a cleared log with this line, and catchUp counts
 		// the lines of the log it finds, so the position starts over here. A
-		// look-alike printed by the game only makes it too small: the lines
-		// after it are recorded again at the next catch-up.
+		// look-alike printed by the game only makes the position too small,
+		// so a catch-up after a restart records some of that game's own lines
+		// a second time.
 		r.lines = 0
 		if !r.done {
 			r.cut = true
