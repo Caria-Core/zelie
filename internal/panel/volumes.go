@@ -228,7 +228,7 @@ func (s *Server) updateVolume(w http.ResponseWriter, r *http.Request) {
 			writeError(w, errVolumeDBPath.Err())
 			return
 		}
-		if a.IsFiles() && v.Path == gameVolumePath {
+		if a.RunsEgg() && v.Path == gameVolumePath {
 			writeError(w, errVolumeFilesMain.Err())
 			return
 		}
@@ -270,7 +270,7 @@ func (s *Server) deleteVolume(w http.ResponseWriter, r *http.Request) {
 		writeError(w, errVolumeDBDelete.Err())
 		return
 	}
-	if a.IsFiles() && v.Path == gameVolumePath {
+	if a.RunsEgg() && v.Path == gameVolumePath {
 		writeError(w, errVolumeFilesMain.Err())
 		return
 	}

@@ -154,3 +154,24 @@ func volumesOf(t *testing.T, e *appEnv, app string) []store.Volume {
 	}
 	return vols
 }
+
+// A game server's main volume is where the file manager, SFTP and the egg's
+// startup look for it, so it stays where it is, as a files app's does.
+func TestGameServersMainVolumeStaysWhereItIs(t *testing.T) {
+	e := newPowerEnv(t)
+	e.newGame(t, "survival", consoleEggURL, nil)
+	main := volumesOf(t, e, "survival")[0]
+	id := itoa(main.ID)
+	if code, out := e.b.do("PATCH", "/api/apps/survival/volumes/"+id, map[string]any{"path": "/data"}); code != http.StatusConflict || out["code"] != "volume.files_main" {
+		t.Errorf("move: %d %v", code, out)
+	}
+	if code, out := e.b.do("DELETE", "/api/apps/survival/volumes/"+id, nil); code != http.StatusConflict || out["code"] != "volume.files_main" {
+		t.Errorf("delete: %d %v", code, out)
+	}
+	if code, out := e.b.do("PATCH", "/api/apps/survival/volumes/"+id, map[string]any{"limit_mb": main.LimitMB + 1024}); code != http.StatusOK {
+		t.Errorf("resize: %d %v", code, out)
+	}
+	if got := volumesOf(t, e, "survival")[0]; got.Path != main.Path {
+		t.Errorf("the volume is now at %s", got.Path)
+	}
+}
