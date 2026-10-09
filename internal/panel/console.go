@@ -208,8 +208,9 @@ func (s *Server) consoleSocket(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, "open console", err)
 		return
 	}
-	// Last, so a token that fails a check is not spent by it.
-	if !s.consoleUsed.take(token, time.Unix(claims.Expires, 0), s.now()) {
+	// Last, so a token that fails a check is not spent by it. It is kept by
+	// its nonce: the same token has several spellings in base64.
+	if !s.consoleUsed.take(string(claims.Nonce), time.Unix(claims.Expires, 0), s.now()) {
 		writeError(w, errConsoleToken.Err())
 		return
 	}

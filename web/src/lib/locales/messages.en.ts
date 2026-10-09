@@ -266,6 +266,7 @@ export default {
 	'msg.players.steam_key_shape': 'A Steam Web API key has 32 letters and digits.',
 	'msg.players.steam_unreachable': 'Steam could not be reached to check the key. Try again in a moment.',
 	'msg.players.unsupported': 'This game does not support that.',
+	'msg.request.own_page_only': 'This only works from the panel\'s own page.',
 	'msg.reset.bad_token': 'This reset link is not valid. Run zelie reset-login on the server for a new one.',
 	'msg.reset.no_account': 'There is no account with that email.',
 	'msg.reset.which_account': 'There is more than one administrator. Name one: zelie reset-login <email>.',

@@ -15,6 +15,7 @@ import (
 
 	"github.com/Caria-Core/zelie/internal/auth"
 	"github.com/Caria-Core/zelie/internal/msg"
+	"github.com/Caria-Core/zelie/internal/sftpd"
 	"github.com/Caria-Core/zelie/internal/store"
 )
 
@@ -106,7 +107,8 @@ func (s *Server) setup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now, ip := s.now(), clientIP(r)
-	if wait := s.guards.byIP.Wait(ip, now); wait > 0 {
+	ipKey := sftpd.LimitKey(ip)
+	if wait := s.guards.byIP.Wait(ipKey, now); wait > 0 {
 		writeError(w, tooMany(wait))
 		return
 	}
@@ -121,10 +123,19 @@ func (s *Server) setup(w http.ResponseWriter, r *http.Request) {
 	}
 	token, _ := base64.RawURLEncoding.DecodeString(req.Token)
 	hash := sha256.Sum256(token)
-	u, err := s.Store.CreateFirstAdmin(r.Context(), hash[:], email, auth.HashPassword(req.Password), now)
+	// Hashing the password is the costly part, so it waits until the token
+	// is known to be good. CreateFirstAdmin checks again, in its transaction.
+	var u store.User
+	err := s.Store.CheckSetupToken(r.Context(), hash[:], now)
+	if err == nil {
+		u, err = s.Store.CreateFirstAdmin(r.Context(), hash[:], email, auth.HashPassword(req.Password), now)
+	}
 	switch {
 	case errors.Is(err, store.ErrBadSetupToken):
-		s.guards.byIP.Add(ip, now)
+		if err := s.guards.byIP.Add(ipKey, now); err != nil {
+			s.fail(w, "setup", err)
+			return
+		}
 		writeError(w, errBadToken.Err())
 		return
 	case errors.Is(err, store.ErrSetupDone):
@@ -150,14 +161,21 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	now, ip := s.now(), clientIP(r)
+	ip := clientIP(r)
+	ipKey := sftpd.LimitKey(ip)
 	account := strings.ToLower(req.Email)
-	if wait := max(s.guards.byIP.Wait(ip, now), s.guards.byAccount.Wait(account, now)); wait > 0 {
+	unlock, err := lockBoth(r.Context(), s.guards.byIP, ipKey, s.guards.byAccount, account)
+	if err != nil {
+		return // the client has gone
+	}
+	defer unlock()
+	now := s.now()
+	if wait := max(s.guards.byIP.Wait(ipKey, now), s.guards.byAccount.Wait(account, now)); wait > 0 {
 		writeError(w, tooMany(wait))
 		return
 	}
-	if fails := s.guards.byIP.Count(ip, now); fails >= powAfter && !s.powSolved(req.Pow, ip, powBits(fails), now) {
-		writeError(w, s.newPow(ip, powBits(fails), now))
+	if fails := s.guards.byIP.Count(ipKey, now); fails >= powAfter && !s.powSolved(req.Pow, ipKey, powBits(fails), now) {
+		writeError(w, s.newPow(ipKey, powBits(fails), now))
 		return
 	}
 	a, err := s.Store.AccountByEmail(r.Context(), req.Email)
@@ -169,9 +187,11 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil || !auth.CheckPassword(a.Password, req.Password) {
-		s.guards.byIP.Add(ip, now)
-		s.guards.byAccount.Add(account, now)
 		s.Log.Warn("failed login", "ip", ip)
+		if err := errors.Join(s.guards.byIP.Add(ipKey, now), s.guards.byAccount.Add(account, now)); err != nil {
+			s.fail(w, "login", err)
+			return
+		}
 		writeError(w, errBadLogin.Err())
 		return
 	}
@@ -233,25 +253,24 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 }
 
 // halfLogin loads a session that has passed the password but not the second
-// factor. It writes the error response itself when there is none.
-func (s *Server) halfLogin(w http.ResponseWriter, r *http.Request) (login, bool) {
+// factor. It writes the error response itself when there is none. On
+// success the caller holds the account's second-step lock until it calls
+// unlock, which is long enough to add the failure of a wrong code.
+func (s *Server) halfLogin(w http.ResponseWriter, r *http.Request) (l login, unlock func(), ok bool) {
 	l, err := s.currentLogin(r)
 	switch {
 	case errors.Is(err, store.ErrNotFound):
 		writeError(w, errHalfLogin.Err())
-		return l, false
+		return l, nil, false
 	case err != nil:
 		s.fail(w, "load session", err)
-		return l, false
+		return l, nil, false
 	case l.session.Verified:
 		writeError(w, errAlreadyDone.Err())
-		return l, false
+		return l, nil, false
 	}
-	if wait := s.guards.second.Wait(fmt.Sprint(l.account.ID), s.now()); wait > 0 {
-		writeError(w, tooMany(wait))
-		return l, false
-	}
-	return l, true
+	unlock, ok = s.secondStepAllowed(w, r, l)
+	return l, unlock, ok
 }
 
 // verified finishes a login after a correct second factor.
@@ -267,7 +286,10 @@ func (s *Server) verified(w http.ResponseWriter, r *http.Request, l login, how s
 }
 
 func (s *Server) secondFailed(w http.ResponseWriter, l login) {
-	s.guards.second.Add(fmt.Sprint(l.account.ID), s.now())
+	if err := s.guards.second.Add(fmt.Sprint(l.account.ID), s.now()); err != nil {
+		s.fail(w, "second step", err)
+		return
+	}
 	writeError(w, errBadCode.Err())
 }
 
@@ -278,10 +300,11 @@ func (s *Server) loginTOTP(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	l, ok := s.halfLogin(w, r)
+	l, unlock, ok := s.halfLogin(w, r)
 	if !ok {
 		return
 	}
+	defer unlock()
 	if l.account.TOTPSecret == nil {
 		writeError(w, errNoFactor.Err())
 		return
@@ -319,10 +342,11 @@ func (s *Server) loginRecovery(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	l, ok := s.halfLogin(w, r)
+	l, unlock, ok := s.halfLogin(w, r)
 	if !ok {
 		return
 	}
+	defer unlock()
 	ok, err := s.Store.UseRecoveryCode(r.Context(), l.account.ID, auth.HashRecoveryCode(req.Code))
 	if err != nil {
 		s.fail(w, "use recovery code", err)

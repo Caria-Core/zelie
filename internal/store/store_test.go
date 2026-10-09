@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -220,5 +221,137 @@ func TestGitHub(t *testing.T) {
 	}
 	if first, _ := s.FirstDelivery(ctx, "x", now.Add(8*24*time.Hour)); !first {
 		t.Error("a delivery id is kept forever")
+	}
+}
+
+func TestCheckSetupTokenChangesNothing(t *testing.T) {
+	ctx := context.Background()
+	s := open(t)
+	now := time.Now()
+
+	if err := s.CheckSetupToken(ctx, []byte("x"), now); !errors.Is(err, ErrBadSetupToken) {
+		t.Fatalf("no token yet: %v", err)
+	}
+	s.SetSetupToken(ctx, []byte("t"), now.Add(time.Hour))
+	if err := s.CheckSetupToken(ctx, []byte("other"), now); !errors.Is(err, ErrBadSetupToken) {
+		t.Fatalf("a wrong token: %v", err)
+	}
+	if err := s.CheckSetupToken(ctx, []byte("t"), now.Add(2*time.Hour)); !errors.Is(err, ErrBadSetupToken) {
+		t.Fatalf("an expired token: %v", err)
+	}
+	// Asking does not spend the token.
+	for range 2 {
+		if err := s.CheckSetupToken(ctx, []byte("t"), now); err != nil {
+			t.Fatalf("a good token: %v", err)
+		}
+	}
+	if _, err := s.CreateFirstAdmin(ctx, []byte("t"), "a@example.com", "hash", now); err != nil {
+		t.Fatalf("create after checking: %v", err)
+	}
+	if err := s.CheckSetupToken(ctx, []byte("t"), now); !errors.Is(err, ErrSetupDone) {
+		t.Fatalf("after setup: %v", err)
+	}
+}
+
+func TestResetLogin(t *testing.T) {
+	ctx := context.Background()
+	s := open(t)
+	now := time.Now()
+	s.SetSetupToken(ctx, []byte("t"), now.Add(time.Hour))
+	u, err := s.CreateFirstAdmin(ctx, []byte("t"), "a@example.com", "hash", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := s.db.ExecContext(ctx, "INSERT INTO users (email, password, admin, created_at) VALUES ('b@example.com', 'hash', 1, ?)", now.Unix())
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherID, _ := res.LastInsertId()
+	for i, id := range []int64{u.ID, u.ID, otherID} {
+		key := SSHKey{UserID: id, Name: "k", Fingerprint: fmt.Sprint("SHA256:", i), PublicKey: []byte("key"), CreatedAt: now}
+		if _, err := s.AddSSHKey(ctx, key); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s.AddPasskey(ctx, Passkey{ID: []byte("p"), UserID: u.ID, Name: "p", Credential: []byte("{}"), CreatedAt: now})
+
+	if err := s.CheckResetToken(ctx, []byte("r"), now); !errors.Is(err, ErrBadResetToken) {
+		t.Fatalf("no token yet: %v", err)
+	}
+	if _, err := s.SetResetToken(ctx, "a@example.com", []byte("r"), now.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CheckResetToken(ctx, []byte("wrong"), now); !errors.Is(err, ErrBadResetToken) {
+		t.Fatalf("a wrong token: %v", err)
+	}
+	if err := s.CheckResetToken(ctx, []byte("r"), now.Add(2*time.Hour)); !errors.Is(err, ErrBadResetToken) {
+		t.Fatalf("an expired token: %v", err)
+	}
+	if err := s.CheckResetToken(ctx, []byte("r"), now); err != nil {
+		t.Fatalf("a good token: %v", err)
+	}
+	if _, err := s.ResetLogin(ctx, []byte("r"), "new hash", now); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CheckResetToken(ctx, []byte("r"), now); !errors.Is(err, ErrBadResetToken) {
+		t.Errorf("the token after it was spent: %v", err)
+	}
+
+	// Whoever had the account may have added a key, so none is left; the
+	// other administrator's stays.
+	if keys, _ := s.SSHKeys(ctx, u.ID); len(keys) != 0 {
+		t.Errorf("%d SSH keys left after the reset", len(keys))
+	}
+	if keys, _ := s.SSHKeys(ctx, otherID); len(keys) != 1 {
+		t.Errorf("the other account has %d SSH keys, want 1", len(keys))
+	}
+	if a, _ := s.AccountByID(ctx, u.ID); a.Passkeys != 0 || a.Password != "new hash" {
+		t.Errorf("account after the reset: %+v", a)
+	}
+}
+
+func TestCreateSessionForgetsExpiredOnes(t *testing.T) {
+	ctx := context.Background()
+	s := open(t)
+	now := time.Unix(1_800_000_000, 0)
+	s.SetSetupToken(ctx, []byte("t"), now.Add(time.Hour))
+	u, err := s.CreateFirstAdmin(ctx, []byte("t"), "a@example.com", "hash", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := func(hash string, created, expires time.Time) Session {
+		return Session{Hash: []byte(hash), UserID: u.ID, CreatedAt: created, SeenAt: created, ExpiresAt: expires, IP: "198.51.100.7"}
+	}
+	count := func() (n int) {
+		if err := s.db.QueryRowContext(ctx, "SELECT count(*) FROM sessions").Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+
+	// Three sessions made earlier, when none of them had expired yet.
+	before := now.Add(-3 * time.Hour)
+	for _, x := range []Session{
+		session("old", before, now.Add(-time.Hour)),
+		session("just gone", before, now),
+		session("kept", before, now.Add(time.Hour)),
+	} {
+		if err := s.CreateSession(ctx, x); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := count(); n != 3 {
+		t.Fatalf("%d sessions, want 3", n)
+	}
+	if err := s.CreateSession(ctx, session("new", now, now.Add(time.Hour))); err != nil {
+		t.Fatal(err)
+	}
+	if n := count(); n != 2 {
+		t.Errorf("%d sessions after a new one, want 2: the expired ones should be gone", n)
+	}
+	for _, hash := range []string{"kept", "new"} {
+		if _, err := s.Session(ctx, []byte(hash), now); err != nil {
+			t.Errorf("session %q: %v", hash, err)
+		}
 	}
 }

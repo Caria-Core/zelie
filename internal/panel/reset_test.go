@@ -1,6 +1,7 @@
 package panel
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -25,11 +26,16 @@ func resetLink(t *testing.T, h http.Handler, email string) (int, map[string]any)
 }
 
 func TestResetLogin(t *testing.T) {
-	_, h, now := newAuthServer(t)
+	s, h, now := newAuthServer(t)
 	b := &browser{t: t, h: h, ip: "198.51.100.7"}
 	b.do("POST", "/api/setup", map[string]string{"token": setupToken(t, h), "email": "a@example.com", "password": "long enough pw"})
 	_, out := b.do("POST", "/api/2fa/totp/new", nil)
 	b.do("POST", "/api/2fa/totp", map[string]string{"code": totpNow(t, out["secret"].(string), *now)})
+	// A key on the account, such as one added by someone who held a session.
+	line, _ := ed25519Key(t, "intruder")
+	if code, out := b.do("POST", "/api/account/ssh-keys", map[string]string{"name": "intruder", "key": line}); code != http.StatusCreated {
+		t.Fatalf("add a key: %d %v", code, out)
+	}
 	b.do("POST", "/api/logout", nil)
 	// Locked out: the password is forgotten and guessed too often.
 	for range 10 {
@@ -62,6 +68,14 @@ func TestResetLogin(t *testing.T) {
 	}
 	if code, _ := b.do("GET", "/api/apps", nil); code == http.StatusOK {
 		t.Error("reached the apps without a second step")
+	}
+	// The key would still open SFTP on every game server.
+	acct, err := s.Store.AccountByEmail(context.Background(), "a@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if keys, err := s.Store.SSHKeys(context.Background(), acct.ID); err != nil || len(keys) != 0 {
+		t.Errorf("SSH keys after the reset: %v, %v", keys, err)
 	}
 	b.do("POST", "/api/logout", nil)
 

@@ -53,24 +53,39 @@ func (s *Store) SetResetToken(ctx context.Context, email string, hash []byte, ex
 	return u, err
 }
 
+// CheckResetToken says whether ResetLogin would take this token, without
+// changing anything, so the caller can refuse before hashing a password.
+func (s *Store) CheckResetToken(ctx context.Context, tokenHash []byte, now time.Time) error {
+	_, err := resetTokenUser(ctx, s.db, tokenHash, now)
+	return err
+}
+
+func resetTokenUser(ctx context.Context, q querier, tokenHash []byte, now time.Time) (User, error) {
+	var u User
+	err := q.QueryRowContext(ctx,
+		"SELECT u.id, u.email, u.admin FROM reset_token t JOIN users u ON u.id = t.user_id WHERE t.hash = ? AND t.expires_at > ?",
+		tokenHash, now.Unix()).Scan(&u.ID, &u.Email, &u.Admin)
+	if errors.Is(err, sql.ErrNoRows) {
+		return u, ErrBadResetToken
+	}
+	return u, err
+}
+
 // ResetLogin spends the reset token: the account gets password, loses its
-// second factors and sessions, and every login limit is lifted.
+// second factors, SSH keys and sessions, and every login limit is lifted.
+// The keys go too: one added by whoever had the account would otherwise
+// keep opening SFTP after the owner is back.
 func (s *Store) ResetLogin(ctx context.Context, tokenHash []byte, password string, now time.Time) (User, error) {
 	var u User
 	err := s.tx(ctx, func(tx *sql.Tx) error {
-		err := tx.QueryRowContext(ctx,
-			"SELECT u.id, u.email, u.admin FROM reset_token t JOIN users u ON u.id = t.user_id WHERE t.hash = ? AND t.expires_at > ?",
-			tokenHash, now.Unix()).Scan(&u.ID, &u.Email, &u.Admin)
-		if errors.Is(err, sql.ErrNoRows) {
-			return ErrBadResetToken
-		}
-		if err != nil {
+		var err error
+		if u, err = resetTokenUser(ctx, tx, tokenHash, now); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, "UPDATE users SET password = ?, totp_secret = NULL, totp_step = 0 WHERE id = ?", password, u.ID); err != nil {
 			return err
 		}
-		for _, table := range []string{"passkeys", "recovery_codes", "sessions"} {
+		for _, table := range []string{"passkeys", "recovery_codes", "ssh_keys", "sessions"} {
 			if _, err := tx.ExecContext(ctx, "DELETE FROM "+table+" WHERE user_id = ?", u.ID); err != nil {
 				return err
 			}

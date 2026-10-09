@@ -20,12 +20,20 @@ type Session struct {
 	Agent       string
 }
 
+// CreateSession adds a session, and forgets those that have expired: reads
+// only skip them, so without this they would stay for good, each with an
+// address and a browser name.
 func (s *Store) CreateSession(ctx context.Context, x Session) error {
-	_, err := s.db.ExecContext(ctx, `
+	return s.tx(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, "DELETE FROM sessions WHERE expires_at <= ?", x.CreatedAt.Unix()); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx, `
 INSERT INTO sessions (hash, user_id, verified, created_at, seen_at, expires_at, confirmed_at, ip, agent)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		x.Hash, x.UserID, x.Verified, x.CreatedAt.Unix(), x.SeenAt.Unix(), x.ExpiresAt.Unix(), unixOrZero(x.ConfirmedAt), x.IP, x.Agent)
-	return err
+			x.Hash, x.UserID, x.Verified, x.CreatedAt.Unix(), x.SeenAt.Unix(), x.ExpiresAt.Unix(), unixOrZero(x.ConfirmedAt), x.IP, x.Agent)
+		return err
+	})
 }
 
 const sessionColumns = "hash, user_id, verified, created_at, seen_at, expires_at, confirmed_at, ip, agent"
@@ -121,12 +129,6 @@ func oneRow(res sql.Result, err error) error {
 // DeleteOtherSessions ends every session of the account except keep.
 func (s *Store) DeleteOtherSessions(ctx context.Context, userID int64, keep []byte) error {
 	_, err := s.db.ExecContext(ctx, "DELETE FROM sessions WHERE user_id = ? AND hash != ?", userID, keep)
-	return err
-}
-
-// DeleteExpiredSessions keeps the table from growing forever.
-func (s *Store) DeleteExpiredSessions(ctx context.Context, now time.Time) error {
-	_, err := s.db.ExecContext(ctx, "DELETE FROM sessions WHERE expires_at <= ?", now.Unix())
 	return err
 }
 

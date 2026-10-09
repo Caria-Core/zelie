@@ -87,10 +87,11 @@ func (s *Server) confirm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	l := loginFrom(r.Context())
-	if !s.secondStepAllowed(w, l) {
+	unlock, ok := s.secondStepAllowed(w, r, l)
+	if !ok {
 		return
 	}
-	var ok bool
+	defer unlock()
 	var err error
 	switch {
 	case req.TOTP != "" && l.account.TOTPSecret != nil:
@@ -110,14 +111,20 @@ func (s *Server) confirm(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) confirmPasskeyOptions(w http.ResponseWriter, r *http.Request) {
-	if l := loginFrom(r.Context()); s.secondStepAllowed(w, l) {
+	l := loginFrom(r.Context())
+	if unlock, ok := s.secondStepAllowed(w, r, l); ok {
+		defer unlock()
 		s.beginPasskeyCheck(w, r, l, "passkey-confirm")
 	}
 }
 
 func (s *Server) confirmPasskey(w http.ResponseWriter, r *http.Request) {
-	if l := loginFrom(r.Context()); s.secondStepAllowed(w, l) && s.finishPasskeyCheck(w, r, l, "passkey-confirm") {
-		s.confirmedNow(w, r, l)
+	l := loginFrom(r.Context())
+	if unlock, ok := s.secondStepAllowed(w, r, l); ok {
+		defer unlock()
+		if s.finishPasskeyCheck(w, r, l, "passkey-confirm") {
+			s.confirmedNow(w, r, l)
+		}
 	}
 }
 
@@ -130,12 +137,19 @@ var (
 )
 
 // secondStepAllowed applies the same limit on wrong codes as logging in.
-func (s *Server) secondStepAllowed(w http.ResponseWriter, l login) bool {
-	if wait := s.guards.second.Wait(fmt.Sprint(l.account.ID), s.now()); wait > 0 {
-		writeError(w, tooMany(wait))
-		return false
+// When it allows the attempt the caller holds the account's lock until it
+// calls unlock, so that parallel attempts cannot all get in under the limit.
+func (s *Server) secondStepAllowed(w http.ResponseWriter, r *http.Request, l login) (unlock func(), ok bool) {
+	unlock, err := s.guards.second.Lock(r.Context(), fmt.Sprint(l.account.ID))
+	if err != nil {
+		return nil, false // the client has gone
 	}
-	return true
+	if wait := s.guards.second.Wait(fmt.Sprint(l.account.ID), s.now()); wait > 0 {
+		unlock()
+		writeError(w, tooMany(wait))
+		return nil, false
+	}
+	return unlock, true
 }
 
 func (s *Server) confirmedNow(w http.ResponseWriter, r *http.Request, l login) {
@@ -158,11 +172,16 @@ func (s *Server) changePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	l := loginFrom(r.Context())
-	if !s.secondStepAllowed(w, l) {
+	unlock, ok := s.secondStepAllowed(w, r, l)
+	if !ok {
 		return
 	}
+	defer unlock()
 	if !auth.CheckPassword(l.account.Password, req.Current) {
-		s.guards.second.Add(fmt.Sprint(l.account.ID), s.now())
+		if err := s.guards.second.Add(fmt.Sprint(l.account.ID), s.now()); err != nil {
+			s.fail(w, "change password", err)
+			return
+		}
 		writeError(w, errWrongPassword.Err())
 		return
 	}

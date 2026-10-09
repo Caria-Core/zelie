@@ -358,6 +358,53 @@ func TestBackupsNeedConfirming(t *testing.T) {
 	}
 }
 
+// The session cookie goes along with a link from another site, and with an
+// image on a page of another app on the same domain. A GET like that must
+// not have an effect.
+func TestBackupFilesComeOnlyFromThePanelsOwnPage(t *testing.T) {
+	e := newAppEnv(t)
+	ctx := context.Background()
+	e.b.do("POST", "/api/databases", map[string]any{"id": "pg", "engine": "postgres"})
+	e.settle(t, "pg")
+	id := int64(e.backUp(t, "pg")["id"].(float64))
+	// Kept only off-site, so that downloading it means fetching it first.
+	backup, err := e.s.Store.Backup(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.core.off.remote = map[string]bool{"pg/" + backup.File: true}
+	if err := e.s.Store.SetLocal(ctx, id, false, time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+
+	download := fmt.Sprintf("/api/backups/%d/download", id)
+	for _, site := range []string{"cross-site", "same-site", "none"} {
+		e.b.site = site
+		for _, path := range []string{download, "/api/backups/recovery"} {
+			if code, out := e.b.do("GET", path, nil); code != http.StatusForbidden || out["code"] != "request.own_page_only" {
+				t.Errorf("GET %s from %s: %d %v", path, site, code, out)
+			}
+		}
+	}
+	if b, _ := e.s.Store.Backup(ctx, id); b.Local || len(e.core.off.fetched) != 0 {
+		t.Errorf("a refused download fetched the backup: %+v, %v", b, e.core.off.fetched)
+	}
+	if _, out := e.b.do("GET", "/api/apps/pg/backups", nil); out["recovery_saved_at"] != nil {
+		t.Errorf("a refused request recorded the recovery file as saved: %v", out["recovery_saved_at"])
+	}
+
+	e.b.site = "same-origin"
+	if code, body, _ := e.raw("GET", download); code != http.StatusOK || !strings.HasPrefix(body, "age-encryption.org/v1") {
+		t.Errorf("download from the panel's own page: %d %q", code, body)
+	}
+	if code, body, _ := e.raw("GET", "/api/backups/recovery"); code != http.StatusOK || !strings.Contains(body, "AGE-SECRET-KEY-1") {
+		t.Errorf("recovery file from the panel's own page: %d %q", code, body)
+	}
+	if b, _ := e.s.Store.Backup(ctx, id); !b.Local || len(e.core.off.fetched) != 1 {
+		t.Errorf("the download did not fetch the backup: %+v, %v", b, e.core.off.fetched)
+	}
+}
+
 func TestDeletedDatabaseKeepsBackups(t *testing.T) {
 	e := newAppEnv(t)
 	e.b.do("POST", "/api/databases", map[string]any{"id": "pg", "engine": "postgres"})

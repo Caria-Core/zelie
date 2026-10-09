@@ -90,7 +90,7 @@ func resetLogin(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	fmt.Fprintf(stdout, "Open this link to set a new password for %s. It works once, for an hour:\n\n  https://%s/reset#%s\n\n"+
-		"It also removes the account's passkeys, authenticator app and recovery codes, and logs it out everywhere.\n"+
+		"It also removes the account's passkeys, authenticator app, recovery codes and SSH keys, and logs it out everywhere.\n"+
 		"The panel asks for a new second step right after.\n", account, panelHost(ctx), token)
 	return 0
 }

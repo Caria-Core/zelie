@@ -145,14 +145,18 @@ func (s *Server) addPasskey(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) loginPasskeyOptions(w http.ResponseWriter, r *http.Request) {
-	if l, ok := s.halfLogin(w, r); ok {
+	if l, unlock, ok := s.halfLogin(w, r); ok {
+		defer unlock()
 		s.beginPasskeyCheck(w, r, l, "passkey-login")
 	}
 }
 
 func (s *Server) loginPasskey(w http.ResponseWriter, r *http.Request) {
-	if l, ok := s.halfLogin(w, r); ok && s.finishPasskeyCheck(w, r, l, "passkey-login") {
-		s.verified(w, r, l, "passkey")
+	if l, unlock, ok := s.halfLogin(w, r); ok {
+		defer unlock()
+		if s.finishPasskeyCheck(w, r, l, "passkey-login") {
+			s.verified(w, r, l, "passkey")
+		}
 	}
 }
 

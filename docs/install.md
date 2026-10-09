@@ -107,8 +107,8 @@ until the second step is set up.
 
 If you lose both your second step and your recovery codes, run `zelie reset-login` on
 the server. It prints a link, valid once for an hour, that sets a new password. It also
-removes the account's passkeys, authenticator and recovery codes and logs it out
-everywhere, so the next login sets up a second step again. With more than one
+removes the account's passkeys, authenticator, recovery codes and SSH keys and logs it
+out everywhere, so the next login sets up a second step again. With more than one
 administrator, name the account: `zelie reset-login you@example.com`.
 
 ## After the install

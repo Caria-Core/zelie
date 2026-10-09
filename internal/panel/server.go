@@ -230,10 +230,10 @@ func (s *Server) Handler() http.Handler {
 	web.HandleFunc("DELETE /api/apps/{app}/uploads/{id}", s.signedIn(s.cancelDumpUpload))
 	web.HandleFunc("POST /api/apps/{app}/uploads/{id}/finish", s.signedIn(s.finishDumpUpload))
 	web.HandleFunc("GET /api/backups/deleted", s.signedIn(s.listDeletedBackups))
-	web.HandleFunc("GET /api/backups/{id}/download", s.signedIn(s.downloadBackup))
+	web.HandleFunc("GET /api/backups/{id}/download", s.signedIn(ownPageOnly(s.downloadBackup)))
 	web.HandleFunc("POST /api/backups/{id}/restore", s.confirmed(s.restoreBackup))
 	web.HandleFunc("DELETE /api/backups/{id}", s.confirmed(s.deleteBackup))
-	web.HandleFunc("GET /api/backups/recovery", s.confirmed(s.recoveryFile))
+	web.HandleFunc("GET /api/backups/recovery", s.confirmed(ownPageOnly(s.recoveryFile)))
 	web.HandleFunc("POST /api/backups/{id}/offsite", s.signedIn(s.sendNow))
 	web.HandleFunc("GET /api/offsite", s.signedIn(s.getOffsite))
 	web.HandleFunc("PUT /api/offsite", s.confirmed(s.setOffsite))
@@ -272,7 +272,7 @@ func (s *Server) Handler() http.Handler {
 	web.HandleFunc("GET /api/games/{app}/backups", s.gameBackups(s.listBackups))
 	web.HandleFunc("POST /api/games/{app}/backups", s.gameBackups(s.backUpNow))
 	web.HandleFunc("PUT /api/games/{app}/backups/plan", s.gameBackups(s.setBackupPlan))
-	web.HandleFunc("GET /api/games/{app}/backups/{id}/download", s.gameBackups(s.downloadBackup))
+	web.HandleFunc("GET /api/games/{app}/backups/{id}/download", s.gameBackups(ownPageOnly(s.downloadBackup)))
 	web.HandleFunc("POST /api/games/{app}/backups/{id}/restore", s.gameBackupsConfirmed(s.restoreBackup))
 	web.HandleFunc("DELETE /api/games/{app}/backups/{id}", s.gameBackupsConfirmed(s.deleteBackup))
 	web.HandleFunc("POST /api/games/{app}/backups/{id}/offsite", s.gameBackups(s.sendNow))
@@ -485,6 +485,24 @@ func secureHeaders(next http.Handler) http.Handler {
 		h.Set("X-Frame-Options", "DENY")
 		next.ServeHTTP(w, r)
 	})
+}
+
+var errOwnPageOnly = msg.Define(http.StatusForbidden, "request.own_page_only", "This only works from the panel's own page.")
+
+// ownPageOnly is for GET routes that do more than read. The cross-origin
+// check leaves GET alone, and the session cookie is SameSite=Lax, so it still
+// goes along with a link from another site or an image on a page of another
+// app on the same domain. Browsers say where a request comes from, and one
+// that does not come from the panel's own page is refused. Without the
+// header the request is not from a browser, or from one too old to say.
+func ownPageOnly(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if site := r.Header.Get("Sec-Fetch-Site"); site != "" && site != "same-origin" {
+			writeError(w, errOwnPageOnly.Err())
+			return
+		}
+		next(w, r)
+	}
 }
 
 // fail logs an internal error and tells the client only that something went

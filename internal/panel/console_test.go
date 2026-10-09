@@ -672,3 +672,48 @@ func TestRateLimit(t *testing.T) {
 		t.Error("refilled too much")
 	}
 }
+
+// base64 has more than one spelling of the same bytes, so a token cannot be
+// told apart from its twin by its text.
+func TestConsoleTokenOpensOnceWhateverItsSpelling(t *testing.T) {
+	e := newConsoleEnv(t)
+	e.newGame(t, "survival", consoleEggURL, map[string]any{"ports": 1})
+	status := func(token string) int {
+		c, resp, err := e.open("survival", token, nil)
+		if err == nil {
+			c.CloseNow()
+			return http.StatusSwitchingProtocols
+		}
+		if resp == nil {
+			t.Fatalf("open: %v", err)
+		}
+		return resp.StatusCode
+	}
+
+	// A token whose last character can change without changing its bytes:
+	// that depends on how long it is, so try some lengths.
+	req := httptest.NewRequest("GET", "/", nil)
+	req.AddCookie(e.b.cookie)
+	var tok, twin string
+	for n := 16; twin == ""; n++ {
+		if n > 40 {
+			t.Fatal("no token with a second spelling")
+		}
+		b, _ := json.Marshal(consoleClaims{Account: loginID(t, e.appEnv), App: "survival", Session: sessionHash(req), Expires: e.now().Add(time.Minute).Unix(), Nonce: make([]byte, n)})
+		tok = base64.RawURLEncoding.EncodeToString(e.s.Sealer.Seal(b, consoleSealPurpose))
+		raw, _ := base64.RawURLEncoding.DecodeString(tok)
+		for _, c := range "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_" {
+			try := tok[:len(tok)-1] + string(c)
+			if got, err := base64.RawURLEncoding.DecodeString(try); err == nil && try != tok && string(got) == string(raw) {
+				twin = try
+				break
+			}
+		}
+	}
+	if got := status(tok); got != http.StatusSwitchingProtocols {
+		t.Fatalf("first use: %d", got)
+	}
+	if got := status(twin); got != http.StatusForbidden {
+		t.Errorf("the same token spelled another way: %d", got)
+	}
+}

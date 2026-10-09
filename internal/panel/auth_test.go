@@ -28,6 +28,7 @@ type browser struct {
 	cookie *http.Cookie
 	ip     string
 	origin string
+	site   string // Sec-Fetch-Site, when a test needs to say where a request comes from
 }
 
 func (b *browser) do(method, path string, body any) (int, map[string]any) {
@@ -53,6 +54,9 @@ func (b *browser) record(method, path string, body any) *httptest.ResponseRecord
 	if b.origin != "" {
 		req.Header.Set("Origin", b.origin)
 		req.Header.Set("Sec-Fetch-Site", "cross-site")
+	}
+	if b.site != "" {
+		req.Header.Set("Sec-Fetch-Site", b.site)
 	}
 	if b.cookie != nil {
 		req.AddCookie(b.cookie)

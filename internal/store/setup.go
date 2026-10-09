@@ -42,23 +42,20 @@ func (s *Store) SetSetupToken(ctx context.Context, hash []byte, expires time.Tim
 	})
 }
 
+// CheckSetupToken says what CreateFirstAdmin would answer to this token,
+// without changing anything, so the caller can refuse before the costly
+// work of hashing a password.
+func (s *Store) CheckSetupToken(ctx context.Context, tokenHash []byte, now time.Time) error {
+	return checkSetupToken(ctx, s.db, tokenHash, now)
+}
+
 // CreateFirstAdmin spends the setup token and creates the first
 // administrator. Once it succeeds, setup is closed.
 func (s *Store) CreateFirstAdmin(ctx context.Context, tokenHash []byte, email, password string, now time.Time) (User, error) {
 	u := User{Email: email, Admin: true}
 	err := s.tx(ctx, func(tx *sql.Tx) error {
-		if err := setupOpen(ctx, tx); err != nil {
+		if err := checkSetupToken(ctx, tx, tokenHash, now); err != nil {
 			return err
-		}
-		var n int
-		err := tx.QueryRowContext(ctx,
-			"SELECT count(*) FROM setup_token WHERE hash = ? AND expires_at > ?",
-			tokenHash, now.Unix()).Scan(&n)
-		if err != nil {
-			return err
-		}
-		if n == 0 {
-			return ErrBadSetupToken
 		}
 		res, err := tx.ExecContext(ctx,
 			"INSERT INTO users (email, password, admin, created_at) VALUES (?, ?, 1, ?)",
@@ -75,13 +72,36 @@ func (s *Store) CreateFirstAdmin(ctx context.Context, tokenHash []byte, email, p
 	return u, err
 }
 
-func setupOpen(ctx context.Context, tx *sql.Tx) error {
+// querier is what a *sql.DB and a *sql.Tx share, for the checks that run
+// both on their own and inside a transaction.
+type querier interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+func setupOpen(ctx context.Context, q querier) error {
 	var n int
-	if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM users").Scan(&n); err != nil {
+	if err := q.QueryRowContext(ctx, "SELECT count(*) FROM users").Scan(&n); err != nil {
 		return err
 	}
 	if n > 0 {
 		return ErrSetupDone
+	}
+	return nil
+}
+
+func checkSetupToken(ctx context.Context, q querier, tokenHash []byte, now time.Time) error {
+	if err := setupOpen(ctx, q); err != nil {
+		return err
+	}
+	var n int
+	err := q.QueryRowContext(ctx,
+		"SELECT count(*) FROM setup_token WHERE hash = ? AND expires_at > ?",
+		tokenHash, now.Unix()).Scan(&n)
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrBadSetupToken
 	}
 	return nil
 }

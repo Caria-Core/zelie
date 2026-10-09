@@ -402,7 +402,12 @@ func (s *Server) sftpGrant(ctx context.Context, req sftpd.AuthRequest) (sftpd.Gr
 	}
 	switch {
 	case errors.Is(err, store.ErrNotFound):
-		auth.DummySFTPCheck(req.Password)
+		// A key request is cheap whether or not the server exists, so only
+		// a password needs the fake hash to look the same. Hashing for keys
+		// too would let anyone tie up the hash slot, uncounted.
+		if req.Key == nil {
+			auth.DummySFTPCheck(req.Password)
+		}
 		return none, false, nil
 	case err != nil:
 		return none, false, err
@@ -500,10 +505,20 @@ func (s *Server) sftpAuth(w http.ResponseWriter, r *http.Request) {
 	if net.ParseIP(ip) == nil {
 		ip = "unknown"
 	}
-	lim, now := s.sftpLimits(), s.now()
+	lim := s.sftpLimits()
 	password := req.Key == nil
 	// One /64 is one client, as in the service.
 	ipKey := sftpd.LimitKey(ip)
+	if password {
+		// Wrong passwords are counted only after the hash is checked, so
+		// parallel guesses are let in one at a time.
+		unlock, err := lockBoth(r.Context(), lim.byIP, ipKey, lim.byGame, req.Server)
+		if err != nil {
+			return // the service has gone
+		}
+		defer unlock()
+	}
+	now := s.now()
 	if password && lim.byIP.Wait(ipKey, now) > 0 {
 		writeError(w, errSFTPWait.Err())
 		return
@@ -518,8 +533,10 @@ func (s *Server) sftpAuth(w http.ResponseWriter, r *http.Request) {
 		return
 	case !ok:
 		if password {
-			lim.byIP.Add(ipKey, now)
-			lim.byGame.Add(req.Server, now)
+			if err := errors.Join(lim.byIP.Add(ipKey, now), lim.byGame.Add(req.Server, now)); err != nil {
+				s.fail(w, "check an sftp login", err)
+				return
+			}
 		}
 		s.Log.Info("sftp login refused", "server", truncate(req.Server, 64), "ip", ip, "key", !password)
 		if serverBusy {

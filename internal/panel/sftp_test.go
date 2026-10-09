@@ -292,6 +292,28 @@ func TestSFTPKeyLogin(t *testing.T) {
 	}
 }
 
+// A key request costs the same cheap lookup whether or not the server is
+// there. Hashing for it would be work anyone could ask for without being
+// counted, and a way to tell which servers exist.
+func TestSFTPKeyRequestsForMissingServersDoNotHash(t *testing.T) {
+	e := newSFTPEnv(t)
+	_, pub := ed25519Key(t, "k")
+	if n := hashesDuring(func() {
+		for range 20 {
+			if code, _ := e.login(t, sftpd.AuthRequest{Server: "nothing-here", Key: pub.Marshal()}); code != http.StatusForbidden {
+				t.Errorf("a key for a server that is not there: %d", code)
+			}
+		}
+	}); n != 0 {
+		t.Errorf("key requests hashed %d passwords", n)
+	}
+	// A password for a server that is not there still costs a hash, so it
+	// takes as long as one for a server that is.
+	if n := hashesDuring(func() { e.login(t, sftpd.AuthRequest{Server: "nothing-here", Password: "x"}) }); n == 0 {
+		t.Error("a password for a server that is not there was not hashed")
+	}
+}
+
 func loginID(t *testing.T, e *appEnv) int64 {
 	t.Helper()
 	acct, err := e.s.Store.AccountByEmail(context.Background(), "a@example.com")

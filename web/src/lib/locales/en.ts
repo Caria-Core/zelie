@@ -19,7 +19,7 @@ export default {
 	'setup.noToken': 'This page needs the link printed on the server. Run zelie setup-link there to get a new one.',
 	'setup.done': 'Setup is already complete.',
 	'reset.title': 'Back into Zelie.',
-	'reset.lead': 'Choose a new password. This also removes the account\'s passkeys, authenticator app and recovery codes and logs it out everywhere; you set up a second step right after.',
+	'reset.lead': 'Choose a new password. This also removes the account\'s passkeys, authenticator app, recovery codes and SSH keys and logs it out everywhere; you set up a second step right after.',
 	'reset.password': 'New password',
 	'reset.noToken': 'This page needs the link printed on the server. Run zelie reset-login there to get one.',
 

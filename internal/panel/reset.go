@@ -15,6 +15,7 @@ import (
 
 	"github.com/Caria-Core/zelie/internal/auth"
 	"github.com/Caria-Core/zelie/internal/msg"
+	"github.com/Caria-Core/zelie/internal/sftpd"
 	"github.com/Caria-Core/zelie/internal/store"
 )
 
@@ -68,7 +69,8 @@ func (s *Server) resetLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now, ip := s.now(), clientIP(r)
-	if wait := s.guards.byIP.Wait(ip, now); wait > 0 {
+	ipKey := sftpd.LimitKey(ip)
+	if wait := s.guards.byIP.Wait(ipKey, now); wait > 0 {
 		writeError(w, tooMany(wait))
 		return
 	}
@@ -78,17 +80,25 @@ func (s *Server) resetLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	token, _ := base64.RawURLEncoding.DecodeString(req.Token)
 	hash := sha256.Sum256(token)
-	u, err := s.Store.ResetLogin(r.Context(), hash[:], auth.HashPassword(req.Password), now)
+	// As in setup, the password is hashed only for a token that is good.
+	var u store.User
+	err := s.Store.CheckResetToken(r.Context(), hash[:], now)
+	if err == nil {
+		u, err = s.Store.ResetLogin(r.Context(), hash[:], auth.HashPassword(req.Password), now)
+	}
 	switch {
 	case errors.Is(err, store.ErrBadResetToken):
-		s.guards.byIP.Add(ip, now)
+		if err := s.guards.byIP.Add(ipKey, now); err != nil {
+			s.fail(w, "reset login", err)
+			return
+		}
 		writeError(w, errBadReset.Err())
 		return
 	case err != nil:
 		s.fail(w, "reset login", err)
 		return
 	}
-	s.Log.Warn("login reset: new password, second steps removed", "user", u.ID, "ip", ip)
+	s.Log.Warn("login reset: new password, second steps and SSH keys removed", "user", u.ID, "ip", ip)
 	if err := s.startSession(w, r, u.ID, false); err != nil {
 		s.fail(w, "start session", err)
 		return

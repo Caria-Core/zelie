@@ -199,6 +199,44 @@ func TestRestoreGameBackupStopsAndStartsTheServer(t *testing.T) {
 	}
 }
 
+// A game server's backup can be kept off-site only too, so its download is
+// held to the panel's own page as an app's is.
+func TestGameBackupFilesComeOnlyFromThePanelsOwnPage(t *testing.T) {
+	e := newPowerEnv(t)
+	ctx := context.Background()
+	e.newGame(t, "one", "https://example.com/e.js", map[string]any{"ports": 1})
+	e.b.do("POST", "/api/games/one/backups", nil)
+	e.s.jobs.Wait()
+	id := int64(e.gameBackups(t, "one")[0]["id"].(float64))
+	backup, err := e.s.Store.Backup(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.core.off.remote = map[string]bool{"one/" + backup.File: true}
+	if err := e.s.Store.SetLocal(ctx, id, false, time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+
+	download := fmt.Sprintf("/api/games/one/backups/%d/download", id)
+	for _, site := range []string{"cross-site", "same-site", "none"} {
+		e.b.site = site
+		if code, out := e.b.do("GET", download, nil); code != http.StatusForbidden || out["code"] != "request.own_page_only" {
+			t.Errorf("GET %s from %s: %d %v", download, site, code, out)
+		}
+	}
+	if b, _ := e.s.Store.Backup(ctx, id); b.Local || len(e.core.off.fetched) != 0 {
+		t.Errorf("a refused download fetched the backup: %+v, %v", b, e.core.off.fetched)
+	}
+
+	e.b.site = "same-origin"
+	if code, body, _ := e.raw("GET", download); code != http.StatusOK || !strings.HasPrefix(body, "age-encryption.org/v1") {
+		t.Errorf("download from the panel's own page: %d %q", code, body)
+	}
+	if b, _ := e.s.Store.Backup(ctx, id); !b.Local || len(e.core.off.fetched) != 1 {
+		t.Errorf("the download did not fetch the backup: %+v, %v", b, e.core.off.fetched)
+	}
+}
+
 func TestGameBackupRoutesBelongToTheServer(t *testing.T) {
 	e := newPowerEnv(t)
 	e.newGame(t, "one", "https://example.com/e.js", map[string]any{"ports": 1})
