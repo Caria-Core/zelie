@@ -338,7 +338,12 @@ func TestConsoleStateFollowsTheServer(t *testing.T) {
 	// The power message does what the endpoint does.
 	send(t, c, map[string]string{"type": "power", "action": "start"})
 	readUntil(t, c, func(m map[string]any) bool { return m["type"] == "state" && m["state"] == "starting" })
-	e.settle(t, "survival")
+	// The state comes from the queued deployment, which may not have been
+	// handed to its runner yet, so waiting for the runners is not enough.
+	waitFor(t, func() bool {
+		_, err := e.s.Store.LiveDeployment(context.Background(), "survival")
+		return err == nil
+	})
 	id := e.liveContainer(t, "survival")
 	e.core.emit(id, "Done (1s)! For help, type \"help\"\n")
 	readUntil(t, c, isLine("Done (1s)! For help, type \"help\""))

@@ -416,11 +416,15 @@ func TestStartedAppIsWatchedEvenIfItsDeploymentFails(t *testing.T) {
 	e.core.mu.Lock()
 	e.core.crash = true
 	e.core.mu.Unlock()
-	if code, _ := e.b.do("POST", "/api/apps/web/start", nil); code != http.StatusCreated {
+	code, out := e.b.do("POST", "/api/apps/web/start", nil)
+	if code != http.StatusCreated {
 		t.Fatalf("start: %d", code)
 	}
-	if d := e.settle(t, "web"); d.State != store.DeployFailed {
-		t.Fatalf("deployment %+v", d)
+	e.s.deploys.wg.Wait()
+	// By now the supervisor may have queued the next try, so the start's own
+	// deployment is looked up rather than the newest.
+	if d, err := e.s.Store.Deployment(context.Background(), "web", int64(out["id"].(float64))); err != nil || d.State != store.DeployFailed {
+		t.Fatalf("deployment %+v %v", d, err)
 	}
 	if !e.s.loops.running("supervise") {
 		t.Error("nothing watches an app that was started and did not come up")

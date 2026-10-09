@@ -114,7 +114,8 @@ func TestRestartDoesNotUndoADeployment(t *testing.T) {
 	}
 
 	// The same when the deployment has not started yet: the restart is not
-	// a reason to skip it.
+	// a reason to skip it. Both wait for the app and either may go first;
+	// either way the new version is what ends up live.
 	e.s.Source = e.source
 	e.source.commit = strings.Repeat("c", 40)
 	unlock := e.s.deploys.lock("web")
@@ -127,11 +128,11 @@ func TestRestartDoesNotUndoADeployment(t *testing.T) {
 	if deploy.State == store.DeploySkipped || deploy.Version != strings.Repeat("c", 40) {
 		t.Fatalf("the deployment was skipped for a restart: %+v", deploy)
 	}
-	if restart.State != store.DeployLive || restart.Image != deploy.Image {
-		t.Fatalf("the restart put back %s, want %s: %+v", restart.Image, deploy.Image, restart)
+	if restart.State != store.DeployLive && restart.State != store.DeployReplaced {
+		t.Fatalf("restart %+v", restart)
 	}
-	if live, _ := e.s.Store.LiveDeployment(context.Background(), "web"); live.ID != restart.ID {
-		t.Errorf("live deployment %+v", live)
+	if live, _ := e.s.Store.LiveDeployment(context.Background(), "web"); live.Image != deploy.Image {
+		t.Errorf("live is %s, want %s: %+v", live.Image, deploy.Image, live)
 	}
 }
 
