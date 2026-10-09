@@ -1,6 +1,7 @@
 import { api, ApiError } from './api';
 import { reload as reloadList } from './apps.svelte';
 import { say, type Msg } from './i18n';
+import { leaveIfSignedOut } from './session.svelte';
 
 export type GameVariable = {
 	env: string;
@@ -85,16 +86,38 @@ export type PortRange = { ip: string; ports: string; first: number; last: number
 // The game server open in its pages. The layout loads it and the console
 // reports what the socket says the state is, which is faster than a poll.
 // gone says why the server is missing, when it was a copy that failed and was removed.
-export const game = $state<{ info: Game | null; missing: boolean; gone: string; live: string }>({ info: null, missing: false, gone: '', live: '' });
+// offline is set while the panel cannot be reached; what was loaded stays.
+export const game = $state<{ info: Game | null; missing: boolean; gone: string; live: string; offline: boolean }>({
+	info: null,
+	missing: false,
+	gone: '',
+	live: '',
+	offline: false
+});
+
+// The server asked for last, so a slower answer about another one is dropped.
+let wanted = '';
 
 export async function loadGame(id: string): Promise<void> {
+	wanted = id;
 	try {
-		game.info = await api<Game>('GET', `/games/${encodeURIComponent(id)}`);
+		const info = await api<Game>('GET', `/games/${encodeURIComponent(id)}`);
+		if (wanted !== id) return;
+		game.info = info;
 		game.missing = false;
 		game.gone = '';
+		game.offline = false;
 	} catch (err) {
-		game.missing = true;
-		game.gone = err instanceof ApiError && err.msg.code === 'game.clone_failed' ? say(err.msg) : '';
+		if (wanted !== id || leaveIfSignedOut(err)) return;
+		if (err instanceof ApiError && (err.status === 404 || err.status === 403)) {
+			game.missing = true;
+			game.gone = err.msg.code === 'game.clone_failed' ? say(err.msg) : '';
+			game.offline = false;
+		} else {
+			// A dropped connection or a panel that is restarting says nothing
+			// about the server, and whatever the page holds must stay.
+			game.offline = true;
+		}
 	}
 }
 

@@ -4,13 +4,15 @@
 	import { page } from '$app/state';
 	import { api } from '$lib/api';
 	import { apps, gameListState, isDatabase, isGame, reload, shownState } from '$lib/apps.svelte';
+	import { messageOf } from '$lib/errors';
 	import { t } from '$lib/i18n';
 	import { loadServer, server } from '$lib/server.svelte';
-	import { refresh, session } from '$lib/session.svelte';
+	import { leaveIfSignedOut, refresh, session } from '$lib/session.svelte';
 	import AppIcon from '$lib/ui/AppIcon.svelte';
 	import AskDialog from '$lib/ui/AskDialog.svelte';
 	import Brand from '$lib/ui/Brand.svelte';
 	import ConfirmDialog from '$lib/ui/ConfirmDialog.svelte';
+	import LoadError from '$lib/ui/LoadError.svelte';
 	import StateDot from '$lib/ui/StateDot.svelte';
 	import ThemeSwitch from '$lib/ui/ThemeSwitch.svelte';
 
@@ -24,24 +26,35 @@
 		menu = false;
 	});
 
-	onMount(() => {
-		let timer: ReturnType<typeof setInterval>;
-		(async () => {
+	let timer: ReturnType<typeof setInterval>;
+	// Why the first request failed, if it did. Trying again asks once more.
+	let failed = $state('');
+
+	async function start() {
+		failed = '';
+		try {
 			const me = await refresh();
 			if (!me.logged_in || !me.verified) return goto(me.logged_in && me.enroll ? '/enroll' : '/login');
 			ready = true;
-			await reload();
-			loadServer().catch(() => {});
-			// Apps can stop on their own and deployments move on, so the list
-			// is refreshed while the tab is in view. A new release is rare;
-			// the panel looks for one once a day.
-			let ticks = 0;
-			timer = setInterval(() => {
-				if (document.visibilityState !== 'visible') return;
-				reload().catch(() => {});
-				if (++ticks % 120 === 0) loadServer().catch(() => {});
-			}, 5000);
-		})();
+		} catch (err) {
+			failed = messageOf(err);
+			return;
+		}
+		await reload().catch(() => {});
+		loadServer().catch(() => {});
+		// Apps can stop on their own and deployments move on, so the list
+		// is refreshed while the tab is in view. A new release is rare;
+		// the panel looks for one once a day.
+		let ticks = 0;
+		timer = setInterval(() => {
+			if (document.visibilityState !== 'visible') return;
+			reload().catch(leaveIfSignedOut);
+			if (++ticks % 120 === 0) loadServer().catch(() => {});
+		}, 5000);
+	}
+
+	onMount(() => {
+		start();
 		return () => clearInterval(timer);
 	});
 
@@ -138,4 +151,8 @@
 	</div>
 	<ConfirmDialog />
 	<AskDialog />
+{:else if failed}
+	<main class="mx-auto flex min-h-dvh max-w-sm flex-col justify-center px-6">
+		<LoadError message={failed} retry={start} />
+	</main>
 {/if}

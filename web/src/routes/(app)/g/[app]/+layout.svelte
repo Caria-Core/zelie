@@ -13,6 +13,7 @@
 	import Button from '$lib/ui/Button.svelte';
 	import CloneDialog from '$lib/ui/CloneDialog.svelte';
 	import ErrorText from '$lib/ui/ErrorText.svelte';
+	import OfflineNotice from '$lib/ui/OfflineNotice.svelte';
 	import StateDot from '$lib/ui/StateDot.svelte';
 
 	let { children } = $props();
@@ -33,6 +34,7 @@
 		game.missing = false;
 		game.gone = '';
 		game.live = '';
+		game.offline = false;
 		loadGame(server);
 		// Faster while something is changing, slower otherwise.
 		let timer: ReturnType<typeof setTimeout>;
@@ -149,6 +151,7 @@
 	}}
 />
 
+{#if game.offline}<OfflineNotice />{/if}
 {#if game.missing}
 	{#if game.gone}
 		<div class="flex flex-col gap-3">

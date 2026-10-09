@@ -13,6 +13,7 @@
 	import ErrorText from '$lib/ui/ErrorText.svelte';
 	import Field from '$lib/ui/Field.svelte';
 	import Lead from '$lib/ui/Lead.svelte';
+	import LoadError from '$lib/ui/LoadError.svelte';
 	import RecoveryCodes from '$lib/ui/RecoveryCodes.svelte';
 	import SSHKeys from '$lib/ui/SSHKeys.svelte';
 
@@ -41,13 +42,23 @@
 	const canPasskey = passkeysAvailable() && onDomain();
 	const factors = $derived((acct?.passkeys.length ?? 0) + (acct?.totp ? 1 : 0));
 
-	onMount(load);
+	onMount(first);
 
 	async function load() {
 		const a = await api<Account>('GET', '/account');
 		// This browser first, the rest by when they were last used.
 		a.sessions.sort((x, y) => Number(y.current) - Number(x.current));
 		acct = a;
+	}
+
+	// The first load can fail, and then there is nothing else on the page.
+	async function first() {
+		error = '';
+		try {
+			await load();
+		} catch (err) {
+			error = messageOf(err);
+		}
 	}
 
 	function show(what: typeof open) {
@@ -131,7 +142,11 @@
 <div class="flex max-w-2xl flex-col gap-8">
 	<Lead title={t('account.title')} text={' ' + t('account.lead')} />
 	{#if saved}<p role="status" class="text-sm text-ok">{saved}</p>{/if}
-	{#if !open}<ErrorText message={error} />{/if}
+	{#if !acct && error}
+		<LoadError message={error} retry={first} />
+	{:else if !open}
+		<ErrorText message={error} />
+	{/if}
 
 	{#if acct}
 		<section class={section}>

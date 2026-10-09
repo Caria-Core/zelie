@@ -15,6 +15,7 @@
 	import Button from '$lib/ui/Button.svelte';
 	import CloneDialog from '$lib/ui/CloneDialog.svelte';
 	import ErrorText from '$lib/ui/ErrorText.svelte';
+	import OfflineNotice from '$lib/ui/OfflineNotice.svelte';
 	import StateDot from '$lib/ui/StateDot.svelte';
 
 	let { children } = $props();
@@ -36,10 +37,12 @@
 	$effect(() => {
 		const app = id;
 		current.app = null;
+		current.offline = false;
 		game.info = null;
 		game.missing = false;
 		game.gone = '';
 		game.live = '';
+		game.offline = false;
 		refresh(app);
 		// Faster while a deployment moves, slower otherwise. Untracked:
 		// reading the app here would rerun this effect on every load.
@@ -204,6 +207,7 @@
 	}}
 />
 
+{#if current.offline || (files && game.offline)}<OfflineNotice />{/if}
 {#if current.missing}
 	{#if current.gone}
 		<div class="flex flex-col gap-3">

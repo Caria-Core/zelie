@@ -13,6 +13,7 @@ func TestPolicyHashesInlineCode(t *testing.T) {
 		"script-src 'self' 'sha256-", // two hashes follow
 		"'unsafe-hashes' 'sha256-",
 		"frame-ancestors 'none'",
+		"img-src 'self' data: https://*.steamstatic.com;", // Steam avatars, and no other site
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("policy lacks %q:\n%s", want, got)

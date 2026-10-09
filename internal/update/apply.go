@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Caria-Core/zelie/internal/install"
+	"github.com/Caria-Core/zelie/internal/msg"
 )
 
 // The binary being replaced is kept next to the new one until the next
@@ -26,14 +27,31 @@ const (
 	HealthTimeout = 90 * time.Second
 )
 
+// Why an update failed, and what became of the version it replaced.
+var (
+	errRestart  = msg.Define(0, "update.restart_failed", "The services could not be restarted: {detail}")
+	errNotUp    = msg.Define(0, "update.not_up", "{version} did not come up in {timeout}: {detail}")
+	msgBack     = msg.Define(0, "update.back", "{version} is running again.")
+	errNoOld    = msg.Define(0, "update.old_unread", "The old version could not be read back: {detail}")
+	errNoPutOld = msg.Define(0, "update.old_unplaced", "The old version could not be put back: {detail}")
+	errBackDown = msg.Define(0, "update.back_failed", "{version} did not come back up either: {detail}")
+	errNoSave   = msg.Define(0, "update.db_unsaved", "The panel's database could not be copied before the update: {detail}")
+	errBackNoDB = msg.Define(0, "update.back_without_db", "{version} is running again, but the panel's database could not be put back: {detail}. Its copy is {copy}.")
+)
+
 // Result is the outcome of the last update, as the panel shows it.
 type Result struct {
-	From    string    `json:"from"`
-	To      string    `json:"to"`
-	Running bool      `json:"running,omitempty"`
-	OK      bool      `json:"ok"`
-	Error   string    `json:"error,omitempty"`
-	At      time.Time `json:"at"`
+	From    string `json:"from"`
+	To      string `json:"to"`
+	Running bool   `json:"running,omitempty"`
+	OK      bool   `json:"ok"`
+	// Reason is why the update failed and Back what became of the old
+	// version, for the web interface to say in the user's language. Error
+	// is both in English, as earlier versions saved it.
+	Reason *msg.Msg  `json:"reason,omitempty"`
+	Back   *msg.Msg  `json:"back,omitempty"`
+	Error  string    `json:"error,omitempty"`
+	At     time.Time `json:"at"`
 }
 
 // Place puts bin where the services run from, keeping the current binary
@@ -121,7 +139,7 @@ func (f *Finisher) Run(ctx context.Context, from, to string) Result {
 	res := Result{From: from, To: to, At: f.Now()}
 	saved, err := f.saveDatabase(ctx)
 	if err != nil {
-		err = fmt.Errorf("the panel's database could not be saved: %w", err)
+		err = errNoSave.Err("detail", err.Error())
 	} else {
 		err = f.restartAndWait(ctx, to)
 	}
@@ -131,27 +149,36 @@ func (f *Finisher) Run(ctx context.Context, from, to string) Result {
 		f.save(res)
 		return res
 	}
-	res.Error = err.Error()
+	reason := msg.Wrap(err)
+	res.Reason = &reason
 	// Back to the binary that worked, and to the database it understands.
-	if rerr := Revert(f.Root); rerr != nil {
-		res.Error += "; " + rerr.Error()
+	var back msg.Msg
+	if bin, rerr := os.ReadFile(filepath.Join(f.Root, Old)); rerr != nil {
+		back = errNoOld.With("detail", rerr.Error())
+	} else if werr := writeAtomic(filepath.Join(f.Root, install.Binary), bin); werr != nil {
+		back = errNoPutOld.With("detail", werr.Error())
 	} else {
-		restored := true
+		var dberr error
 		if saved {
-			if derr := f.restoreDatabase(ctx); derr != nil {
-				restored = false
-				res.Error += "; the panel's database could not be put back: " + derr.Error() + "; its copy is " + DBCopy
-			}
+			dberr = f.restoreDatabase(ctx)
 		}
-		if rerr := f.restartAndWait(ctx, from); rerr != nil {
-			res.Error += "; after going back: " + rerr.Error()
-		} else {
-			res.Error += "; " + from + " is running again"
-			if restored {
-				f.dropDatabaseCopy()
+		switch rerr := f.restartAndWait(ctx, from); {
+		case rerr != nil:
+			detail := msg.Wrap(rerr).Text
+			if dberr != nil {
+				detail += "; the panel's database could not be put back either: " + dberr.Error()
 			}
+			back = errBackDown.With("version", from, "detail", detail)
+		case dberr != nil:
+			// The copy stays, for whoever puts it back by hand.
+			back = errBackNoDB.With("version", from, "detail", dberr.Error(), "copy", DBCopy)
+		default:
+			back = msgBack.With("version", from)
+			f.dropDatabaseCopy()
 		}
 	}
+	res.Back = &back
+	res.Error = strings.TrimSuffix(reason.Text, ".") + ". " + back.Text
 	f.save(res)
 	return res
 }
@@ -159,7 +186,7 @@ func (f *Finisher) Run(ctx context.Context, from, to string) Result {
 func (f *Finisher) restartAndWait(ctx context.Context, version string) error {
 	args := append([]string{"restart"}, install.Services...)
 	if out, err := f.Exec(ctx, "systemctl", args...); err != nil {
-		return fmt.Errorf("systemctl restart: %v: %s", err, strings.TrimSpace(out))
+		return errRestart.Err("detail", fmt.Sprintf("%v: %s", err, strings.TrimSpace(out)))
 	}
 	// The SFTP server follows the others, but does not decide the update:
 	// it may not be set up yet on a server that never had it, and its port
@@ -176,7 +203,7 @@ func (f *Finisher) restartAndWait(ctx context.Context, version string) error {
 		}
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("%s did not come up in %s: %w", version, f.Timeout, err)
+			return errNotUp.Err("version", version, "timeout", f.Timeout.String(), "detail", err.Error())
 		case <-time.After(time.Second):
 		}
 	}

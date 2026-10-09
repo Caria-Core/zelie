@@ -7,8 +7,8 @@
 	import { sensitive } from '$lib/confirm.svelte';
 	import { messageOf } from '$lib/errors';
 	import { ago, date } from '$lib/format';
-	import { t } from '$lib/i18n';
-	import { loadServer, server, type NodeInfo, type ServerInfo } from '$lib/server.svelte';
+	import { say, t } from '$lib/i18n';
+	import { loadServer, server, type NodeInfo, type ServerInfo, type UpdateResult } from '$lib/server.svelte';
 	import Button from '$lib/ui/Button.svelte';
 	import ErrorText from '$lib/ui/ErrorText.svelte';
 	import Field from '$lib/ui/Field.svelte';
@@ -21,6 +21,13 @@
 	let updating = $state('');
 
 	const info = $derived(server.info);
+
+	// An update from an earlier version saved only English text.
+	function why(r: UpdateResult): string {
+		if (!r.reason) return r.error ?? '';
+		return [r.reason, r.back].flatMap((m) => (m ? [say(m)] : [])).join(' ');
+	}
+
 	let node = $state<NodeInfo | null>(null);
 	let override = $state('');
 	let savingAddress = $state(false);
@@ -204,7 +211,7 @@
 						<TriangleAlert size={16} strokeWidth={1.75} class="mt-0.5 shrink-0" />
 						<span
 							>{t('server.lastFailed', { version: info.last_update.to, when: ago(info.last_update.at) })}
-							<span class="text-muted">{info.last_update.error}</span></span
+							<span class="text-muted">{why(info.last_update)}</span></span
 						>
 					</p>
 				{:else if info.last_update.ok}

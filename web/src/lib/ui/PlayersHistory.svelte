@@ -33,7 +33,10 @@
 			const q = new URLSearchParams({ search: search.trim(), limit: String(size), offset: String(offset) });
 			const d = await api<PlayerList>('GET', `/games/${encodeURIComponent(app)}/players?${q}`);
 			if (mine !== seq) return;
-			players = reset ? d.players : [...players, ...d.players];
+			// Someone who joined since the last page moved to the top and pushed
+			// the rest down, so the next page starts with a row already shown.
+			const shown = new Set(players.map((p) => p.id));
+			players = reset ? d.players : [...players, ...d.players.filter((p) => !shown.has(p.id))];
 			total = d.total;
 			loaded = true;
 		} catch (err) {

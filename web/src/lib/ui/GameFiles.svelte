@@ -128,15 +128,22 @@
 		});
 	});
 
+	// Paths whose star is being saved, so a second click waits for the first.
+	const starring = new Set<string>();
+
 	async function toggleFav(p: string) {
+		if (starring.has(p)) return;
+		starring.add(p);
 		const on = favs.includes(p);
 		error = '';
 		try {
 			if (on) await files.removeFavorite(id, p);
 			else await files.addFavorite(id, p);
-			favs = on ? favs.filter((x) => x !== p) : [...favs, p];
+			favs = on ? favs.filter((x) => x !== p) : favs.includes(p) ? favs : [...favs, p];
 		} catch (err) {
 			error = messageOf(err);
+		} finally {
+			starring.delete(p);
 		}
 	}
 

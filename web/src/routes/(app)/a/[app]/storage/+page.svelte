@@ -91,6 +91,25 @@
 			await load(app.id);
 		});
 
+	// A limit below what the volume holds makes Zelie stop the app, so that
+	// one is asked about first.
+	async function chooseLimit(v: Volume, select: HTMLSelectElement) {
+		const limit = Number(select.value);
+		if (v.used_bytes !== null && v.used_bytes > limit * 2 ** 20) {
+			const ok = await ask({
+				title: t('storage.shrinkConfirm', { path: v.path, limit: megabytes(limit) }),
+				text: t('storage.shrinkConfirmText'),
+				action: t('storage.shrink'),
+				danger: true
+			});
+			if (!ok) {
+				select.value = String(v.limit_mb);
+				return;
+			}
+		}
+		setLimit(v, limit);
+	}
+
 	async function remove(v: Volume) {
 		if (!(await ask({ title: t('storage.deleteConfirm', { path: v.path }), text: t('storage.deleteConfirmText'), action: t('storage.delete'), danger: true }))) return;
 		act(() => api('DELETE', `/apps/${app.id}/volumes/${v.id}`));
@@ -157,7 +176,7 @@
 									class="h-8 rounded-lg border border-line bg-bg px-2 text-fg"
 									value={v.limit_mb}
 									disabled={busy}
-									onchange={(e) => setLimit(v, Number(e.currentTarget.value))}
+									onchange={(e) => chooseLimit(v, e.currentTarget)}
 								>
 									{#each sizeSteps(diskMB, v.limit_mb) as mb (mb)}<option value={mb}>{megabytes(mb)}</option>{/each}
 								</select>

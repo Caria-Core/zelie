@@ -98,13 +98,16 @@
 		}
 	}
 
+	// Apart from error, which belongs to the off-site storage above it.
+	let recoveryError = $state('');
+
 	async function recovery() {
-		error = '';
+		recoveryError = '';
 		try {
 			await saveRecovery();
 			await load();
 		} catch (err) {
-			error = messageOf(err);
+			recoveryError = messageOf(err);
 		}
 	}
 
@@ -316,6 +319,7 @@
 					{data.recovery_saved_at ? t('backups.recoverySaved', { when: date(data.recovery_saved_at) }) : t('offsite.recoveryNever')}
 				</p>
 			</div>
+			{#if recoveryError}<div class="sm:pl-14"><ErrorText message={recoveryError} /></div>{/if}
 		</section>
 	{:else}
 		<ErrorText message={error} />

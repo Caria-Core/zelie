@@ -248,9 +248,9 @@
 					retry();
 				};
 			} catch (err) {
-				// Someone who lost access, or a server that is gone, will not get
-				// it back by asking again.
-				if (err instanceof ApiError && (err.status === 403 || err.status === 404)) {
+				// A session that ended, someone who lost access, or a server that
+				// is gone will not come back by asking again.
+				if (err instanceof ApiError && (err.status === 401 || err.status === 403 || err.status === 404)) {
 					stopped = say(err.msg);
 					return;
 				}

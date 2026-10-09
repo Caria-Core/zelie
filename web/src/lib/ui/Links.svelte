@@ -83,7 +83,13 @@
 		try {
 			// A game server restarts through its power controls.
 			const target = appNamed(id);
-			if (target && isGame(target)) await power(id, 'restart');
+			const game = !!target && isGame(target);
+			if (id !== app.id) {
+				// Another app than the one this page is about. Its page state is
+				// not touched, only the list.
+				if (game) await api('POST', `/games/${encodeURIComponent(id)}/power`, { action: 'restart' });
+				else await api('POST', `/apps/${encodeURIComponent(id)}/restart`);
+			} else if (game) await power(id, 'restart');
 			else await restart(id);
 			await reload();
 			pending = pending.filter((p) => p !== id);

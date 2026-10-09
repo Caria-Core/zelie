@@ -199,6 +199,54 @@ func TestUpdateThatFailsGoesBack(t *testing.T) {
 	if last, _ := Last(root); last.OK || last.Error == "" {
 		t.Errorf("saved %+v", last)
 	}
+	// The failure is saved as messages, not only as English text.
+	if res.Reason == nil || res.Reason.Code != "update.not_up" || res.Reason.Params["version"] != "v1.2.3" {
+		t.Errorf("reason %+v", res.Reason)
+	}
+	if res.Back == nil || res.Back.Code != "update.back" || res.Back.Params["version"] != "v1.2.2" {
+		t.Errorf("back %+v", res.Back)
+	}
+	last, _ := Last(root)
+	if last.Reason == nil || last.Reason.Code != "update.not_up" || last.Back == nil || last.Back.Code != "update.back" {
+		t.Errorf("messages not saved: %+v", last)
+	}
+}
+
+func TestUpdateThatCannotGoBack(t *testing.T) {
+	root := setup(t)
+	os.Remove(filepath.Join(root, Old))
+	f := &Finisher{
+		Root: root, Timeout: time.Second, Now: time.Now,
+		Exec: func(context.Context, string, ...string) (string, error) {
+			return "Failed to restart", errors.New("exit status 1")
+		},
+		Healthy: func(context.Context, string) error { return nil },
+	}
+	res := f.Run(context.Background(), "v1.2.2", "v1.2.3")
+	if res.OK || res.Reason == nil || res.Reason.Code != "update.restart_failed" || !strings.Contains(res.Reason.Text, "Failed to restart") {
+		t.Errorf("reason %+v", res.Reason)
+	}
+	if res.Back == nil || res.Back.Code != "update.old_unread" {
+		t.Errorf("back %+v", res.Back)
+	}
+	if !strings.Contains(res.Error, res.Reason.Text) || !strings.Contains(res.Error, res.Back.Text) {
+		t.Errorf("error %q lacks the messages", res.Error)
+	}
+}
+
+func TestLastReadsAnEarlierFailure(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, filepath.Dir(StateFile)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	old := `{"from":"v1.0.0","to":"v1.0.1","ok":false,"error":"the panel does not answer","at":"2026-01-01T00:00:00Z"}`
+	if err := os.WriteFile(filepath.Join(root, StateFile), []byte(old), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	last, err := Last(root)
+	if err != nil || last.Error != "the panel does not answer" || last.Reason != nil {
+		t.Errorf("%+v, %v", last, err)
+	}
 }
 
 // panelDatabase puts a panel database in the server's place, as the old
@@ -311,7 +359,7 @@ func TestUpdateStopsWhenTheDatabaseCannotBeSaved(t *testing.T) {
 	exec, healthy := server(root, &ran)
 	f := &Finisher{Root: root, Timeout: 1500 * time.Millisecond, Now: time.Now, Exec: exec, Healthy: healthy}
 	res := f.Run(context.Background(), "v1.2.2", "v1.2.3")
-	if res.OK || !strings.Contains(res.Error, "the panel's database could not be saved") || !strings.Contains(res.Error, "v1.2.2 is running again") {
+	if res.OK || res.Reason == nil || res.Reason.Code != "update.db_unsaved" || res.Back == nil || res.Back.Code != "update.back" {
 		t.Fatalf("%+v", res)
 	}
 	if read(root, install.Binary) != "old binary" || read(root, install.PanelDB) != "schema 31" {
@@ -362,7 +410,7 @@ func TestUpdateRefusesWhatIsNotTheDatabase(t *testing.T) {
 			case <-time.After(10 * time.Second):
 				t.Fatal("the update waits for what it was to copy")
 			}
-			if res.OK || !strings.Contains(res.Error, "the panel's database could not be saved") {
+			if res.OK || res.Reason == nil || res.Reason.Code != "update.db_unsaved" {
 				t.Fatalf("%+v", res)
 			}
 			if read(root, install.Binary) != "old binary" {
@@ -468,5 +516,34 @@ func TestWriteAtomicByTwoAtOnce(t *testing.T) {
 	}
 	if fi, _ := os.Stat(path); fi.Mode().Perm() != 0o755 {
 		t.Errorf("mode %v", fi.Mode())
+	}
+}
+
+// A database that cannot be put back is said, and its copy is kept for
+// whoever puts it back by hand. Here the new version failed before it
+// changed the database, so the old one comes up on it all the same.
+func TestUpdateThatCannotPutTheDatabaseBackKeepsTheCopy(t *testing.T) {
+	root := setup(t)
+	panelDatabase(t, root)
+	var ran []string
+	_, healthy := server(root, &ran)
+	copy := filepath.Join(root, DBCopy)
+	f := &Finisher{Root: root, Timeout: 1500 * time.Millisecond, Now: time.Now,
+		Exec: func(context.Context, string, ...string) (string, error) { return "", nil },
+		Healthy: func(ctx context.Context, version string) error {
+			if version == "v1.2.3" {
+				os.Chmod(copy, 0)
+			}
+			return healthy(ctx, version)
+		}}
+	res := f.Run(context.Background(), "v1.2.2", "v1.2.3")
+	if res.OK || res.Back == nil || res.Back.Code != "update.back_without_db" || res.Back.Params["copy"] != DBCopy {
+		t.Fatalf("%+v %+v", res, res.Back)
+	}
+	if read(root, install.Binary) != "old binary" {
+		t.Errorf("binary %q", read(root, install.Binary))
+	}
+	if _, err := os.Stat(copy); err != nil {
+		t.Errorf("the copy is gone: %v", err)
 	}
 }

@@ -1,7 +1,10 @@
 import { api } from './api';
+import type { Msg } from './i18n';
 
 export type Release = { version: string; notes: string; published: string; url: string };
-export type UpdateResult = { from: string; to: string; running?: boolean; ok: boolean; error?: string; at: string };
+// reason and back say why an update failed and what became of the old version.
+// error is the same in English, and all an update from an earlier version saved.
+export type UpdateResult = { from: string; to: string; running?: boolean; ok: boolean; reason?: Msg; back?: Msg; error?: string; at: string };
 export type ServerInfo = {
 	version: string;
 	available?: Release;

@@ -11,6 +11,7 @@
 	import ErrorText from '$lib/ui/ErrorText.svelte';
 	import Field from '$lib/ui/Field.svelte';
 	import Lead from '$lib/ui/Lead.svelte';
+	import LoadError from '$lib/ui/LoadError.svelte';
 
 	let step = $state<'loading' | 'password' | 'second' | 'recovery'>('loading');
 	let me = $state<Me | null>(null);
@@ -23,11 +24,18 @@
 	let checking = $state(false);
 	const showPasskey = $derived(!!me?.methods?.includes('passkey') && passkeysAvailable());
 
-	onMount(async () => {
-		const { open } = await api<{ open: boolean }>('GET', '/setup');
-		if (open) return goto('/setup');
-		route(await refresh());
-	});
+	onMount(start);
+
+	async function start() {
+		error = '';
+		try {
+			const { open } = await api<{ open: boolean }>('GET', '/setup');
+			if (open) return goto('/setup');
+			route(await refresh());
+		} catch (err) {
+			error = messageOf(err);
+		}
+	}
 
 	function route(m: Me) {
 		me = m;
@@ -91,7 +99,9 @@
 	}
 </script>
 
-{#if step === 'password'}
+{#if step === 'loading'}
+	{#if error}<LoadError message={error} retry={start} />{/if}
+{:else if step === 'password'}
 	<Lead title={t('login.title')} text={' ' + t('login.lead')} />
 	<form class="flex flex-col gap-4" onsubmit={submitPassword}>
 		<Field label={t('common.email')} type="email" autocomplete="username" required bind:value={email} />

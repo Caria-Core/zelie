@@ -33,8 +33,11 @@
 					if (err instanceof TypeError) return api<KeyPage>('POST', `/apps/${db}/data/keys`, body);
 					throw err;
 				});
-				keys = [...keys, ...p.keys];
-				found += p.keys.length;
+				// SCAN may return a key more than once.
+				const have = new Set(keys.map((k) => k.id));
+				const fresh = p.keys.filter((k) => !have.has(k.id));
+				keys = [...keys, ...fresh];
+				found += fresh.length;
 				c = p.cursor;
 				if (c === '0' || found >= 50) break;
 			}

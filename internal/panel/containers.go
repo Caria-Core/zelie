@@ -164,9 +164,17 @@ type eventStream struct {
 	rc      *http.ResponseController
 	partial []byte
 	stop    chan struct{}
+	closed  bool
 }
 
+// keepAliveEvery is how often a quiet stream gets a comment line.
+const keepAliveEvery = 25 * time.Second
+
 func newEventStream(w http.ResponseWriter) *eventStream {
+	return newEventStreamEvery(w, keepAliveEvery)
+}
+
+func newEventStreamEvery(w http.ResponseWriter, keepAlive time.Duration) *eventStream {
 	h := w.Header()
 	h.Set("Content-Type", "text/event-stream")
 	h.Set("Cache-Control", "no-store")
@@ -176,7 +184,7 @@ func newEventStream(w http.ResponseWriter) *eventStream {
 	// Connections with no traffic get closed by some tunnels and proxies
 	// after about a minute and a half.
 	go func() {
-		t := time.NewTicker(25 * time.Second)
+		t := time.NewTicker(keepAlive)
 		defer t.Stop()
 		for {
 			select {
@@ -184,8 +192,10 @@ func newEventStream(w http.ResponseWriter) *eventStream {
 				return
 			case <-t.C:
 				ev.mu.Lock()
-				io.WriteString(ev.w, ": keep-alive\n\n")
-				ev.rc.Flush()
+				if !ev.closed {
+					io.WriteString(ev.w, ": keep-alive\n\n")
+					ev.rc.Flush()
+				}
 				ev.mu.Unlock()
 			}
 		}
@@ -232,7 +242,17 @@ func (ev *eventStream) event(name string, v any) error {
 	return ev.rc.Flush()
 }
 
-func (ev *eventStream) close() { close(ev.stop) }
+// close ends the keep-alive. It waits for a write that is under way, so
+// nothing touches the response once the handler has returned and net/http
+// has taken it back.
+func (ev *eventStream) close() {
+	ev.mu.Lock()
+	defer ev.mu.Unlock()
+	if !ev.closed {
+		ev.closed = true
+		close(ev.stop)
+	}
+}
 
 func orDefault[T int64 | float64](v, fallback T) T {
 	if v == 0 {

@@ -93,7 +93,8 @@ func policyFor(index []byte, bundles ...[]byte) string {
 		"default-src 'none'",
 		"script-src 'self' " + strings.Join(scripts, " "),
 		styleSrc,
-		"img-src 'self' data:",
+		// Steam profile pictures on the Players pages come from Steam's CDN.
+		"img-src 'self' data: https://*.steamstatic.com",
 		"font-src 'self'",
 		"connect-src 'self'",
 		"manifest-src 'self'",

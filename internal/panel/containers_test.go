@@ -7,7 +7,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/Caria-Core/zelie/internal/core"
 )
@@ -38,6 +40,63 @@ func TestLogEventsKeepCharactersWhole(t *testing.T) {
 	if ct := rec.Header().Get("Content-Type"); ct != "text/event-stream" {
 		t.Errorf("content type %q", ct)
 	}
+}
+
+// stallWriter holds the first keep-alive write until release is closed.
+type stallWriter struct {
+	header  http.Header
+	entered chan struct{}
+	release chan struct{}
+	writes  atomic.Int32
+	first   atomic.Bool
+}
+
+func (w *stallWriter) Header() http.Header { return w.header }
+func (w *stallWriter) WriteHeader(int)     {}
+func (w *stallWriter) Flush()              {}
+
+func (w *stallWriter) Write(p []byte) (int, error) {
+	if string(p) == ": keep-alive\n\n" {
+		w.writes.Add(1)
+		if w.first.CompareAndSwap(false, true) {
+			close(w.entered)
+			<-w.release
+		}
+	}
+	return len(p), nil
+}
+
+func TestEventStreamCloseWaitsForKeepAlive(t *testing.T) {
+	w := &stallWriter{header: http.Header{}, entered: make(chan struct{}), release: make(chan struct{})}
+	ev := newEventStreamEvery(w, time.Millisecond)
+	select {
+	case <-w.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("no keep-alive was written")
+	}
+	closed := make(chan struct{})
+	go func() {
+		ev.close()
+		close(closed)
+	}()
+	select {
+	case <-closed:
+		t.Fatal("close returned while a keep-alive write was under way")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(w.release)
+	select {
+	case <-closed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("close did not return after the write finished")
+	}
+	// The handler is gone now; nothing may reach the writer again.
+	n := w.writes.Load()
+	time.Sleep(20 * time.Millisecond)
+	if got := w.writes.Load(); got != n {
+		t.Errorf("%d keep-alives written after close", got-n)
+	}
+	ev.close() // closing twice is harmless
 }
 
 func TestCoreFailuresAreHidden(t *testing.T) {

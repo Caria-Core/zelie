@@ -2,24 +2,41 @@ import { api, ApiError } from './api';
 import { say } from './i18n';
 import { inProgress, reload as reloadList, type AppDetail } from './apps.svelte';
 import type { Usage } from './host.svelte';
+import { leaveIfSignedOut } from './session.svelte';
 
 // The app open in the app pages. The layout loads it, and what it uses now;
 // the tabs read both.
-export const current = $state<{ app: AppDetail | null; missing: boolean; gone: string; usage: Usage | null }>({
+// offline is set while the panel cannot be reached; what was loaded stays.
+export const current = $state<{ app: AppDetail | null; missing: boolean; gone: string; usage: Usage | null; offline: boolean }>({
 	app: null,
 	missing: false,
 	gone: '',
-	usage: null
+	usage: null,
+	offline: false
 });
 
+// The app asked for last, so a slower answer about another one is dropped.
+let wanted = '';
+
 export async function load(id: string): Promise<void> {
+	wanted = id;
 	try {
-		current.app = await api<AppDetail>('GET', `/apps/${encodeURIComponent(id)}`);
+		const app = await api<AppDetail>('GET', `/apps/${encodeURIComponent(id)}`);
+		if (wanted !== id) return;
+		current.app = app;
 		current.missing = false;
 		current.gone = '';
+		current.offline = false;
 	} catch (err) {
-		current.missing = true;
-		current.gone = err instanceof ApiError && err.msg.code === 'game.clone_failed' ? say(err.msg) : '';
+		if (wanted !== id || leaveIfSignedOut(err)) return;
+		if (err instanceof ApiError && (err.status === 404 || err.status === 403)) {
+			current.missing = true;
+			current.gone = err.msg.code === 'game.clone_failed' ? say(err.msg) : '';
+			current.offline = false;
+		} else {
+			// See loadGame.
+			current.offline = true;
+		}
 	}
 }
 

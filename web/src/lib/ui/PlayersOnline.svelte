@@ -18,6 +18,17 @@
 	let data = $state<Online | null>(null);
 	let error = $state('');
 
+	// A server that lists players by name can have two with the same name, and
+	// so the same id. The rows are told apart by how many came before.
+	const rows = $derived.by(() => {
+		const seen = new Map<string, number>();
+		return (data?.players ?? []).map((p) => {
+			const n = (seen.get(p.id) ?? 0) + 1;
+			seen.set(p.id, n);
+			return { key: `${n}:${p.id}`, p };
+		});
+	});
+
 	async function load() {
 		try {
 			const d = await api<Online>('GET', `/games/${encodeURIComponent(app)}/players/online`);
@@ -59,7 +70,7 @@
 		<p class="rounded-2xl border border-line px-4 py-6 text-center text-sm text-muted">{t('players.nobody')}</p>
 	{:else}
 		<ul class="flex flex-col divide-y divide-line rounded-2xl border border-line">
-			{#each data.players as p (p.id)}
+			{#each rows as { key, p } (key)}
 				<li class="flex flex-col gap-2 px-4 py-3">
 					<div class="flex items-center justify-between gap-3">
 						<button class="min-w-0 text-left" onclick={() => (view.detail = p.id)}><PlayerName name={p.name} steam={p.steam} /></button>
