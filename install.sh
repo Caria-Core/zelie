@@ -51,6 +51,8 @@ openssl pkeyutl -verify -pubin -inkey "$tmp/key.pem" -rawin \
 echo "Signature checked."
 
 install -m 755 "$tmp/zelie-linux-$arch" /usr/local/bin/zelie
+# exec replaces this shell, and the trap above with it.
+rm -rf "$tmp"
 # The setup asks questions, and this script's own input is the pipe from
 # curl. Without a terminal, as from automation, the flags must say it all.
 if (: </dev/tty) 2>/dev/null; then

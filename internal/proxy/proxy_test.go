@@ -10,7 +10,9 @@ import (
 	"net/http/httptest"
 	"net/netip"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -98,6 +100,114 @@ func TestRouting(t *testing.T) {
 	if rec.Code != http.StatusPermanentRedirect || rec.Header().Get("Location") != "https://app.example.com/a?b=c" {
 		t.Errorf("http redirect: %d %q", rec.Code, rec.Header().Get("Location"))
 	}
+}
+
+func TestStripPort(t *testing.T) {
+	for host, want := range map[string]string{
+		"app.example.com":      "app.example.com",
+		"app.example.com:8443": "app.example.com",
+		"203.0.113.9:443":      "203.0.113.9",
+		"[2001:db8::1]":        "2001:db8::1",
+		"[2001:db8::1]:443":    "2001:db8::1",
+		"2001:db8::1":          "2001:db8::1",
+		"[2001:db8::1]:":       "2001:db8::1",
+		"":                     "",
+	} {
+		if got := stripPort(host); got != want {
+			t.Errorf("stripPort(%q) = %q, want %q", host, got, want)
+		}
+	}
+}
+
+func TestURLHost(t *testing.T) {
+	for host, want := range map[string]string{
+		"app.example.com": "app.example.com",
+		"203.0.113.9":     "203.0.113.9",
+		"2001:db8::1":     "[2001:db8::1]",
+		"::ffff:10.0.0.1": "[::ffff:10.0.0.1]",
+	} {
+		if got := URLHost(host); got != want {
+			t.Errorf("URLHost(%q) = %q, want %q", host, got, want)
+		}
+	}
+}
+
+// A browser at https://[2001:db8::1]/ sends the address in brackets and
+// leaves the default port out of the Host header.
+func TestIPv6Host(t *testing.T) {
+	p, appURL := newTestProxy(t)
+	cfg := Config{TLS: TLSSelfSigned, Routes: []Route{{"2001:db8::1", strings.TrimPrefix(appURL, "http://")}}}
+	if err := p.Apply(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	for _, host := range []string{"[2001:db8::1]", "[2001:db8::1]:8443"} {
+		req := httptest.NewRequest("GET", "https://"+host+"/x", nil)
+		rec := httptest.NewRecorder()
+		p.serveHTTPS(rec, req)
+		if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "host="+host) {
+			t.Errorf("%s: %d %q", host, rec.Code, rec.Body)
+		}
+	}
+
+	req := httptest.NewRequest("GET", "http://[2001:db8::1]:8080/a?b=c", nil)
+	rec := httptest.NewRecorder()
+	p.serveHTTP(rec, req)
+	if rec.Code != http.StatusPermanentRedirect || rec.Header().Get("Location") != "https://[2001:db8::1]/a?b=c" {
+		t.Errorf("redirect: %d %q", rec.Code, rec.Header().Get("Location"))
+	}
+}
+
+// Every configuration swap hands the certificates made so far to the next
+// one. Handshakes that began before the swap and after it must not write
+// the same map under different locks.
+func TestSelfSignedCertificatesAreSharedSafely(t *testing.T) {
+	p, appURL := newTestProxy(t)
+	upstream := strings.TrimPrefix(appURL, "http://")
+	var routes []Route
+	var names []string
+	for i := 1; i <= 40; i++ {
+		name := "203.0.113." + strconv.Itoa(i)
+		names = append(names, name)
+		routes = append(routes, Route{name, upstream})
+	}
+	cfg := Config{TLS: TLSSelfSigned, Routes: routes}
+	if err := p.Apply(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	before := p.tls.Load()
+	if err := p.Apply(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	if after := p.tls.Load(); after == before || after.self != before.self {
+		t.Fatal("a new configuration does not take over the certificates of the one before")
+	}
+
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; ; i++ {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				if _, err := p.getCertificate(&tls.ClientHelloInfo{ServerName: names[i%len(names)]}); err != nil {
+					t.Error(err)
+					return
+				}
+			}
+		}()
+	}
+	for range 20 {
+		if err := p.Apply(context.Background(), cfg); err != nil {
+			t.Error(err)
+		}
+	}
+	close(stop)
+	wg.Wait()
 }
 
 func TestSelfSignedOnlyForRoutedHosts(t *testing.T) {

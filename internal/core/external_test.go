@@ -160,6 +160,39 @@ func TestExternalPortTaken(t *testing.T) {
 	}
 }
 
+// The panel sets the ports again when it starts. One that something else
+// holds by then is an error for the panel, not a success.
+func TestExternalSyncReportsAPortThatIsTaken(t *testing.T) {
+	s, _, _ := externalServer(t)
+	panel := &peer.Peer{UID: 999}
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	taken := l.Addr().(*net.TCPAddr).Port
+	free := freePort(t)
+
+	body := fmt.Sprintf(`{"listeners":[{"app":"db","port":%d,"target":5432},{"app":"cache","port":%d,"target":6379}]}`, taken, free)
+	rec := request(t, s, panel, "PUT", "/v1/external", body)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "external.port_taken") || !strings.Contains(rec.Body.String(), "db:") {
+		t.Errorf("taken port: %d %s", rec.Code, rec.Body)
+	}
+	// The one that could open stays open.
+	s.External.mu.Lock()
+	_, cacheOpen := s.External.open["cache"]
+	_, dbOpen := s.External.open["db"]
+	s.External.mu.Unlock()
+	if !cacheOpen || dbOpen {
+		t.Errorf("open: cache %v, db %v", cacheOpen, dbOpen)
+	}
+
+	l.Close()
+	if rec := request(t, s, panel, "PUT", "/v1/external", body); rec.Code != http.StatusNoContent {
+		t.Errorf("after the port was freed: %d %s", rec.Code, rec.Body)
+	}
+}
+
 func TestExternalUser(t *testing.T) {
 	s, f, sealed := externalServer(t)
 	panel := &peer.Peer{UID: 999}

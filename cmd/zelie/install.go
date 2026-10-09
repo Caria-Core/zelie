@@ -34,6 +34,13 @@ func runInstall(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "zelie: install needs root")
 		return 1
 	}
+	// Installing again keeps the port the tunnel already sends traffic to,
+	// unless --port says otherwise.
+	given := false
+	fs.Visit(func(f *flag.Flag) { given = given || f.Name == "port" })
+	if p, ok := install.InstalledTunnelPort(""); ok && !given {
+		*port = p
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
@@ -73,7 +80,7 @@ func runInstall(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			if err != nil {
 				return "", err
 			}
-			return "https://" + opts.Host + "/setup#" + token, nil
+			return "https://" + proxy.URLHost(opts.Host) + "/setup#" + token, nil
 		},
 		Cloudflared: cf.Install,
 	}

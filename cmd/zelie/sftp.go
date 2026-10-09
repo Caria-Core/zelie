@@ -89,16 +89,16 @@ func systemdListener(getenv func(string) string, pid int) (net.Listener, error) 
 }
 
 // setUpSFTP gives a server that was installed before SFTP existed its user
-// service and socket. An update only restarts the services it knew of, so this is
-// where the new one appears. A failure is logged and does not keep the core
-// from starting.
+// service and socket, and brings their units up to date. An update only
+// restarts the services it knew of, so this is where the new one appears. A
+// failure is logged and does not keep the core from starting.
 func setUpSFTP(ctx context.Context, log *slog.Logger) {
-	made, err := install.SetUpSFTP(ctx, runCmd, "")
+	changed, err := install.SetUpSFTP(ctx, runCmd, "")
 	switch {
 	case err != nil:
 		log.Error("set up the SFTP server", "err", err)
-	case made:
-		log.Info("SFTP server set up", "user", install.SFTPUser)
+	case changed:
+		log.Info("SFTP server set up or updated", "user", install.SFTPUser)
 	}
 }
 

@@ -2,7 +2,12 @@ package install
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
+	"regexp"
 	"slices"
+	"strconv"
+	"sync"
 )
 
 // Where an installed Zelie lives.
@@ -29,7 +34,16 @@ LockPersonality=yes
 
 // Services are Zelie's own systemd services, in the order they start. An
 // update waits for each of them to answer.
-var Services = []string{"zelie-core", "zelie-proxy", "zelie-panel"}
+var Services = []string{"zelie-core", "zelie-proxy", PanelService}
+
+// PanelService is the panel's service, the one that holds the database.
+// PanelState is its directory and PanelDB the database in it; the unit's
+// StateDirectory must name the same place.
+const (
+	PanelService = "zelie-panel"
+	PanelState   = "/var/lib/" + PanelService
+	PanelDB      = PanelState + "/panel.db"
+)
 
 // SFTPService is the SFTP server, and SFTPSocket the socket systemd holds for
 // it. Neither is in Services: the port may be taken by something else on the
@@ -41,10 +55,6 @@ const (
 
 // allServices is Services and the SFTP service.
 func allServices() []string { return append(slices.Clone(Services), SFTPService) }
-
-// enabledUnits are the units that are enabled and started at install: the
-// services, and the SFTP socket, which starts its service on demand.
-func enabledUnits() []string { return append(slices.Clone(Services), SFTPSocket) }
 
 // Units returns the systemd units for opts, by file name.
 func Units(opts Options) map[string]string {
@@ -106,8 +116,8 @@ ExecStart=` + Binary + ` panel
 Restart=always
 RestartSec=2
 CapabilityBoundingSet=
-RuntimeDirectory=zelie-panel
-StateDirectory=zelie-panel
+RuntimeDirectory=` + PanelService + `
+StateDirectory=` + PanelService + `
 StateDirectoryMode=0700
 UMask=0077
 ` + hardening + `
@@ -115,6 +125,30 @@ UMask=0077
 WantedBy=multi-user.target
 `,
 	}
+}
+
+var tunnelListen = sync.OnceValue(func() *regexp.Regexp {
+	return regexp.MustCompile(`(?m)^ExecStart=.* -http 127\.0\.0\.1:(\d+) `)
+})
+
+// tunnelPort reads the loopback port from a proxy unit made for a tunnel.
+func tunnelPort(unit string) (int, bool) {
+	m := tunnelListen().FindStringSubmatch(unit)
+	if m == nil {
+		return 0, false
+	}
+	port, err := strconv.Atoi(m[1])
+	return port, err == nil
+}
+
+// InstalledTunnelPort is the port an installed proxy listens on behind a
+// tunnel, so installing again keeps it unless told otherwise.
+func InstalledTunnelPort(root string) (int, bool) {
+	b, err := os.ReadFile(filepath.Join(root, UnitDir, "zelie-proxy.service"))
+	if err != nil {
+		return 0, false
+	}
+	return tunnelPort(string(b))
 }
 
 // SFTPUnit is the unit of the SFTP server. It has no [Install] section: the

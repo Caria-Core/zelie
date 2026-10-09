@@ -28,6 +28,9 @@ type Updater struct {
 	Place func(bin []byte) error
 	// Start runs the unit that restarts the services and checks them.
 	Start func(ctx context.Context, from, to string) error
+	// Revert puts the old binary back after a Start that failed, so the
+	// next restart does not run a release nothing has checked.
+	Revert func() error
 	// Running reports whether that unit runs now.
 	Running func(ctx context.Context) bool
 	// Last is the outcome of the last update.
@@ -39,6 +42,10 @@ type Updater struct {
 type updateRequest struct {
 	Version string `json:"version"`
 }
+
+// updateKey is the update's place among the things s.busy keeps apart. An
+// app cannot have it as its name.
+const updateKey = "zelie update"
 
 var validRelease = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^v\d+\.\d+\.\d+$`) })
 
@@ -68,6 +75,13 @@ func (s *Server) startUpdate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, errNotNewer.Err("version", req.Version))
 		return
 	}
+	// One update at a time, from the check below until the unit runs: a
+	// second Place would keep the new binary as the one to go back to.
+	if !s.busy.take(updateKey) {
+		writeError(w, http.StatusConflict, errUpdating.Err())
+		return
+	}
+	defer s.busy.done(updateKey)
 	ctx := r.Context()
 	if u.Running(ctx) {
 		writeError(w, http.StatusConflict, errUpdating.Err())
@@ -84,6 +98,9 @@ func (s *Server) startUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := u.Start(context.WithoutCancel(ctx), current, req.Version); err != nil {
+		if rerr := u.Revert(); rerr != nil {
+			s.Log.Error("the new binary is still in place: the old one could not be put back", "version", req.Version, "err", rerr)
+		}
 		s.fail(w, "start update", req.Version, err)
 		return
 	}

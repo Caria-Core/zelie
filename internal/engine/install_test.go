@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -243,5 +244,56 @@ func TestRefreshUnit(t *testing.T) {
 	changed, err = RefreshUnit(context.Background(), p, fake)
 	if err != nil || changed || len(calls) != 0 {
 		t.Fatalf("unchanged: changed=%v err=%v calls=%v", changed, err, calls)
+	}
+}
+
+// A start that is cut short after the files are written must not leave
+// containerd on the old unit: the next start sees the files in place, so
+// something else has to say the restart is still due.
+func TestRefreshUnitRetriesARestartThatWasNotQueued(t *testing.T) {
+	dir := t.TempDir()
+	p := Paths{Config: filepath.Join(dir, "etc", "config.toml"), Unit: filepath.Join(dir, "unit", "zelie-containerd.service")}
+	if err := os.MkdirAll(filepath.Dir(p.Unit), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p.Unit, []byte("[Service]\nold\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var calls []string
+	failing := ""
+	fake := func(_ context.Context, args ...string) error {
+		call := strings.Join(args, " ")
+		calls = append(calls, call)
+		if strings.HasPrefix(call, failing) && failing != "" {
+			return errors.New("systemctl was cut short")
+		}
+		return nil
+	}
+
+	for _, step := range []string{"daemon-reload", "restart"} {
+		calls, failing = nil, step
+		changed, err := RefreshUnit(context.Background(), p, fake)
+		if err == nil || !changed {
+			t.Fatalf("%s fails: changed=%v err=%v", step, changed, err)
+		}
+		// The files are in place now, as they are at the next start.
+		if got, _ := os.ReadFile(p.Unit); string(got) != UnitFile(p) {
+			t.Fatal("unit was not rewritten")
+		}
+		calls, failing = nil, ""
+		changed, err = RefreshUnit(context.Background(), p, fake)
+		want := []string{"daemon-reload", "restart --no-block zelie-containerd.service"}
+		if err != nil || !changed || !slices.Equal(calls, want) {
+			t.Fatalf("after %s failed: changed=%v err=%v calls=%v", step, changed, err, calls)
+		}
+		// Queued once, so the start after that has nothing to do.
+		calls = nil
+		if changed, err := RefreshUnit(context.Background(), p, fake); err != nil || changed || len(calls) != 0 {
+			t.Fatalf("after the restart was queued: changed=%v err=%v calls=%v", changed, err, calls)
+		}
+		// Back to the old unit for the next round.
+		if err := os.WriteFile(p.Unit, []byte("[Service]\nold\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 }

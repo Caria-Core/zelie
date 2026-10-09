@@ -216,10 +216,8 @@ func extract(archive []byte, dir string, names []string) (map[string][]byte, err
 // The new content is written next to the target and renamed over it, so a
 // crash never leaves a half-written binary behind.
 func writeIfChanged(file string, data []byte, mode os.FileMode) (bool, error) {
-	if old, err := os.ReadFile(file); err == nil && bytes.Equal(old, data) {
-		if fi, err := os.Stat(file); err == nil && fi.Mode().Perm() == mode {
-			return false, nil
-		}
+	if holds(file, data, mode) {
+		return false, nil
 	}
 	if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
 		return false, err
@@ -250,6 +248,16 @@ func writeIfChanged(file string, data []byte, mode os.FileMode) (bool, error) {
 	return true, nil
 }
 
+// holds reports whether file already has exactly this content and mode.
+func holds(file string, data []byte, mode os.FileMode) bool {
+	if old, err := os.ReadFile(file); err == nil && bytes.Equal(old, data) {
+		if fi, err := os.Stat(file); err == nil && fi.Mode().Perm() == mode {
+			return true
+		}
+	}
+	return false
+}
+
 func runSystemctl(ctx context.Context, args ...string) error {
 	out, err := exec.CommandContext(ctx, "systemctl", args...).CombinedOutput()
 	if err != nil {
@@ -274,6 +282,10 @@ func (in *Installer) logf(format string, args ...any) {
 // containerd restarts the core too, and waiting for that job from inside the
 // core would wait on our own stop. The core comes back, finds the files
 // unchanged and carries on.
+//
+// A marker file stands for the restart until it is queued. Without it, a
+// start cut short after the files were written would find them in place
+// next time and leave containerd on the old unit.
 func RefreshUnit(ctx context.Context, p Paths, systemctl func(ctx context.Context, args ...string) error) (bool, error) {
 	if systemctl == nil {
 		systemctl = runSystemctl
@@ -284,19 +296,30 @@ func RefreshUnit(ctx context.Context, p Paths, systemctl func(ctx context.Contex
 		}
 		return false, err
 	}
-	changed := false
-	for file, content := range map[string]string{
-		p.Config: ConfigFile(p),
-		p.Unit:   UnitFile(p),
-	} {
-		c, err := writeIfChanged(file, []byte(content), 0o644)
-		if err != nil {
-			return changed, err
+	files := []struct {
+		path, content string
+	}{{p.Config, ConfigFile(p)}, {p.Unit, UnitFile(p)}}
+	marker := p.Config + ".restart"
+	_, err := os.Stat(marker)
+	pending := err == nil
+	for _, f := range files {
+		if !holds(f.path, []byte(f.content), 0o644) {
+			pending = true
 		}
-		changed = changed || c
 	}
-	if !changed {
+	if !pending {
 		return false, nil
+	}
+	if err := os.MkdirAll(filepath.Dir(marker), 0o755); err != nil {
+		return false, err
+	}
+	if err := os.WriteFile(marker, nil, 0o644); err != nil {
+		return false, err
+	}
+	for _, f := range files {
+		if _, err := writeIfChanged(f.path, []byte(f.content), 0o644); err != nil {
+			return true, err
+		}
 	}
 	if err := systemctl(ctx, "daemon-reload"); err != nil {
 		return true, err
@@ -304,5 +327,5 @@ func RefreshUnit(ctx context.Context, p Paths, systemctl func(ctx context.Contex
 	if err := systemctl(ctx, "restart", "--no-block", filepath.Base(p.Unit)); err != nil {
 		return true, err
 	}
-	return true, nil
+	return true, os.Remove(marker)
 }

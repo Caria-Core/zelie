@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -80,6 +81,11 @@ func TestUnits(t *testing.T) {
 	}
 	if c := domain["zelie-core.service"]; !strings.Contains(c, "KillMode=process") || strings.Contains(c, "User=") {
 		t.Errorf("core unit:\n%s", c)
+	}
+	// The update copies the panel's database from the directory systemd makes
+	// for the panel, and the panel opens it there.
+	if u := domain["zelie-panel.service"]; !strings.Contains(u, "\nStateDirectory="+filepath.Base(PanelState)+"\n") || filepath.Dir(PanelDB) != PanelState {
+		t.Errorf("panel unit does not keep its state in %s:\n%s", PanelState, u)
 	}
 	// The SFTP server is a user of its own that binds a high port and does
 	// nothing else, whichever way the panel is reached.
@@ -456,6 +462,27 @@ func TestSetUpSFTPOnAnOlderInstall(t *testing.T) {
 		t.Errorf("after the unit was lost: %v %v", made, err)
 	}
 
+	// A unit from an older release, before its sandbox was tightened, is
+	// brought up to date. The firewall was dealt with at the first setup, so
+	// it is not touched, and a server that runs is not restarted.
+	unit := filepath.Join(f.root, UnitDir, "zelie-sftp.service")
+	os.WriteFile(unit, []byte("[Service]\nExecStart="+Binary+" sftp\n"), 0o644)
+	f.commands = nil
+	if made, err := SetUpSFTP(ctx, exec, f.root); err != nil || !made {
+		t.Errorf("after the unit went out of date: %v %v", made, err)
+	}
+	if b, _ := os.ReadFile(unit); string(b) != SFTPUnit() {
+		t.Errorf("the outdated unit stayed:\n%s", b)
+	}
+	if !slices.Contains(f.commands, "systemctl daemon-reload") {
+		t.Errorf("the change was not loaded: %v", f.commands)
+	}
+	for _, c := range f.commands {
+		if strings.HasPrefix(c, "ufw") || strings.Contains(c, "restart") {
+			t.Errorf("an update of the unit ran %q", c)
+		}
+	}
+
 	// Failing to make the user is an error to report.
 	f = newFakeServer(t)
 	bad := func(_ context.Context, name string, args ...string) (string, error) {
@@ -463,5 +490,116 @@ func TestSetUpSFTPOnAnOlderInstall(t *testing.T) {
 	}
 	if _, err := SetUpSFTP(ctx, bad, f.root); err == nil {
 		t.Error("no error when the user cannot be made")
+	}
+}
+
+// Another program on the SFTP port, an SSH server on 2222 for one, must not
+// stop the install: the Server page, where the port is changed, comes after.
+func TestInstallGoesOnWhenTheSFTPPortIsTaken(t *testing.T) {
+	f := newFakeServer(t)
+	var out bytes.Buffer
+	in := f.installer(t, Options{Mode: ModeTunnel, Host: "ist.cariacore.com", Port: freePort(t), Cloudflared: "sudo cloudflared service install " + token}, &out)
+	exec := in.Exec
+	in.Exec = func(ctx context.Context, name string, args ...string) (string, error) {
+		if cmd := name + " " + strings.Join(args, " "); cmd == "systemctl enable --now "+SFTPSocket {
+			f.commands = append(f.commands, cmd)
+			return "Job for zelie-sftp.socket failed.\nSee \"systemctl status zelie-sftp.socket\" for details.\n", errors.New("exit status 1")
+		}
+		return exec(ctx, name, args...)
+	}
+	if err := in.Run(context.Background()); err != nil {
+		t.Fatalf("%v\n%s", err, out.String())
+	}
+	if f.proxy.Panel != "ist.cariacore.com" {
+		t.Errorf("the proxy was not configured: %+v", f.proxy)
+	}
+	text := out.String()
+	for _, want := range []string{"zelie-core, zelie-proxy, zelie-panel;", "zelie-sftp.socket did not start (Job for zelie-sftp.socket failed. See", "choose another SFTP port", "/setup#abc"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("output lacks %q:\n%s", want, text)
+		}
+	}
+	// The services that matter start without the socket in the same call.
+	if !slices.Contains(f.commands, "systemctl enable --now zelie-core zelie-proxy zelie-panel") {
+		t.Errorf("commands %v", f.commands)
+	}
+
+	// A failure of the services themselves still stops the install.
+	f = newFakeServer(t)
+	in = f.installer(t, Options{Mode: ModeIP, Host: "203.0.113.9"}, &out)
+	exec = in.Exec
+	in.Exec = func(ctx context.Context, name string, args ...string) (string, error) {
+		if len(args) > 2 && args[0] == "enable" && args[2] == "zelie-core" {
+			return "Failed to start zelie-core.service", errors.New("exit status 1")
+		}
+		return exec(ctx, name, args...)
+	}
+	if err := in.Run(context.Background()); err == nil || !strings.Contains(err.Error(), "systemctl enable") {
+		t.Errorf("err %v", err)
+	}
+}
+
+func TestInstalledTunnelPort(t *testing.T) {
+	root := t.TempDir()
+	os.MkdirAll(filepath.Join(root, UnitDir), 0o755)
+	if _, ok := InstalledTunnelPort(root); ok {
+		t.Error("a port from a server with no proxy unit")
+	}
+	for _, c := range []struct {
+		opts Options
+		port int
+		ok   bool
+	}{
+		{Options{Mode: ModeTunnel, Port: 9000}, 9000, true},
+		{Options{Mode: ModeTunnel, Port: DefaultTunnelPort}, DefaultTunnelPort, true},
+		{Options{Mode: ModeDomain}, 0, false},
+		{Options{Mode: ModeIP}, 0, false},
+	} {
+		os.WriteFile(filepath.Join(root, UnitDir, "zelie-proxy.service"), []byte(Units(c.opts)["zelie-proxy.service"]), 0o644)
+		if port, ok := InstalledTunnelPort(root); port != c.port || ok != c.ok {
+			t.Errorf("%s: %d, %v", c.opts.Mode, port, ok)
+		}
+	}
+}
+
+// Installing again with another port moves the proxy, and Cloudflare keeps
+// sending traffic to the old one, so the install says so.
+func TestInstallSaysWhenTheTunnelPortMoves(t *testing.T) {
+	f := newFakeServer(t)
+	f.active = true
+	opts := Options{Mode: ModeTunnel, Host: "ist.cariacore.com", Port: freePort(t)}
+	var out bytes.Buffer
+	if err := f.installer(t, opts, &out).Run(context.Background()); err != nil {
+		t.Fatalf("%v\n%s", err, out.String())
+	}
+	if strings.Contains(out.String(), "point the Cloudflare routes") {
+		t.Errorf("a first install moved nothing:\n%s", out.String())
+	}
+	was := opts.Port
+	opts.Port = freePort(t)
+	out.Reset()
+	if err := f.installer(t, opts, &out).Run(context.Background()); err != nil {
+		t.Fatalf("%v\n%s", err, out.String())
+	}
+	want := fmt.Sprintf("the proxy listens on port %d now, not %d: point the Cloudflare routes at http://127.0.0.1:%d", opts.Port, was, opts.Port)
+	if !strings.Contains(out.String(), want) {
+		t.Errorf("output lacks %q:\n%s", want, out.String())
+	}
+	out.Reset()
+	if err := f.installer(t, opts, &out).Run(context.Background()); err != nil || strings.Contains(out.String(), "point the Cloudflare routes") {
+		t.Errorf("a second run with the same port: %v\n%s", err, out.String())
+	}
+}
+
+func TestInstallLinksBracketAnIPv6Address(t *testing.T) {
+	f := newFakeServer(t)
+	var out bytes.Buffer
+	in := f.installer(t, Options{Mode: ModeIP, Host: "2001:DB8::1"}, &out)
+	in.SetupLink = func(context.Context) (string, error) { return "", ErrAdminExists }
+	if err := in.Run(context.Background()); err != nil {
+		t.Fatalf("%v\n%s", err, out.String())
+	}
+	if !strings.Contains(out.String(), "Log in at https://[2001:db8::1].") {
+		t.Errorf("output:\n%s", out.String())
 	}
 }

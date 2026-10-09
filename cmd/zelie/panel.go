@@ -18,10 +18,7 @@ import (
 	"github.com/Caria-Core/zelie/internal/store"
 )
 
-const (
-	panelState = "/var/lib/zelie-panel"
-	proxyUser  = "zelie-proxy"
-)
+const proxyUser = "zelie-proxy"
 
 func runPanel(stderr io.Writer) int {
 	if os.Geteuid() == 0 {
@@ -38,18 +35,18 @@ func runPanel(stderr io.Writer) int {
 	if !ok {
 		log.Warn("proxy user not found, the panel is only reachable from this server", "user", proxyUser)
 	}
-	if err := os.MkdirAll(panelState, 0o700); err != nil {
+	if err := os.MkdirAll(install.PanelState, 0o700); err != nil {
 		log.Error("start panel", "err", err)
 		return 1
 	}
-	db, err := store.Open(ctx, filepath.Join(panelState, "panel.db"))
+	db, err := store.Open(ctx, install.PanelDB)
 	if err != nil {
 		log.Error("start panel", "err", err)
 		return 1
 	}
 	defer db.Close()
 
-	sealer, err := panel.LoadSealer(filepath.Join(panelState, "panel.key"))
+	sealer, err := panel.LoadSealer(filepath.Join(install.PanelState, "panel.key"))
 	if err != nil {
 		log.Error("start panel", "err", err)
 		return 1
@@ -58,7 +55,7 @@ func runPanel(stderr io.Writer) int {
 	s := &panel.Server{
 		Store: db, Sealer: sealer, Core: core.NewClient(core.DefaultSocket),
 		Proxy: proxy.NewClient(proxySocket), Source: panel.NewPublicGitHub(),
-		Log: log, ProxyUID: proxyUID, DataDir: panelState,
+		Log: log, ProxyUID: proxyUID, DataDir: install.PanelState,
 		SFTPUID: uidLookup(install.SFTPUser),
 	}
 	if err := s.Serve(ctx, panelSocket); err != nil {
@@ -95,10 +92,10 @@ func resetLogin(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// panelHost is the panel's address as the proxy serves it.
+// panelHost is the panel's address as the proxy serves it, ready for a URL.
 func panelHost(ctx context.Context) string {
 	if cfg, err := proxy.NewClient(proxySocket).Config(ctx); err == nil && cfg.Panel != "" {
-		return cfg.Panel
+		return proxy.URLHost(cfg.Panel)
 	}
 	return "<panel address>"
 }

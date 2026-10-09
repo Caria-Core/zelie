@@ -61,7 +61,8 @@ HTTPS. Choose this when your domain is on Cloudflare, when another web server al
 has ports 80 and 443, or when the server is behind NAT. The install asks for:
 
 - the panel's domain;
-- the local port the tunnel sends traffic to. Press Enter to keep 8480;
+- the local port the tunnel sends traffic to. Press Enter to keep the current one, 8480
+  on a first install;
 - if no Cloudflare connector runs on the server yet, the install command Cloudflare
   shows for a new tunnel (Zero Trust, Networks, Tunnels, then Debian). Zelie reads the
   token from it and installs the connector. It never gets access to your Cloudflare
@@ -84,7 +85,7 @@ Flags answer the questions, for example from automation:
 | `--mode` | `domain`, `tunnel` or `ip` |
 | `--host` | the panel's domain, or the server's IP address with `--mode ip` |
 | `--email` | the Let's Encrypt email, with `--mode domain` |
-| `--port` | the local port for the tunnel, 8480 if left out |
+| `--port` | the local port for the tunnel; if left out, the one an earlier install used, or 8480 |
 
 ```sh
 curl -fsSL https://github.com/Caria-Core/zelie/releases/latest/download/install.sh | sh -s -- --mode domain --host panel.example.com --email you@example.com
@@ -125,8 +126,8 @@ The panel is empty at first. A few things are worth doing early:
   server's network cards. If it shows a private address, give it the public IP or a
   domain.
 - **SFTP.** The SFTP server listens on port 2222. If another program has that port, such
-  as Pterodactyl's Wings, choose another on the Server page. If the port will not open,
-  SFTP stays where it was and the page says why.
+  as Pterodactyl's Wings, the install finishes anyway and says so; choose another on the
+  Server page. If the port will not open, SFTP stays where it was and the page says why.
 - **Off-site backups.** The Backups page takes any S3-compatible storage. Download the
   recovery file there too: without it, no other server can open your backups.
 
@@ -150,15 +151,23 @@ The panel is empty at first. A few things are worth doing early:
   `/var/lib/zelie-sftp`, and the SFTP host key in `/etc/zelie-sftp`.
 
 Running the install again is safe. It finishes an install that stopped halfway, leaves
-alone what is already done, and updates an older version.
+alone what is already done, and updates an older version. Behind a tunnel it keeps the
+port the proxy already uses; if you give another one with `--port`, the install says so,
+and the Cloudflare routes need to follow.
 
 ## Updates
 
 The Server page shows when a new release is out, with its notes. Updating downloads the
 release, checks its signature and restarts Zelie's own services. Apps, databases and
 game servers keep running. If the new version does not answer within a minute and a
-half, the old one is put back and the page says why. The previous binary stays next to
-the new one as `/usr/local/bin/zelie.old`.
+half, the old one is put back, together with the panel's database as it was before the
+update, and the page says why.
+
+The previous binary stays next to the new one as `/usr/local/bin/zelie.old`, for that
+rollback. The copy of the database is dropped once an update has succeeded, and a release
+can change how the panel's database is laid out, which an older version refuses to open.
+So going back by hand with `zelie.old` after a good update may not start the panel unless
+you also put back a copy of `/var/lib/zelie-panel/panel.db` from before the update.
 
 ## Commands
 

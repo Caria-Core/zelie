@@ -142,7 +142,7 @@ func (x *External) Sync(list []ExternalListener) error {
 	for _, l := range list {
 		if _, ok := x.open[l.App]; !ok {
 			if err := x.listen(l); err != nil {
-				errs = append(errs, err)
+				errs = append(errs, fmt.Errorf("%s: %w", l.App, err))
 			}
 		}
 	}
@@ -359,8 +359,18 @@ func (s *Server) syncExternal(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// The listeners that could open are open. The panel hears about the
+	// others rather than a success, since a port something else holds would
+	// otherwise look like the database's.
 	if err := s.External.Sync(req.Listeners); err != nil {
-		s.Log.Error("sync external access", "err", err)
+		var me *msg.Error
+		if errors.As(err, &me) {
+			s.Log.Error("sync external access", "err", err)
+			writeError(w, me.Status, err)
+			return
+		}
+		s.fail(w, "sync external access", "", err)
+		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

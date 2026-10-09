@@ -14,7 +14,8 @@ import (
 )
 
 // The binary being replaced is kept next to the new one until the next
-// update, for the rollback and for anyone who wants to go back by hand.
+// update, for the rollback. Going back by hand needs the panel's database
+// from before the update as well, and that copy does not outlive the update.
 const (
 	Old       = install.Binary + ".old"
 	StateFile = "/var/lib/zelie/update.json"
@@ -39,6 +40,7 @@ type Result struct {
 // as Old. Root is prepended to the paths; empty on a server.
 func Place(root string, bin []byte) error {
 	target := filepath.Join(root, install.Binary)
+	removeStrays(filepath.Dir(target))
 	cur, err := os.ReadFile(target)
 	if err != nil {
 		return err
@@ -51,12 +53,54 @@ func Place(root string, bin []byte) error {
 	return writeAtomic(target, bin)
 }
 
+// removeStrays deletes what a writeAtomic that was cut short left in dir:
+// a download's worth of bytes that nothing would ever clean up. Updates
+// do not overlap, so none of them is in use.
+func removeStrays(dir string) {
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		for _, name := range []string{install.Binary, Old} {
+			if strings.HasPrefix(e.Name(), filepath.Base(name)+".tmp-") {
+				os.Remove(filepath.Join(dir, e.Name()))
+			}
+		}
+	}
+}
+
+// Revert puts Old back as the binary the services run from, for an update
+// that did not come up or could not be started at all.
+func Revert(root string) error {
+	bin, err := os.ReadFile(filepath.Join(root, Old))
+	if err != nil {
+		return fmt.Errorf("the old binary could not be read back: %w", err)
+	}
+	if err := writeAtomic(filepath.Join(root, install.Binary), bin); err != nil {
+		return fmt.Errorf("the old binary could not be put back: %w", err)
+	}
+	return nil
+}
+
+// writeAtomic replaces path with data in one step. The file is written
+// under a name of its own, so two writers never share a half-written one.
 func writeAtomic(path string, data []byte) error {
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o755); err != nil {
+	f, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp-*")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	_, err = f.Write(data)
+	if err == nil {
+		err = f.Chmod(0o755)
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Rename(f.Name(), path)
+	}
+	if err != nil {
+		os.Remove(f.Name())
+	}
+	return err
 }
 
 // Finisher restarts the services on the new binary and checks that they
@@ -75,22 +119,38 @@ type Finisher struct {
 // went.
 func (f *Finisher) Run(ctx context.Context, from, to string) Result {
 	res := Result{From: from, To: to, At: f.Now()}
-	err := f.restartAndWait(ctx, to)
+	saved, err := f.saveDatabase(ctx)
+	if err != nil {
+		err = fmt.Errorf("the panel's database could not be saved: %w", err)
+	} else {
+		err = f.restartAndWait(ctx, to)
+	}
 	if err == nil {
+		f.dropDatabaseCopy()
 		res.OK = true
 		f.save(res)
 		return res
 	}
 	res.Error = err.Error()
-	// Back to the binary that worked.
-	if bin, rerr := os.ReadFile(filepath.Join(f.Root, Old)); rerr != nil {
-		res.Error += "; the old binary could not be read back: " + rerr.Error()
-	} else if werr := writeAtomic(filepath.Join(f.Root, install.Binary), bin); werr != nil {
-		res.Error += "; the old binary could not be put back: " + werr.Error()
-	} else if rerr := f.restartAndWait(ctx, from); rerr != nil {
-		res.Error += "; after going back: " + rerr.Error()
+	// Back to the binary that worked, and to the database it understands.
+	if rerr := Revert(f.Root); rerr != nil {
+		res.Error += "; " + rerr.Error()
 	} else {
-		res.Error += "; " + from + " is running again"
+		restored := true
+		if saved {
+			if derr := f.restoreDatabase(ctx); derr != nil {
+				restored = false
+				res.Error += "; the panel's database could not be put back: " + derr.Error() + "; its copy is " + DBCopy
+			}
+		}
+		if rerr := f.restartAndWait(ctx, from); rerr != nil {
+			res.Error += "; after going back: " + rerr.Error()
+		} else {
+			res.Error += "; " + from + " is running again"
+			if restored {
+				f.dropDatabaseCopy()
+			}
+		}
 	}
 	f.save(res)
 	return res

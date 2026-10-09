@@ -54,8 +54,14 @@ type certSource struct {
 	issuer *certmagic.ACMEIssuer
 	hosts  map[string]bool
 
-	selfMu     sync.Mutex
-	selfSigned map[string]*tls.Certificate
+	self *selfCerts
+}
+
+// selfCerts are the certificates made for IP addresses. A new configuration
+// takes over the same value, so the lock goes with the map.
+type selfCerts struct {
+	mu    sync.Mutex
+	certs map[string]*tls.Certificate
 }
 
 // transport is shared by every route. It never uses a proxy from the
@@ -151,9 +157,9 @@ func (p *Proxy) certSourceFor(ctx context.Context, cfg Config, hosts map[string]
 		return &certSource{mode: TLSTunnel, hosts: hosts}, nil
 	}
 	if cfg.TLS == TLSSelfSigned {
-		src := &certSource{mode: TLSSelfSigned, hosts: hosts, selfSigned: map[string]*tls.Certificate{}}
+		src := &certSource{mode: TLSSelfSigned, hosts: hosts, self: &selfCerts{certs: map[string]*tls.Certificate{}}}
 		if old != nil && old.mode == TLSSelfSigned {
-			src.selfSigned = old.selfSigned
+			src.self = old.self
 		}
 		return src, nil
 	}
@@ -280,7 +286,7 @@ func (p *Proxy) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	target := url.URL{Scheme: "https", Host: stripPort(r.Host), Path: r.URL.Path, RawQuery: r.URL.RawQuery}
+	target := url.URL{Scheme: "https", Host: URLHost(stripPort(r.Host)), Path: r.URL.Path, RawQuery: r.URL.RawQuery}
 	http.Redirect(w, r, target.String(), http.StatusPermanentRedirect)
 }
 
@@ -338,16 +344,16 @@ func (p *Proxy) getCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, er
 	if !src.hosts[name] {
 		return nil, fmt.Errorf("no route for %q", name)
 	}
-	src.selfMu.Lock()
-	defer src.selfMu.Unlock()
-	if c, ok := src.selfSigned[name]; ok {
+	src.self.mu.Lock()
+	defer src.self.mu.Unlock()
+	if c, ok := src.self.certs[name]; ok {
 		return c, nil
 	}
 	c, err := selfSignedCert(name)
 	if err != nil {
 		return nil, err
 	}
-	src.selfSigned[name] = c
+	src.self.certs[name] = c
 	return c, nil
 }
 
@@ -380,9 +386,20 @@ func selfSignedCert(name string) (*tls.Certificate, error) {
 	return &tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}, nil
 }
 
+// stripPort leaves the host of a Host header, without the port and without
+// the brackets an IPv6 address carries.
 func stripPort(host string) string {
 	if h, _, err := net.SplitHostPort(host); err == nil {
-		return strings.Trim(h, "[]")
+		return h
+	}
+	return strings.Trim(host, "[]")
+}
+
+// URLHost is host as it goes between "https://" and the path: an IPv6
+// address needs its brackets there.
+func URLHost(host string) string {
+	if ip, err := netip.ParseAddr(host); err == nil && ip.Is6() {
+		return "[" + host + "]"
 	}
 	return host
 }

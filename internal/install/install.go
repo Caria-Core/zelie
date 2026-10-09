@@ -151,7 +151,7 @@ func (in *Installer) Run(ctx context.Context) error {
 	in.summary()
 	switch {
 	case errors.Is(err, ErrAdminExists):
-		fmt.Fprintf(in.Out, "\nZelie is up to date and running. Log in at https://%s.\n", in.Opts.Host)
+		fmt.Fprintf(in.Out, "\nZelie is up to date and running. Log in at https://%s.\n", proxy.URLHost(in.Opts.Host))
 		return nil
 	case err != nil:
 		return fmt.Errorf("make the setup link: %w", err)
@@ -317,15 +317,21 @@ func (in *Installer) services(ctx context.Context) (bool, string, error) {
 	// change. One that did not run starts fresh below, and restarting it
 	// right after would only race whoever talks to it next.
 	// So must one that runs an older binary than the one now in place.
-	var restart []string
+	var restart, notes []string
 	for _, name := range unitNames() {
 		unit := strings.TrimSuffix(name, ".service")
 		file := in.path(filepath.Join(UnitDir, name))
 		changed := true
-		if old, err := os.ReadFile(file); err == nil && string(old) == units[name] {
+		old, err := os.ReadFile(file)
+		if err == nil && string(old) == units[name] {
 			changed = false
 		} else if err := os.WriteFile(file, []byte(units[name]), 0o644); err != nil {
 			return false, "", err
+		}
+		if was, ok := tunnelPort(string(old)); ok {
+			if now, ok := tunnelPort(units[name]); ok && now != was {
+				notes = append(notes, fmt.Sprintf("the proxy listens on port %d now, not %d: point the Cloudflare routes at http://127.0.0.1:%d", now, was, now))
+			}
 		}
 		if out, err := in.Exec(ctx, "systemctl", "is-active", unit); err != nil || strings.TrimSpace(out) != "active" {
 			continue
@@ -340,10 +346,18 @@ func (in *Installer) services(ctx context.Context) (bool, string, error) {
 	}
 	// The SFTP service is left out: its socket starts it, and the service
 	// has no [Install] section to enable.
-	enabled := enabledUnits()
-	args := append([]string{"enable", "--now"}, enabled...)
+	args := append([]string{"enable", "--now"}, Services...)
 	if out, err := in.Exec(ctx, "systemctl", args...); err != nil {
 		return false, "", fmt.Errorf("systemctl enable: %v: %s", err, out)
+	}
+	// The socket is apart from the rest because its port may be taken, by an
+	// SSH server on 2222 for one. That must not stop the install: the panel
+	// that sets another port does not exist yet.
+	enabled := strings.Join(Services, ", ")
+	if out, err := in.Exec(ctx, "systemctl", "enable", "--now", SFTPSocket); err != nil {
+		notes = append(notes, fmt.Sprintf("%s did not start (%s): choose another SFTP port on the Server page", SFTPSocket, strings.Join(strings.Fields(out), " ")))
+	} else {
+		enabled += ", " + SFTPSocket
 	}
 	if len(restart) > 0 {
 		args = append([]string{"restart"}, restart...)
@@ -351,7 +365,7 @@ func (in *Installer) services(ctx context.Context) (bool, string, error) {
 			return false, "", fmt.Errorf("systemctl restart: %v: %s", err, out)
 		}
 	}
-	return true, strings.Join(enabled, ", "), nil
+	return true, strings.Join(append([]string{enabled}, notes...), "; "), nil
 }
 
 // sftpPort lets the SFTP port through ufw, when ufw is on. Other firewalls

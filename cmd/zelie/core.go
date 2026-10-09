@@ -69,8 +69,10 @@ func runCore(stderr io.Writer) int {
 	// second start finds nothing to change.
 	changed, err := engine.RefreshUnit(ctx, engine.DefaultPaths, nil)
 	// With the restart queued, systemd stops this process at once. What
-	// fails after that is the stop, not a fault.
-	stopping := func() bool { return changed && ctx.Err() != nil }
+	// fails after that is the stop, not a fault. A restart that did not
+	// get queued is tried again at the next start.
+	queued := changed && err == nil
+	stopping := func() bool { return queued && ctx.Err() != nil }
 	switch {
 	case stopping():
 		log.Info("containerd unit updated, restarting containerd (the core restarts with it)")

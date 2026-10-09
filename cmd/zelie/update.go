@@ -23,7 +23,8 @@ func newUpdater() *core.Updater {
 		Fetch: func(ctx context.Context, v string) ([]byte, error) {
 			return (&update.Fetcher{}).Binary(ctx, v, runtime.GOARCH)
 		},
-		Place: func(bin []byte) error { return update.Place("", bin) },
+		Place:  func(bin []byte) error { return update.Place("", bin) },
+		Revert: func() error { return update.Revert("") },
 		Start: func(ctx context.Context, from, to string) error {
 			if err := update.Started("", from, to, time.Now()); err != nil {
 				return err
