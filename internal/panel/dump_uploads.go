@@ -250,6 +250,7 @@ func (s *Server) importDump(ctx context.Context, a store.App, u dumpUpload) (sto
 	if b.ID, err = s.Store.StartBackup(ctx, b); err != nil {
 		return b, err
 	}
+	s.wakeBackups()
 	info, err := s.Core.ImportUpload(ctx, u.ID, a.Engine)
 	var failure *msg.Msg
 	if err != nil {

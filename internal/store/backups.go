@@ -110,6 +110,23 @@ func (s *Store) SetBackupPlan(ctx context.Context, p BackupPlan) error {
 	return tx.Commit()
 }
 
+// lastGood matches, in a query over backups b, the newest finished backup of
+// an app that still exists. Expiry leaves it alone: if backups stop working,
+// the last good one stays.
+const lastGood = `(app_id IN (SELECT id FROM apps) AND state = '` + BackupDone + `'
+	AND id = (SELECT max(id) FROM backups WHERE app_id = b.app_id AND state = '` + BackupDone + `'))`
+
+// HasExpirable reports whether some backup is one that ExpiredBackups or
+// ExpiredOffsite returns once its time is up. Without one there is nothing
+// for the backup clock to do. A backup that is running counts, since the one
+// it replaces as the newest may be due when it ends.
+func (s *Store) HasExpirable(ctx context.Context) (bool, error) {
+	var has bool
+	err := s.db.QueryRowContext(ctx, "SELECT EXISTS (SELECT 1 FROM backups b WHERE local = 0 OR state = ? OR NOT "+lastGood+")",
+		BackupRunning).Scan(&has)
+	return has, err
+}
+
 // BackupPlans returns every plan.
 func (s *Store) BackupPlans(ctx context.Context) ([]BackupPlan, error) {
 	rows, err := s.db.QueryContext(ctx, "SELECT "+planColumns+" FROM backup_plans ORDER BY app_id")
@@ -289,9 +306,7 @@ func (s *Store) Backups(ctx context.Context, app string) ([]Backup, error) {
 // backups stop working, the last good one stays.
 func (s *Store) ExpiredBackups(ctx context.Context, now time.Time) ([]Backup, error) {
 	return s.queryBackups(ctx, `SELECT `+backupColumns+` FROM backups b WHERE local = 1 AND keep_until < ? AND state != ?
-		AND NOT (app_id IN (SELECT id FROM apps) AND state = ?
-			AND id = (SELECT max(id) FROM backups WHERE app_id = b.app_id AND state = ?))
-		ORDER BY id`, now.Unix(), BackupRunning, BackupDone, BackupDone)
+		AND NOT `+lastGood+` ORDER BY id`, now.Unix(), BackupRunning)
 }
 
 // ExpiredOffsite returns the backups left only off-site whose time is up
@@ -304,6 +319,15 @@ func (s *Store) ExpiredOffsite(ctx context.Context, now time.Time) ([]Backup, er
 func (s *Store) OffsiteDue(ctx context.Context, now time.Time) ([]Backup, error) {
 	return s.queryBackups(ctx, "SELECT "+backupColumns+" FROM backups WHERE state = ? AND local = 1 AND offsite IN (?, ?) AND offsite_at <= ? ORDER BY id",
 		BackupDone, OffsitePending, OffsiteFailed, now.Unix())
+}
+
+// OffsiteWaiting reports whether a backup is waiting to be sent, or to be
+// sent again, at a time before never.
+func (s *Store) OffsiteWaiting(ctx context.Context, never time.Time) (bool, error) {
+	var waiting bool
+	err := s.db.QueryRowContext(ctx, "SELECT EXISTS (SELECT 1 FROM backups WHERE state = ? AND local = 1 AND offsite IN (?, ?) AND offsite_at < ?)",
+		BackupDone, OffsitePending, OffsiteFailed, never.Unix()).Scan(&waiting)
+	return waiting, err
 }
 
 func (s *Store) queryBackups(ctx context.Context, q string, args ...any) ([]Backup, error) {

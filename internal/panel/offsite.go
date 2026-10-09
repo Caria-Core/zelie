@@ -66,44 +66,57 @@ func (s *Server) queueOffsite(ctx context.Context, b store.Backup, plan store.Ba
 	s.kickUploads()
 }
 
+// wakeUploads starts the sender, which runs while a backup waits to be sent,
+// and reports whether it started it.
+func (s *Server) wakeUploads() bool {
+	return s.loops.wake("uploads", backupEvery, s.uploadKick, s.uploadsOnce)
+}
+
+// kickUploads sends what is waiting now, instead of at the next minute.
 func (s *Server) kickUploads() {
+	if s.wakeUploads() {
+		return
+	}
 	select {
 	case s.uploadKick <- struct{}{}:
 	default:
 	}
 }
 
-// runUploads sends backups one at a time. It is apart from the schedule,
-// so a long upload does not hold back the next backups.
-func (s *Server) runUploads(ctx context.Context) {
-	t := time.NewTicker(backupEvery)
-	defer t.Stop()
-	for {
-		s.uploadsOnce(ctx)
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-		case <-s.uploadKick:
-		}
-	}
-}
-
-func (s *Server) uploadsOnce(ctx context.Context) {
+// uploadsOnce sends backups one at a time. It is apart from the schedule,
+// so a long upload does not hold back the next backups. It returns false
+// when nothing waits to be sent, or there is nowhere to send it; setting a
+// destination kicks it again.
+func (s *Server) uploadsOnce(ctx context.Context) bool {
 	due, err := s.Store.OffsiteDue(ctx, s.now())
 	if err != nil {
 		s.Log.Error("off-site storage: list", "err", err)
-		return
+		return true
 	}
-	if len(due) == 0 || !s.offsiteSet(ctx) {
-		return
+	if len(due) == 0 {
+		// A copy that failed waits for its next try.
+		waiting, err := s.Store.OffsiteWaiting(ctx, never)
+		if err != nil {
+			s.Log.Error("off-site storage: list", "err", err)
+			return true
+		}
+		return waiting
+	}
+	info, err := s.Core.Offsite(ctx)
+	if err != nil {
+		s.Log.Warn("off-site storage: ask the core", "err", err)
+		return true
+	}
+	if !info.Set {
+		return false
 	}
 	for _, b := range due {
 		if ctx.Err() != nil {
-			return
+			return true
 		}
 		s.upload(ctx, b)
 	}
+	return true
 }
 
 func (s *Server) upload(ctx context.Context, b store.Backup) {
@@ -395,6 +408,7 @@ func (s *Server) addFound(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		added++
+		s.wakeBackups()
 	}
 	s.Log.Info("off-site backups added", "count", added, "user", loginFrom(ctx).account.ID)
 	writeJSON(w, http.StatusOK, map[string]int{"added": added})

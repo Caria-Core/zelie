@@ -2,6 +2,7 @@ package panel
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
 	"sync"
@@ -91,35 +92,36 @@ func (s *Server) registry() Registry {
 	return liveRegistry{}
 }
 
-// runImageCheck looks once a day for newer builds of the tags that apps
-// and databases run. Nothing is downloaded until the user updates.
-func (s *Server) runImageCheck(ctx context.Context) {
-	t := time.NewTicker(imageCheckEvery)
-	defer t.Stop()
-	for {
-		s.checkImages(ctx)
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-		}
-	}
+// wakeImageCheck starts the image check, which runs while an app or database
+// runs a pinned image.
+func (s *Server) wakeImageCheck() {
+	s.loops.wake("image-check", imageCheckEvery, nil, s.checkImages)
 }
 
-func (s *Server) checkImages(ctx context.Context) {
+// checkImages looks for newer builds of the tags that apps and databases
+// run, which it does once a day. Nothing is downloaded until the user
+// updates. It returns false when there is no such tag to look at.
+func (s *Server) checkImages(ctx context.Context) bool {
 	apps, err := s.Store.Apps(ctx)
 	if err != nil {
 		s.Log.Error("image check: list apps", "err", err)
-		return
+		return true
 	}
+	watching := false
 	for _, a := range apps {
 		if a.Source != store.SourceImage {
 			continue
 		}
 		live, err := s.Store.LiveDeployment(ctx, a.ID)
+		if err != nil && !errors.Is(err, store.ErrNotFound) {
+			s.Log.Error("image check: load deployment", "app", a.ID, "err", err)
+			watching = true
+			continue
+		}
 		if err != nil || !engine.Pinned(live.Image) {
 			continue
 		}
+		watching = true
 		up, err := s.imageUpdate(ctx, a.Image, live.Image)
 		if err != nil {
 			s.Log.Warn("image check", "app", a.ID, "image", a.Image, "err", err)
@@ -127,6 +129,7 @@ func (s *Server) checkImages(ctx context.Context) {
 		}
 		s.imageUpdates.set(a.ID, up)
 	}
+	return watching
 }
 
 // imageUpdate compares what tag points at now with running, the pinned
@@ -196,6 +199,7 @@ func (s *Server) updateImage(w http.ResponseWriter, r *http.Request) {
 	if !s.unstop(w, r, a) {
 		return
 	}
+	defer s.wakeAfterUnstop(a)
 	id, err := s.deploy(r.Context(), a, store.Deployment{Cause: store.CauseUpdate})
 	if err != nil {
 		s.fail(w, "deploy", err)

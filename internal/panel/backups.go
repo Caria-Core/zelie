@@ -160,6 +160,7 @@ func (s *Server) makeBackup(ctx context.Context, a store.App, reason string) (st
 	if b.ID, err = s.Store.StartBackup(ctx, b); err != nil {
 		return b, err
 	}
+	s.wakeBackups()
 	info, err := s.takeBackup(ctx, a, b.ID, plan, reason)
 	var failure *msg.Msg
 	if err != nil {
@@ -190,28 +191,26 @@ func backupFailure(err error) msg.Msg {
 	return msg.Wrap(err)
 }
 
-// runBackups makes the scheduled backups and deletes the ones whose time
-// is up.
-func (s *Server) runBackups(ctx context.Context) {
-	t := time.NewTicker(backupEvery)
-	defer t.Stop()
-	for {
-		s.backupsOnce(ctx)
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-		}
-	}
+// wakeBackups starts the backup clock, which runs while a plan is on or a
+// backup can still expire. Call it when either begins: a plan is turned on,
+// a backup starts or is found off-site, or an app with backups is deleted.
+func (s *Server) wakeBackups() {
+	s.loops.wake("backups", backupEvery, nil, s.backupsOnce)
 }
 
-func (s *Server) backupsOnce(ctx context.Context) {
+// backupsOnce makes the scheduled backups and deletes the ones whose time is
+// up. It returns false when no plan is on and no backup is left that could
+// expire. The newest good backup of an app stays whatever its age, so on its
+// own it does not keep the clock running.
+func (s *Server) backupsOnce(ctx context.Context) bool {
 	plans, err := s.Store.BackupPlans(ctx)
 	if err != nil {
 		s.Log.Error("backups: list plans", "err", err)
-		return
+		return true
 	}
+	on := false
 	for _, p := range plans {
+		on = on || p.Enabled
 		if !p.Enabled || ctx.Err() != nil {
 			continue
 		}
@@ -232,6 +231,15 @@ func (s *Server) backupsOnce(ctx context.Context) {
 		s.backupBusy.done(a.ID)
 	}
 	s.pruneBackups(ctx)
+	if on {
+		return true
+	}
+	expiring, err := s.Store.HasExpirable(ctx)
+	if err != nil {
+		s.Log.Error("backups: look for backups", "err", err)
+		return true
+	}
+	return expiring
 }
 
 // lastSlot is the most recent time a backup was due at minute of the day.
@@ -484,6 +492,7 @@ func (s *Server) setBackupPlan(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, "save backup plan", err)
 		return
 	}
+	s.wakeBackups()
 	s.Log.Info("backup plan changed", "app", a.ID, "enabled", p.Enabled, "minute", p.Minute, "keep_days", p.KeepDays, "stop", p.Stop,
 		"offsite", p.Offsite, "offsite_days", p.OffsiteDays, "user", loginFrom(r.Context()).account.ID)
 	writeJSON(w, http.StatusOK, planOut(p))

@@ -109,6 +109,8 @@ type appCore struct {
 	copyHook func(from, to string)
 	// host replaces what Host says, when set.
 	host *engine.Host
+	// lists counts the times the containers were listed.
+	lists int
 }
 
 func newAppCore(t *testing.T) *appCore {
@@ -122,6 +124,7 @@ func newAppCore(t *testing.T) *appCore {
 func (c *appCore) List(context.Context) ([]engine.Status, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.lists++
 	var out []engine.Status
 	for _, s := range c.containers {
 		out = append(out, s)
@@ -604,11 +607,18 @@ type fakeProxy struct {
 	// applied sees each config right after it was applied, without the
 	// lock held.
 	applied func(proxy.Config)
+	// statsErr fails the reading of stats; statsCalls counts the readings.
+	statsErr   error
+	statsCalls int
 }
 
 func (p *fakeProxy) Stats(context.Context) (proxy.Stats, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	p.statsCalls++
+	if p.statsErr != nil {
+		return proxy.Stats{}, p.statsErr
+	}
 	return p.stats, nil
 }
 

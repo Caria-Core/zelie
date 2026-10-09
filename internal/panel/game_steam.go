@@ -288,57 +288,60 @@ type steamServer struct {
 	id   int64
 }
 
-func (s *Server) steamServers(ctx context.Context) []steamServer {
+// steamServers lists the game servers that come from Steam. whole is false
+// when a server could not be looked at, so a short list proves nothing.
+func (s *Server) steamServers(ctx context.Context) (out []steamServer, whole bool) {
 	games, err := s.Store.GameServers(ctx)
 	if err != nil {
 		s.Log.Error("steam: list game servers", "err", err)
-		return nil
+		return nil, false
 	}
-	var out []steamServer
+	whole = true
 	for _, g := range games {
 		a, err := s.Store.App(ctx, g.AppID)
+		if errors.Is(err, store.ErrNotFound) {
+			continue
+		}
 		if err != nil {
+			s.Log.Error("steam: load server", "server", g.AppID, "err", err)
+			whole = false
 			continue
 		}
 		_, e, _, err := s.gameParts(ctx, g.AppID)
 		if err != nil {
 			s.Log.Error("steam: load egg", "server", g.AppID, "err", err)
+			whole = false
 			continue
 		}
 		if id := s.steamApp(ctx, g, e); id != 0 {
 			out = append(out, steamServer{app: a, game: g, egg: e, id: id})
 		}
 	}
-	return out
+	return out, whole
 }
 
 // steamImages is the SteamCMD image while a Steam server exists, so the
 // image sweep does not delete it between two checks.
 func (s *Server) steamImages(ctx context.Context) []string {
-	if len(s.steamServers(ctx)) == 0 {
+	if servers, _ := s.steamServers(ctx); len(servers) == 0 {
 		return nil
 	}
 	return []string{steam.Image}
 }
 
-// runSteamCheck follows the Steam servers for as long as the panel runs.
-func (s *Server) runSteamCheck(ctx context.Context) {
-	t := time.NewTicker(steamRound)
-	defer t.Stop()
-	for {
-		s.steamRound(ctx)
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-		}
-	}
+// wakeSteam starts the Steam check, which follows the Steam servers for as
+// long as there are any. Call it when a game server is made or its settings
+// change, since either can make it a Steam server.
+func (s *Server) wakeSteam() {
+	s.loops.wake("steam", steamRound, nil, s.steamRound)
 }
 
-func (s *Server) steamRound(ctx context.Context) {
-	servers := s.steamServers(ctx)
+// steamRound looks at the Steam servers once. It returns false when there are
+// none.
+func (s *Server) steamRound(ctx context.Context) bool {
+	servers, whole := s.steamServers(ctx)
 	if len(servers) == 0 {
-		return
+		return !whole
 	}
 	s.steam.mu.Lock()
 	due := s.now().Sub(s.steam.triedAt) >= steamCheckEvery
@@ -370,6 +373,7 @@ func (s *Server) steamRound(ctx context.Context) {
 		}
 	}
 	s.updateEmptyServers(ctx, servers)
+	return true
 }
 
 // fetchSteamBuilds asks Steam for the newest public build of each app, in a

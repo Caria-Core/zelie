@@ -188,6 +188,7 @@ func (s *Server) runUpgrade(ctx context.Context, db store.App, d *store.Deployme
 		}
 		v, err := s.Store.UnkeepVolume(ctx, kept, s.now())
 		if err == nil {
+			s.wakeVolumes()
 			err = s.Store.SetEngineVersion(ctx, db.ID, e.Name+":"+from, from)
 		}
 		if err != nil {
@@ -222,7 +223,7 @@ func (s *Server) runUpgrade(ctx context.Context, db store.App, d *store.Deployme
 		return errUpgradeLoad.Err("detail", err.Error())
 	}
 	d.Settings = new(db.RunSettings())
-	if err := s.Store.GoLive(ctx, *d, s.now()); err != nil {
+	if err := s.goLive(ctx, *d); err != nil {
 		undo()
 		return err
 	}

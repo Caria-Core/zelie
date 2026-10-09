@@ -469,6 +469,7 @@ func (s *Server) createGame(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, "create game server", err)
 		return
 	}
+	s.wakeSteam()
 	path := gameVolumePath
 	if _, err := s.createVolume(ctx, a, volumeRequest{Path: &path, LimitMB: &disk}); err != nil {
 		undo()
@@ -866,6 +867,8 @@ func (s *Server) updateGameSettings(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, "save game settings", err)
 		return
 	}
+	// A variable can name the Steam app.
+	s.wakeSteam()
 	// The server starts from the app's image, which is pinned to a build
 	// once it has run. A new choice starts over from the tag.
 	if image != g.Image {

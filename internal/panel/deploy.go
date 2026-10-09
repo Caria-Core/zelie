@@ -130,6 +130,16 @@ func (d *deploys) lock(app string) func() {
 	return l.Unlock
 }
 
+// goLive makes d the app's live deployment and starts what watches running
+// apps, if it is not running yet.
+func (s *Server) goLive(ctx context.Context, d store.Deployment) error {
+	if err := s.Store.GoLive(ctx, d, s.now()); err != nil {
+		return err
+	}
+	s.wakeApps()
+	return nil
+}
+
 // deploy queues a new deployment of the app and returns its id. d may name
 // the commit to deploy and what caused the deployment; by default it is the
 // newest commit of the app's branch, or its image.
@@ -451,7 +461,7 @@ func (s *Server) runDeployment(ctx context.Context, appID string, id int64) {
 		fail(errRoute.Err("domain", app.Domain, "detail", err.Error()))
 		return
 	}
-	err = s.Store.GoLive(ctx, d, s.now())
+	err = s.goLive(ctx, d)
 	s.deploys.routes.Unlock()
 	if err != nil {
 		fail(err)

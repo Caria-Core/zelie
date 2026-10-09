@@ -208,6 +208,7 @@ func (s *Server) createVolume(ctx context.Context, a store.App, req volumeReques
 		s.Store.DeleteVolume(context.WithoutCancel(ctx), a.ID, v.ID)
 		return v, err
 	}
+	s.wakeVolumes()
 	return v, nil
 }
 
@@ -364,34 +365,27 @@ func volumeMounts(vols []store.Volume) []engine.VolumeMount {
 	return out
 }
 
-// watchVolumes measures the volumes now and then and stops an app whose
-// volume has grown past its limit.
-func (s *Server) watchVolumes(ctx context.Context) {
-	t := time.NewTicker(volumeCheckEvery)
-	defer t.Stop()
-	for {
-		s.checkVolumes(ctx)
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-		}
-	}
+// wakeVolumes starts the volume check, which runs while a volume exists.
+func (s *Server) wakeVolumes() {
+	s.loops.wake("volumes", volumeCheckEvery, nil, s.checkVolumes)
 }
 
-func (s *Server) checkVolumes(ctx context.Context) {
+// checkVolumes measures the volumes, which it does now and then, and stops
+// an app whose volume has grown past its limit. It returns false when there
+// is no volume to measure.
+func (s *Server) checkVolumes(ctx context.Context) bool {
 	vols, err := s.Store.Volumes(ctx, "")
 	if err != nil {
 		s.Log.Error("volumes: list", "err", err)
-		return
+		return true
 	}
 	if len(vols) == 0 {
-		return
+		return false
 	}
 	sizes, err := s.Core.VolumeSizes(ctx)
 	if err != nil {
 		s.Log.Error("volumes: measure", "err", err)
-		return
+		return true
 	}
 	s.sizes.set(sizes, s.now())
 	byApp := map[string][]store.Volume{}
@@ -412,4 +406,5 @@ func (s *Server) checkVolumes(ctx context.Context) {
 			s.Log.Error("volumes: stop app", "app", appID, "err", err)
 		}
 	}
+	return true
 }

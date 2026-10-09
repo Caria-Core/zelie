@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/caddyserver/certmagic"
 	"github.com/coder/websocket"
 )
 
@@ -388,5 +390,128 @@ func TestCounting(t *testing.T) {
 	want := Counts{Requests: 4, ClientErrors: 1, ServerErrors: 2}
 	if got := st.Hosts["app.example.com"]; got != want || len(st.Hosts) != 1 {
 		t.Errorf("stats %+v, want %+v", st.Hosts, want)
+	}
+}
+
+// requestsOf replaces the certificate requests with ones that only record
+// their context, and returns what the latest request for a host was given.
+func requestsOf(t *testing.T) func(host string) context.Context {
+	t.Helper()
+	var mu sync.Mutex
+	started := map[string]context.Context{}
+	old := manageAsync
+	manageAsync = func(ctx context.Context, _ *certmagic.Config, hosts []string) error {
+		mu.Lock()
+		defer mu.Unlock()
+		for _, h := range hosts {
+			started[h] = ctx
+		}
+		return nil
+	}
+	t.Cleanup(func() { manageAsync = old })
+	return func(host string) context.Context {
+		mu.Lock()
+		defer mu.Unlock()
+		return started[host]
+	}
+}
+
+// A certificate request retries for days, so it has to end with the host it
+// was for.
+func TestCertificateRequestsEndWithTheirHost(t *testing.T) {
+	ctxOf := requestsOf(t)
+
+	p := &Proxy{StateDir: t.TempDir(), Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	route := func(host string) Route { return Route{host, "10.210.0.4:8080"} }
+	apply := func(email string, routes ...Route) {
+		t.Helper()
+		// The request that applies a configuration is over long before the
+		// certificate comes.
+		reqCtx, end := context.WithCancel(context.Background())
+		err := p.Apply(reqCtx, Config{Email: email, Routes: routes})
+		end()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	apply("a@b.co", route("shop.example.com"), route("blog.example.com"))
+	shop, blog := ctxOf("shop.example.com"), ctxOf("blog.example.com")
+	if shop == nil || blog == nil {
+		t.Fatal("certificates were not requested for both hosts")
+	}
+	if shop.Err() != nil || blog.Err() != nil {
+		t.Fatal("a request ended with the request that applied the configuration")
+	}
+
+	// The same host again is not asked for twice.
+	apply("a@b.co", route("shop.example.com"))
+	if ctxOf("shop.example.com") != shop || shop.Err() != nil {
+		t.Error("a host that stayed was asked for again or stopped")
+	}
+	if blog.Err() == nil {
+		t.Error("the dropped host is still asking for a certificate")
+	}
+
+	// Another address for the certificate authority starts over, and ends
+	// every request of the old one.
+	apply("c@d.co", route("shop.example.com"))
+	if shop.Err() == nil {
+		t.Error("a request survived a change of email")
+	}
+	if again := ctxOf("shop.example.com"); again == shop || again.Err() != nil {
+		t.Error("the host was not asked for again under the new email")
+	}
+
+	// A host that comes back is asked for again.
+	apply("c@d.co")
+	gone := ctxOf("shop.example.com")
+	if gone.Err() == nil {
+		t.Error("the last host was dropped and still asks")
+	}
+	apply("c@d.co", route("shop.example.com"))
+	if back := ctxOf("shop.example.com"); back == gone || back.Err() != nil {
+		t.Error("a host that came back was not asked for again")
+	}
+}
+
+// A configuration that cannot be saved is not applied, so the hosts it
+// brought are not asked for either; the next try starts them.
+func TestFailedApplyEndsTheRequestsItStarted(t *testing.T) {
+	ctxOf := requestsOf(t)
+	p := &Proxy{StateDir: t.TempDir(), Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	route := func(host string) Route { return Route{host, "10.210.0.4:8080"} }
+	ctx := context.Background()
+	if err := p.Apply(ctx, Config{Email: "a@b.co", Routes: []Route{route("shop.example.com")}}); err != nil {
+		t.Fatal(err)
+	}
+	shop := ctxOf("shop.example.com")
+
+	// A directory where the file goes makes the save fail.
+	if err := os.Remove(p.configFile()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(p.configFile(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Apply(ctx, Config{Email: "a@b.co", Routes: []Route{route("shop.example.com"), route("blog.example.com")}}); err == nil {
+		t.Fatal("the configuration was applied though it could not be saved")
+	}
+	failed := ctxOf("blog.example.com")
+	if failed == nil || failed.Err() == nil {
+		t.Error("the host of a configuration that was not applied still asks for a certificate")
+	}
+	if shop.Err() != nil {
+		t.Error("a host that was already served stopped asking")
+	}
+
+	if err := os.Remove(p.configFile()); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Apply(ctx, Config{Email: "a@b.co", Routes: []Route{route("shop.example.com"), route("blog.example.com")}}); err != nil {
+		t.Fatal(err)
+	}
+	if again := ctxOf("blog.example.com"); again == failed || again.Err() != nil {
+		t.Error("the host was not asked for again once the configuration was applied")
 	}
 }

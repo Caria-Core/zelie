@@ -162,3 +162,73 @@ func TestDeleteDeployments(t *testing.T) {
 		t.Error(err)
 	}
 }
+
+func TestSettledOn(t *testing.T) {
+	ctx := context.Background()
+	s := open(t)
+	now := time.Unix(1_800_000_000, 0)
+	if err := s.CreateApp(ctx, App{ID: "web", Source: SourceImage, Image: "nginx", Port: 80, MemoryMB: 128, CPUs: 1, CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	settled := func(live int64) bool {
+		t.Helper()
+		ok, err := s.SettledOn(ctx, "web", live)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ok
+	}
+	deploy := func() Deployment {
+		t.Helper()
+		id, err := s.CreateDeployment(ctx, Deployment{AppID: "web", Image: "nginx"}, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		d, _ := s.Deployment(ctx, "web", id)
+		return d
+	}
+
+	first := deploy()
+	if settled(first.ID) {
+		t.Error("a deployment that is not live serves the app")
+	}
+	if err := s.GoLive(ctx, first, now); err != nil {
+		t.Fatal(err)
+	}
+	if !settled(first.ID) {
+		t.Error("the live deployment of a running app does not settle it")
+	}
+	if settled(first.ID + 100) {
+		t.Error("an app is settled on a deployment that is not its own")
+	}
+
+	// A deployment on its way, until it ends in any way.
+	next := deploy()
+	if settled(first.ID) {
+		t.Error("an app with a deployment on its way is settled")
+	}
+	next.State = DeployFailed
+	if err := s.SetDeployment(ctx, next, now); err != nil {
+		t.Fatal(err)
+	}
+	if !settled(first.ID) {
+		t.Error("a failed deployment left the app unsettled")
+	}
+	next = deploy()
+	if err := s.GoLive(ctx, next, now); err != nil {
+		t.Fatal(err)
+	}
+	if settled(first.ID) || !settled(next.ID) {
+		t.Error("the app did not move to the deployment that went live")
+	}
+
+	if err := s.SetStopped(ctx, "web", true); err != nil {
+		t.Fatal(err)
+	}
+	if settled(next.ID) {
+		t.Error("a stopped app is settled")
+	}
+	if ok, err := s.SettledOn(ctx, "gone", next.ID); err != nil || ok {
+		t.Errorf("an app that does not exist is settled: %v, %v", ok, err)
+	}
+}

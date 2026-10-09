@@ -77,6 +77,7 @@ type Server struct {
 	PlayerCount func(ctx context.Context, steamGame bool, addr netip.AddrPort) (int, error)
 
 	guards  *guards
+	loops   loops
 	deploys deploys
 	gh      ghCache
 	crashes crashes
@@ -393,8 +394,6 @@ func (s *Server) Serve(ctx context.Context, socket string) error {
 	if err := s.Store.FailUnfinishedRuns(ctx); err != nil {
 		return err
 	}
-	go s.runBackups(ctx)
-	go s.runUploads(ctx)
 	// Everything that watches containers needs the core, which may still be
 	// starting when the panel's service comes up.
 	go func() {
@@ -404,17 +403,22 @@ func (s *Server) Serve(ctx context.Context, socket string) error {
 		s.pinLive(ctx)
 		s.removeStaleInstalls(ctx)
 		s.resumeGames(ctx)
-		go s.supervise(ctx)
-		go s.watchVolumes(ctx)
+		// These jobs run only for what exists, so each starts by looking
+		// and ends at once when there is nothing; see wake in loops.go.
+		s.loops.start(ctx)
+		s.wakeSupervise()
+		s.wakeVolumes()
+		s.wakeBackups()
+		s.wakeUploads()
 		s.syncAllLinks(ctx)
 		s.syncExternal(ctx)
 		s.syncSFTPVolumes(ctx)
 		s.syncSFTPPort(ctx)
 		go s.runReleaseCheck(ctx)
-		go s.runImageCheck(ctx)
-		go s.runSteamCheck(ctx)
-		go s.runMetrics(ctx)
-		go s.runSchedules(ctx)
+		s.wakeImageCheck()
+		s.wakeSteam()
+		s.wakeMetrics()
+		s.wakeSchedules()
 		s.runImageSweep(ctx)
 	}()
 	l, err := net.Listen("unix", socket)

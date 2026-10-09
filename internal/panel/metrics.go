@@ -34,64 +34,68 @@ type reading struct {
 	rx, tx    int64
 	since     time.Time // when the proxy started counting
 	counts    proxy.Counts
+	// counted is set once the proxy has given counts for the app. A minute
+	// the proxy could not be asked keeps the last ones.
+	counted bool
 }
 
-func (s *Server) runMetrics(ctx context.Context) {
-	t := time.NewTicker(metricsEvery)
-	defer t.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-			s.recordMetrics(ctx)
-		}
-	}
+// wakeMetrics starts the metrics, which run while an app is meant to be up.
+func (s *Server) wakeMetrics() {
+	s.loops.wake("metrics", metricsEvery, nil, s.recordMetrics)
 }
 
 // recordMetrics reads what each running app used since the last minute
-// and saves it.
-func (s *Server) recordMetrics(ctx context.Context) {
+// and saves it. It returns false when no app is meant to be running, so
+// there is nothing to measure until one is.
+func (s *Server) recordMetrics(ctx context.Context) bool {
 	now := s.now()
-	apps, err := s.Store.Apps(ctx)
+	up, whole, err := s.liveApps(ctx, "metrics")
 	if err != nil {
 		s.Log.Error("metrics: list apps", "err", err)
-		return
+		return true
+	}
+	if len(up) == 0 {
+		// Nothing to read. Rows older than a day go now, since the job ends
+		// here; the newer ones of stopped apps wait for it to run again.
+		if err := s.Store.PruneMetrics(ctx, now.Add(-metricsKeep)); err != nil {
+			s.Log.Error("metrics: prune", "err", err)
+			return true
+		}
+		return !whole
 	}
 	// Without the proxy an app's requests are unknown this minute, not zero.
 	stats, statsErr := s.Proxy.Stats(ctx)
 	var list []store.Metric
-	for _, a := range apps {
-		live, err := s.Store.LiveDeployment(ctx, a.ID)
+	for _, u := range up {
+		a := u.app
+		container := fmt.Sprintf("%s-%d", a.ID, u.live.ID)
+		usage, err := s.Core.Usage(ctx, container)
 		if err != nil {
 			continue
 		}
-		container := fmt.Sprintf("%s-%d", a.ID, live.ID)
-		u, err := s.Core.Usage(ctx, container)
-		if err != nil {
-			continue
-		}
-		cur := reading{container: container, at: now, cpuUsec: u.CPUUsec, rx: u.RxBytes, tx: u.TxBytes}
-		if statsErr == nil {
-			cur.since, cur.counts = stats.Since, stats.Hosts[strings.ToLower(a.Domain)]
-		}
+		cur := reading{container: container, at: now, cpuUsec: usage.CPUUsec, rx: usage.RxBytes, tx: usage.TxBytes}
 		s.meter.mu.Lock()
 		if s.meter.last == nil {
 			s.meter.last = map[string]reading{}
 		}
 		prev, ok := s.meter.last[a.ID]
+		if statsErr == nil {
+			cur.since, cur.counts, cur.counted = stats.Since, stats.Hosts[strings.ToLower(a.Domain)], true
+		} else {
+			cur.since, cur.counts, cur.counted = prev.since, prev.counts, prev.counted
+		}
 		s.meter.last[a.ID] = cur
 		s.meter.mu.Unlock()
 		// A new container starts its counters over; its first minute is
 		// measured from the next reading.
 		elapsed := now.Sub(prev.at)
-		if !ok || prev.container != container || elapsed <= 0 || u.CPUUsec < prev.cpuUsec {
+		if !ok || prev.container != container || elapsed <= 0 || usage.CPUUsec < prev.cpuUsec {
 			continue
 		}
-		m := store.Metric{AppID: a.ID, At: now.Truncate(time.Minute), MemoryBytes: u.MemoryBytes,
-			CPU:     float64(u.CPUUsec-prev.cpuUsec) / float64(elapsed.Microseconds()),
-			RxBytes: max(0, u.RxBytes-prev.rx), TxBytes: max(0, u.TxBytes-prev.tx)}
-		if statsErr == nil {
+		m := store.Metric{AppID: a.ID, At: now.Truncate(time.Minute), MemoryBytes: usage.MemoryBytes,
+			CPU:     float64(usage.CPUUsec-prev.cpuUsec) / float64(elapsed.Microseconds()),
+			RxBytes: max(0, usage.RxBytes-prev.rx), TxBytes: max(0, usage.TxBytes-prev.tx)}
+		if statsErr == nil && prev.counted {
 			base := prev.counts
 			if !prev.since.Equal(cur.since) {
 				// The proxy restarted and counts from zero again.
@@ -103,12 +107,15 @@ func (s *Server) recordMetrics(ctx context.Context) {
 		}
 		list = append(list, m)
 	}
-	if err := s.Store.AddMetrics(ctx, list); err != nil {
-		s.Log.Error("metrics: save", "err", err)
+	if len(list) > 0 {
+		if err := s.Store.AddMetrics(ctx, list); err != nil {
+			s.Log.Error("metrics: save", "err", err)
+		}
 	}
 	if err := s.Store.PruneMetrics(ctx, now.Add(-metricsKeep)); err != nil {
 		s.Log.Error("metrics: prune", "err", err)
 	}
+	return true
 }
 
 type pointJSON struct {

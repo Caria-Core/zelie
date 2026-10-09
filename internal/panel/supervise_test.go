@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -141,5 +142,72 @@ func TestStoppedAppStaysDown(t *testing.T) {
 	}
 	if _, app := e.b.do("GET", "/api/apps/web", nil); app["stopped"] != false || app["state"] != "running" {
 		t.Errorf("after start %v", app)
+	}
+}
+
+// recovered reports whether the supervisor has brought the app back.
+func (e *appEnv) recovered(app string) bool {
+	e.s.deploys.wg.Wait()
+	list, _ := e.s.Store.Deployments(context.Background(), app, 100)
+	return slices.ContainsFunc(list, func(d store.Deployment) bool { return d.Cause == store.CauseRecover })
+}
+
+// The supervisor picks an app from what it read at the start of its round.
+// An app the user changed since then did not crash, and no crash is counted.
+func TestSupervisorLeavesAnAppThatChangedSinceItsRound(t *testing.T) {
+	e := newAppEnv(t)
+	ctx := context.Background()
+	e.b.do("POST", "/api/apps", map[string]any{"id": "web", "source": "image", "image": "nginx"})
+	old := e.settle(t, "web")
+	seen, err := e.s.Store.App(ctx, "web")
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.crash(t, "web")
+	counted := func() int {
+		e.s.crashes.mu.Lock()
+		defer e.s.crashes.mu.Unlock()
+		if r, ok := e.s.crashes.byApp["web"]; ok {
+			return len(r.times)
+		}
+		return 0
+	}
+	check := func(what string) {
+		t.Helper()
+		e.s.bringBack(ctx, seen, old)
+		if e.recovered("web") || counted() != 0 {
+			t.Errorf("%s: the app was brought back, or counted as crashed", what)
+		}
+	}
+
+	if code, _ := e.b.do("POST", "/api/apps/web/stop", nil); code != http.StatusNoContent {
+		t.Fatalf("stop: %d", code)
+	}
+	check("stopped by the user")
+
+	// Started again: a new deployment replaces the version the round saw.
+	if code, _ := e.b.do("POST", "/api/apps/web/start", nil); code != http.StatusCreated {
+		t.Fatalf("start: %d", code)
+	}
+	if d := e.settle(t, "web"); d.ID == old.ID || d.State != store.DeployLive {
+		t.Fatalf("start %+v", d)
+	}
+	check("replaced by a new version")
+
+	// A deployment on its way will replace the container anyway.
+	live, err := e.s.Store.LiveDeployment(ctx, "web")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.s.recordDeployment(ctx, store.Deployment{AppID: "web", Version: "nginx", Cause: store.CauseRestart}); err != nil {
+		t.Fatal(err)
+	}
+	old = live
+	check("a deployment on its way")
+
+	// An app that is gone is nothing to bring back.
+	e.s.bringBack(ctx, store.App{ID: "gone"}, old)
+	if e.recovered("gone") {
+		t.Error("an app that does not exist was brought back")
 	}
 }

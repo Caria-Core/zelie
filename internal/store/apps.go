@@ -520,6 +520,18 @@ func (s *Store) LiveDeployment(ctx context.Context, appID string) (Deployment, e
 	return scanDeployment(s.db.QueryRowContext(ctx, "SELECT "+deploymentColumns+" FROM deployments WHERE app_id = ? AND state = ?", appID, DeployLive))
 }
 
+// SettledOn reports whether the user wants the app up, with deployment live
+// serving it and no newer one on its way to replace it. It looks in one
+// statement, so a deployment cannot go live between the parts.
+func (s *Store) SettledOn(ctx context.Context, appID string, live int64) (bool, error) {
+	var settled bool
+	err := s.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM apps WHERE id = ?1 AND NOT stopped
+		AND EXISTS (SELECT 1 FROM deployments WHERE id = ?2 AND app_id = ?1 AND state = ?3)
+		AND (SELECT finished_at IS NOT NULL FROM deployments WHERE app_id = ?1 ORDER BY id DESC LIMIT 1))`,
+		appID, live, DeployLive).Scan(&settled)
+	return settled, err
+}
+
 // SetDeployment records progress. Ending states also set the finish time.
 func (s *Store) SetDeployment(ctx context.Context, d Deployment, now time.Time) error {
 	var finished any

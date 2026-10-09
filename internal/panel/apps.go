@@ -641,6 +641,7 @@ func (s *Server) newDeployment(w http.ResponseWriter, r *http.Request) {
 	if !ok || !s.notGame(w, a) || !s.notFiles(w, a) || !s.unstop(w, r, a) {
 		return
 	}
+	defer s.wakeAfterUnstop(a)
 	id, err := s.deploy(r.Context(), a, store.Deployment{})
 	if err != nil {
 		s.fail(w, "deploy", err)
@@ -664,6 +665,7 @@ func (s *Server) restartApp(w http.ResponseWriter, r *http.Request) {
 	if !s.unstop(w, r, a) {
 		return
 	}
+	defer s.wakeAfterUnstop(a)
 	if a.RestartPulls && a.Source == store.SourceGitHub {
 		id, err := s.deploy(r.Context(), a, store.Deployment{Cause: store.CauseRestart})
 		if err != nil {
@@ -691,6 +693,7 @@ func (s *Server) rollback(w http.ResponseWriter, r *http.Request) {
 	if !ok || !s.notGame(w, a) || !s.notFiles(w, a) || !s.unstop(w, r, a) {
 		return
 	}
+	defer s.wakeAfterUnstop(a)
 	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	d, err := s.Store.Deployment(r.Context(), a.ID, id)
 	switch {
@@ -737,6 +740,18 @@ func (s *Server) unstopApp(ctx context.Context, a store.App) *msg.Error {
 	return nil
 }
 
+// wakeAfterUnstop wakes what watches running apps for a, which a handler has
+// just started. The handler defers it, so it comes once the deployment is
+// recorded, or once the handler has failed without one: the supervisor then
+// brings back the version that was live. Woken at the unstop itself, it
+// would find an app that is meant to be up, with its container stopped and
+// nothing on its way, and bring it back before the user's deployment exists.
+func (s *Server) wakeAfterUnstop(a store.App) {
+	if a.Stopped {
+		s.wakeApps()
+	}
+}
+
 func (s *Server) stopHandler(w http.ResponseWriter, r *http.Request) {
 	a, ok := s.appFrom(w, r)
 	if !ok || !s.notGame(w, a) {
@@ -768,6 +783,7 @@ func (s *Server) startHandler(w http.ResponseWriter, r *http.Request) {
 	if !s.unstop(w, r, a) {
 		return
 	}
+	defer s.wakeAfterUnstop(a)
 	s.crashes.reset(a.ID)
 	live, err := s.Store.LiveDeployment(r.Context(), a.ID)
 	if errors.Is(err, store.ErrNotFound) {
@@ -941,6 +957,8 @@ func (s *Server) deleteApp(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, "delete app", err)
 		return
 	}
+	// Its backups outlive it, and the last one now expires like the rest.
+	s.wakeBackups()
 	if a.RunsEgg() {
 		s.syncSFTPVolumes(ctx)
 	}

@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"math/big"
 	"net"
 	"net/http"
@@ -53,6 +54,12 @@ type certSource struct {
 	magic  *certmagic.Config
 	issuer *certmagic.ACMEIssuer
 	hosts  map[string]bool
+	// pending stops the certificate request of each host, which retries for
+	// days. A host that is dropped must not keep asking.
+	pending map[string]context.CancelFunc
+	// started are the requests this source began, which it takes back if it
+	// is never put to use.
+	started []context.CancelFunc
 
 	self *selfCerts
 }
@@ -125,16 +132,18 @@ func (p *Proxy) Apply(ctx context.Context, cfg Config) error {
 		hosts[cfg.Panel] = true
 	}
 
-	src, err := p.certSourceFor(ctx, cfg, hosts)
-	if err != nil {
-		return err
-	}
-
 	b, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return err
 	}
+	src, err := p.certSourceFor(ctx, cfg, hosts)
+	if err != nil {
+		return err
+	}
 	if err := writeFile(p.configFile(), b); err != nil {
+		// Nothing will ask for these hosts' certificates, and the next Apply
+		// starts them again.
+		src.abandon()
 		return err
 	}
 
@@ -143,6 +152,7 @@ func (p *Proxy) Apply(ctx context.Context, cfg Config) error {
 	// background forever.
 	if old := p.tls.Swap(src); old != nil && old.cache != nil && old.cache != src.cache {
 		old.cache.Stop()
+		old.stopPending()
 	}
 	p.cfg = cfg
 	p.Log.Info("proxy configuration applied", "routes", len(cfg.Routes), "tls", cfg.TLS)
@@ -164,9 +174,10 @@ func (p *Proxy) certSourceFor(ctx context.Context, cfg Config, hosts map[string]
 		return src, nil
 	}
 
-	src := &certSource{mode: TLSACME, email: cfg.Email, hosts: hosts}
+	src := &certSource{mode: TLSACME, email: cfg.Email, hosts: hosts, pending: map[string]context.CancelFunc{}}
 	if old != nil && old.mode == TLSACME && old.email == cfg.Email {
 		src.cache, src.magic, src.issuer = old.cache, old.magic, old.issuer
+		maps.Copy(src.pending, old.pending)
 	} else {
 		// Certificates are only requested for routed hosts, never on demand,
 		// so a stranger pointing a domain at this server cannot make it ask
@@ -207,15 +218,49 @@ func (p *Proxy) certSourceFor(ctx context.Context, cfg Config, hosts map[string]
 			subjects = append(subjects, certmagic.SubjectIssuer{Subject: h})
 		}
 		src.cache.RemoveManaged(subjects)
-	}
-	if len(add) > 0 {
-		// Asynchronous: a domain whose DNS is not ready yet must not block
-		// the others. certmagic keeps retrying and renewing in the background.
-		if err := src.magic.ManageAsync(context.WithoutCancel(ctx), add); err != nil {
-			return nil, err
+		for _, h := range drop {
+			if cancel := src.pending[h]; cancel != nil {
+				cancel()
+				delete(src.pending, h)
+			}
 		}
 	}
+	for _, h := range add {
+		// Asynchronous: a domain whose DNS is not ready yet must not block
+		// the others. certmagic keeps retrying and renewing in the background,
+		// until the host is dropped. The request's own context ends with the
+		// request, so the host gets one that it outlives.
+		hostCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+		if err := manageAsync(hostCtx, src.magic, []string{h}); err != nil {
+			cancel()
+			src.abandon()
+			return nil, err
+		}
+		src.pending[h] = cancel
+		src.started = append(src.started, cancel)
+	}
 	return src, nil
+}
+
+// manageAsync starts getting and renewing the certificates of hosts. Tests
+// replace it, so they do not reach out to a certificate authority.
+var manageAsync = func(ctx context.Context, magic *certmagic.Config, hosts []string) error {
+	return magic.ManageAsync(ctx, hosts)
+}
+
+// stopPending ends the certificate requests that are still going.
+func (c *certSource) stopPending() {
+	for _, cancel := range c.pending {
+		cancel()
+	}
+}
+
+// abandon ends the requests c started, for a source that is dropped before
+// it takes over.
+func (c *certSource) abandon() {
+	for _, cancel := range c.started {
+		cancel()
+	}
 }
 
 // unixTransport reaches the panel. It lives on the host and never listens on

@@ -172,3 +172,165 @@ func TestFailureMessages(t *testing.T) {
 		t.Errorf("unfinished: %+v %+v", b, b.Error)
 	}
 }
+
+func TestWhatThereIsToDoAboutBackups(t *testing.T) {
+	ctx := context.Background()
+	s := open(t)
+	day := 24 * time.Hour
+	now := time.Unix(1_800_000_000, 0)
+	never := time.Date(9999, 1, 1, 0, 0, 0, 0, time.UTC)
+	if err := s.CreateApp(ctx, App{ID: "db", Source: SourceImage, Image: "postgres:18", Port: 5432, MemoryMB: 512, CPUs: 1, Engine: "postgres", CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	expirable := func() bool {
+		t.Helper()
+		ok, err := s.HasExpirable(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ok
+	}
+	waiting := func() bool {
+		t.Helper()
+		ok, err := s.OffsiteWaiting(ctx, never)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ok
+	}
+	start := func() int64 {
+		t.Helper()
+		id, err := s.StartBackup(ctx, Backup{AppID: "db", Engine: "postgres", Reason: BackupManual, CreatedAt: now, KeepUntil: now.Add(day)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	finish := func(id int64, failure *msg.Msg) {
+		t.Helper()
+		if err := s.FinishBackup(ctx, id, "x.sql.zst.age", 10, failure, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if expirable() || waiting() {
+		t.Fatal("a database with no backup has something to do")
+	}
+
+	id := start()
+	if !expirable() {
+		t.Error("a backup that is running is not on the clock")
+	}
+	if waiting() {
+		t.Error("a backup that is not made is waiting to be sent")
+	}
+	finish(id, nil)
+	// The newest good backup of an app that exists stays however old it is,
+	// so on its own it gives the clock nothing to do.
+	if expirable() {
+		t.Error("the last good backup of an app is on the clock")
+	}
+	if waiting() {
+		t.Error("a backup that was not queued is waiting to be sent")
+	}
+
+	// A newer one takes its place, and the older may go when its time is up.
+	second := start()
+	finish(second, nil)
+	if !expirable() {
+		t.Error("a backup that a newer one replaced is not on the clock")
+	}
+	if err := s.DeleteBackup(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	if expirable() {
+		t.Error("the newest backup is on the clock after the old one went")
+	}
+	// A failed one is not the last good one.
+	failed := start()
+	finish(failed, new(msg.Other.With("detail", "the dump failed")))
+	if !expirable() {
+		t.Error("a failed backup is not on the clock")
+	}
+	if err := s.DeleteBackup(ctx, failed); err != nil {
+		t.Fatal(err)
+	}
+	if expirable() {
+		t.Error("nothing is left to expire")
+	}
+
+	// Its backups outlive the app and expire like any.
+	if err := s.DeleteApp(ctx, "db"); err != nil {
+		t.Fatal(err)
+	}
+	if !expirable() {
+		t.Error("the last backup of a deleted app is not on the clock")
+	}
+	if err := s.DeleteBackup(ctx, second); err != nil {
+		t.Fatal(err)
+	}
+
+	// Found off-site and not here: it goes when its time there is up.
+	if _, err := s.AddFoundBackup(ctx, Backup{AppID: "elsewhere", Engine: "postgres", File: "x.sql.zst.age", CreatedAt: now, OffsiteAt: now, OffsiteUntil: now.Add(day)}); err != nil {
+		t.Fatal(err)
+	}
+	if !expirable() {
+		t.Error("a backup found off-site is not on the clock")
+	}
+}
+
+func TestOffsiteWaiting(t *testing.T) {
+	ctx := context.Background()
+	s := open(t)
+	now := time.Unix(1_800_000_000, 0)
+	never := time.Date(9999, 1, 1, 0, 0, 0, 0, time.UTC)
+	if err := s.CreateApp(ctx, App{ID: "db", Source: SourceImage, Image: "postgres:18", Port: 5432, MemoryMB: 512, CPUs: 1, Engine: "postgres", CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	waiting := func() bool {
+		t.Helper()
+		ok, err := s.OffsiteWaiting(ctx, never)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ok
+	}
+	id, err := s.StartBackup(ctx, Backup{AppID: "db", Engine: "postgres", Reason: BackupManual, CreatedAt: now, KeepUntil: now.Add(time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.FinishBackup(ctx, id, "x.sql.zst.age", 10, nil, now); err != nil {
+		t.Fatal(err)
+	}
+	if waiting() {
+		t.Error("a backup that was not queued is waiting")
+	}
+
+	// Queued, then failed with another try in a minute, then failed for good.
+	if err := s.SendOffsite(ctx, id, now.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if !waiting() {
+		t.Error("a queued backup is not waiting")
+	}
+	if err := s.OffsiteFailedAt(ctx, id, msg.Other.With("detail", "timeout"), 1, now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if !waiting() {
+		t.Error("a backup to be sent again is not waiting")
+	}
+	if err := s.OffsiteFailedAt(ctx, id, msg.Other.With("detail", "gone"), 2, never); err != nil {
+		t.Fatal(err)
+	}
+	if waiting() {
+		t.Error("a backup that cannot be sent is waiting")
+	}
+	if err := s.OffsiteFailedAt(ctx, id, msg.Other.With("detail", "timeout"), 1, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.OffsiteSent(ctx, id, now); err != nil {
+		t.Fatal(err)
+	}
+	if waiting() {
+		t.Error("a backup that was sent is waiting")
+	}
+}

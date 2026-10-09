@@ -317,7 +317,7 @@ func (s *Server) startGame(ctx context.Context, app store.App, d store.Deploymen
 		}
 		s.gameRuns.set(app.ID, container, stateStarting)
 		s.watchGame(app, container, e, g, false)
-		return s.Store.GoLive(ctx, d, s.now())
+		return s.goLive(ctx, d)
 	}()
 	if err != nil {
 		undo()
@@ -545,6 +545,7 @@ func (s *Server) power(ctx context.Context, a store.App, g store.GameServer, act
 		if err := s.unstopApp(ctx, a); err != nil {
 			return powerResult{}, err
 		}
+		defer s.wakeAfterUnstop(a)
 		s.crashes.reset(a.ID)
 		id, err := s.deploy(ctx, a, store.Deployment{Cause: store.CauseRestart})
 		if err != nil {

@@ -263,6 +263,7 @@ func (s *Server) cloneServer(ctx context.Context, src store.App, g store.GameSer
 		undo()
 		return store.App{}, fmt.Errorf("create game server: %w", err)
 	}
+	s.wakeSteam()
 	if g.SteamAutoUpdate {
 		if err := s.Store.SetSteamAutoUpdate(ctx, a.ID, true); err != nil {
 			undo()

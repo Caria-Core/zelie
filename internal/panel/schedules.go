@@ -216,6 +216,7 @@ func (s *Server) createSchedule(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, "create schedule", err)
 		return
 	}
+	s.wakeSchedules()
 	s.Log.Info("schedule created", "server", a.ID, "schedule", x.ID, "name", x.Name, "cron", x.Cron, "tasks", len(x.Tasks), "user", loginFrom(ctx).account.ID)
 	created, err := s.Store.Schedule(ctx, x.ID)
 	if err != nil {
@@ -268,6 +269,7 @@ func (s *Server) updateSchedule(w http.ResponseWriter, r *http.Request) {
 		s.failWith(w, "update schedule", err)
 		return
 	}
+	s.wakeSchedules()
 	s.Log.Info("schedule changed", "server", a.ID, "schedule", x.ID, "name", x.Name, "cron", x.Cron, "enabled", x.Enabled, "tasks", len(x.Tasks), "user", loginFrom(ctx).account.ID)
 	saved, err := s.Store.Schedule(ctx, x.ID)
 	if err != nil {
@@ -304,28 +306,24 @@ func (s *Server) runScheduleNow(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusAccepted)
 }
 
-// runSchedules starts the schedules that are due, until ctx ends.
-func (s *Server) runSchedules(ctx context.Context) {
-	t := time.NewTicker(scheduleEvery)
-	defer t.Stop()
-	for {
-		s.schedulesOnce(ctx)
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-		}
-	}
+// wakeSchedules starts the clock that runs schedules, which runs while a
+// schedule is on.
+func (s *Server) wakeSchedules() {
+	s.loops.wake("schedules", scheduleEvery, nil, s.schedulesOnce)
 }
 
-func (s *Server) schedulesOnce(ctx context.Context) {
+// schedulesOnce starts the schedules that are due. It returns false when
+// none is on.
+func (s *Server) schedulesOnce(ctx context.Context) bool {
 	list, err := s.Store.Schedules(ctx, "")
 	if err != nil {
 		s.Log.Error("schedules: list", "err", err)
-		return
+		return true
 	}
 	now := s.now()
+	on := false
 	for _, x := range list {
+		on = on || x.Enabled
 		if !x.Enabled || ctx.Err() != nil {
 			continue
 		}
@@ -348,6 +346,7 @@ func (s *Server) schedulesOnce(ctx context.Context) {
 			s.Log.Warn("schedule skipped, its last run is not over", "server", x.AppID, "schedule", x.ID, "name", x.Name)
 		}
 	}
+	return on
 }
 
 // startScheduleRun runs the schedule in the background, unless it is running
