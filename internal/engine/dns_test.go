@@ -2,15 +2,14 @@ package engine
 
 import (
 	"context"
-	"errors"
 	"fmt"
+	"math/rand/v2"
 	"net"
 	"net/netip"
 	"runtime"
 	"strconv"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"testing"
 	"time"
 
@@ -454,13 +453,18 @@ func isTimeout(err error) bool {
 // freeLoopbackPort finds a port that is free for both UDP and TCP on the loopback.
 func freeLoopbackPort(t *testing.T) uint16 {
 	t.Helper()
-	for range 50 {
-		pc, err := net.ListenPacket("udp4", "127.0.0.1:0")
+	// Below the range the kernel hands out to sockets that bind no port
+	// (32768 and up on Linux, 49152 on macOS): the tests of other packages,
+	// which run at the same time, would otherwise take a port that was just
+	// found free whenever this test let go of it for a moment.
+	for range 200 {
+		port := 20000 + rand.IntN(12000)
+		hostport := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
+		pc, err := net.ListenPacket("udp4", hostport)
 		if err != nil {
-			t.Fatal(err)
+			continue
 		}
-		port := pc.LocalAddr().(*net.UDPAddr).Port
-		l, err := net.Listen("tcp4", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+		l, err := net.Listen("tcp4", hostport)
 		pc.Close()
 		if err == nil {
 			l.Close()
@@ -477,21 +481,8 @@ func TestDNSServersCanBeStoppedAndStartedAgain(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	d := newDNSServer(nil, nil)
-	d.ctx, d.errs = ctx, make(chan error, 1)
+	d.ctx, d.errs, d.port = ctx, make(chan error, 1), freeLoopbackPort(t)
 	gateway := netip.MustParseAddr("127.0.0.1")
-	// A port found free can be taken by another socket before the first
-	// listen; then another one is tried.
-	for try := 0; ; try++ {
-		d.port = freeLoopbackPort(t)
-		err := d.listen(gateway)
-		if err == nil {
-			d.stop(gateway)
-			break
-		}
-		if !errors.Is(err, syscall.EADDRINUSE) || try == 4 {
-			t.Fatal(err)
-		}
-	}
 
 	before := runtime.NumGoroutine()
 	for range 30 {
