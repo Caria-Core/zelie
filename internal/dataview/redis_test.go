@@ -65,7 +65,16 @@ func TestFixQuotedJSON(t *testing.T) {
 			t.Errorf("%s: %q %v", in, got, err)
 		}
 	}
-	for _, same := range []string{`["a","b"]`, `100`, `"none"`, `[["m1",1.5]]`} {
+	// A score of infinity is printed bare.
+	for in, want := range map[string]string{
+		`[["a",inf],["b",-inf]]`:            `[["a","inf"],["b","-inf"]]`,
+		`[["inf",1],["say \\"nan\\"",nan]]`: `[["inf",1],["say \\\"nan\\\"","nan"]]`,
+	} {
+		if got := fixQuotedJSON(in); got != want || !json.Valid([]byte(got)) {
+			t.Errorf("%s became %s", in, got)
+		}
+	}
+	for _, same := range []string{`["a","b"]`, `100`, `"none"`, `[["m1",1.5]]`, `[["inf",-1]]`} {
 		if got := fixQuotedJSON(same); got != same {
 			t.Errorf("%s became %s", same, got)
 		}
@@ -182,5 +191,57 @@ func TestKeyValue(t *testing.T) {
 	f = &redisFake{replies: map[string]string{"TYPE": `"string"`, "TTL": `-1`, "STRLEN": `100000`, "GETRANGE": `"` + strings.Repeat("a", 10) + `"`}}
 	if v, _ := KeyValue(context.Background(), f.exec, "big"); len(v.Cut) != 1 {
 		t.Errorf("cut %v", v.Cut)
+	}
+}
+
+// Items come back whole, so a few big values would fill the core's memory.
+func TestRedisReplyTooLarge(t *testing.T) {
+	var written int
+	big := func(_ context.Context, _ []string, stdin io.Reader, stdout, _ io.Writer) (uint32, error) {
+		io.Copy(io.Discard, stdin)
+		chunk := []byte(strings.Repeat("a", 1<<20))
+		for range maxReply>>20 + 2 {
+			n, err := stdout.Write(chunk)
+			if err != nil || n != len(chunk) {
+				t.Errorf("wrote %d of %d: %v", n, len(chunk), err)
+			}
+			written += n
+		}
+		return 0, nil
+	}
+	if _, err := KeyValue(context.Background(), big, "k"); !isCode(err, "data.too_large") {
+		t.Errorf("a key: %v", err)
+	}
+	if _, err := Keys(context.Background(), big, "*", ""); !isCode(err, "data.too_large") {
+		t.Errorf("keys: %v", err)
+	}
+	if written <= maxReply {
+		t.Errorf("only %d bytes were sent", written)
+	}
+
+	c := &capped{n: 10}
+	for _, s := range []string{"abcd", "efgh", "ijkl", "mnop"} {
+		if n, err := c.Write([]byte(s)); n != 4 || err != nil {
+			t.Fatalf("Write(%s) = %d, %v", s, n, err)
+		}
+	}
+	if c.buf.String() != "abcdefghij" || !c.over {
+		t.Errorf("kept %q, over %v", c.buf.String(), c.over)
+	}
+}
+
+// A score can be infinite, and redis-cli prints that as no JSON.
+func TestKeyValueInfiniteScore(t *testing.T) {
+	f := &redisFake{replies: map[string]string{"TYPE": `"zset"`, "TTL": `-1`, "ZCARD": `3`, "ZRANGE": `[["low",-inf],["mid",1.5],["top",inf]]`}}
+	v, err := KeyValue(context.Background(), f.exec, "limits")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rows []string
+	for _, r := range v.Rows {
+		rows = append(rows, *r[0]+"="+*r[1])
+	}
+	if got := strings.Join(rows, " "); got != "low=-inf mid=1.5 top=inf" {
+		t.Errorf("got %s", got)
 	}
 }

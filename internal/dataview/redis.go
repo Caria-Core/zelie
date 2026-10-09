@@ -24,9 +24,15 @@ var (
 	errNoKey     = msg.Define(http.StatusNotFound, "data.no_key", "There is no key named {key}.")
 	errBadKey    = msg.Define(http.StatusBadRequest, "data.bad_key", "That is not a key this viewer listed.")
 	errBadCursor = msg.Define(http.StatusBadRequest, "data.bad_cursor", "That is not a place in the key list.")
+	errTooLarge  = msg.Define(http.StatusUnprocessableEntity, "data.too_large", "Redis answered with more than the viewer can show.")
 )
 
 var redisClient = []string{"sh", "-c", `REDISCLI_AUTH="$REDIS_PASSWORD" exec redis-cli --no-auth-warning --quoted-json`}
+
+// maxReply is how much of redis-cli's output one call reads. A key's items
+// come back whole and only get cut for display afterwards, so without a
+// limit a few big values would fill the core's memory.
+const maxReply = 8 << 20
 
 // ItemCount is how many items of a list, hash, set, sorted set or stream
 // are shown.
@@ -128,6 +134,8 @@ func redisUnquote(s string) ([]byte, error) {
 // not the quotes: a value holding a " comes out as \\" and ends the JSON
 // string early. Inside a string every backslash arrives doubled, so a quote
 // after an odd number of Redis backslashes belongs to the value.
+//
+// It also quotes the scores inf and -inf, which it prints bare.
 func fixQuotedJSON(line string) string {
 	var out strings.Builder
 	in, escaping := false, false
@@ -135,6 +143,11 @@ func fixQuotedJSON(line string) string {
 		c := line[i]
 		switch {
 		case !in:
+			if tok := nonFinite(line[i:]); tok != "" {
+				out.WriteString(`"` + tok + `"`)
+				i += len(tok) - 1
+				continue
+			}
 			in = c == '"'
 		case c == '\\' && i+1 < len(line):
 			out.WriteByte(c)
@@ -158,6 +171,16 @@ func fixQuotedJSON(line string) string {
 	return out.String()
 }
 
+// nonFinite returns the number JSON has no word for that s starts with.
+func nonFinite(s string) string {
+	for _, t := range [...]string{"-inf", "inf", "nan"} {
+		if strings.HasPrefix(s, t) {
+			return t
+		}
+	}
+	return ""
+}
+
 // readable is how a value is shown: as text when it is text, otherwise as
 // hex.
 func readable(b []byte) (string, bool) {
@@ -172,23 +195,27 @@ func readable(b []byte) (string, bool) {
 func redisRun(ctx context.Context, exec Exec, commands []string) ([]json.RawMessage, error) {
 	ctx, cancel := context.WithTimeout(ctx, PageTimeout+30*time.Second)
 	defer cancel()
-	var stdout, stderr bytes.Buffer
-	code, err := exec(ctx, redisClient, strings.NewReader(strings.Join(commands, "\n")+"\n"), &stdout, &limited{w: &stderr, n: 4096})
+	var stderr bytes.Buffer
+	stdout := &capped{n: maxReply}
+	code, err := exec(ctx, redisClient, strings.NewReader(strings.Join(commands, "\n")+"\n"), stdout, &limited{w: &stderr, n: 4096})
 	if err != nil {
 		return nil, err
 	}
 	if code != 0 {
 		return nil, errQuery.Err("detail", strings.TrimSpace(stderr.String()))
 	}
+	if stdout.over {
+		return nil, errTooLarge.Err()
+	}
 	var replies []json.RawMessage
-	for _, line := range strings.Split(strings.TrimRight(stdout.String(), "\n"), "\n") {
+	for _, line := range strings.Split(strings.TrimRight(stdout.buf.String(), "\n"), "\n") {
 		if rest, ok := strings.CutPrefix(line, "error:"); ok {
 			replies = append(replies, json.RawMessage(`{"error":`+rest+`}`))
 			continue
 		}
 		line = fixQuotedJSON(line)
 		if !json.Valid([]byte(line)) {
-			return nil, fmt.Errorf("redis-cli said %q", line)
+			return nil, fmt.Errorf("redis-cli said %.200q", line)
 		}
 		replies = append(replies, json.RawMessage(line))
 	}

@@ -456,23 +456,73 @@ exec mariadb -u root`, "sh", map[bool]string{true: "set", false: "drop"}[passwor
 	default:
 		return fmt.Errorf("no external access for %q: %w", kind, errdefs.ErrInvalidArgument)
 	}
-	var out strings.Builder
-	code, err := s.Engine.Exec(ctx, container, args, strings.NewReader(script), &out, &out)
+	// The apps hold the database's superuser password, so one of them can
+	// make the client run on for ever, or print without end.
+	ctx, cancel := context.WithTimeout(ctx, externalTimeout)
+	defer cancel()
+	out := &capturedOutput{max: maxExternalOutput}
+	code, err := s.Engine.Exec(ctx, container, args, strings.NewReader(script), out, out)
 	if err != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return fmt.Errorf("%s did not finish within %s: %w", args[0], externalTimeout, err)
+		}
 		return err
 	}
 	if kind == "mariadb" && code == 3 {
 		return errNoRoot.Err()
 	}
-	// psql quotes the statement it failed on; the password stays here.
-	text := strings.TrimSpace(out.String())
+	// psql quotes the statement it failed on; the password stays here, even
+	// the part of it a cut-off output can end in.
+	text, cut := out.result()
+	if cut {
+		text = text[:max(0, len(text)-len(password))]
+	}
+	text = strings.TrimSpace(text)
 	if password != "" {
 		text = strings.ReplaceAll(text, password, "…")
+	}
+	if cut {
+		text += " …"
 	}
 	if code != 0 || (kind == "redis" && !redisDone(text)) {
 		return fmt.Errorf("%s exited with %s: %s", args[0], strconv.Itoa(int(code)), text)
 	}
 	return nil
+}
+
+// How long the database's client may take to set the external user up or
+// drop it, and how much of what it prints is kept.
+const (
+	externalTimeout   = time.Minute
+	maxExternalOutput = 8 << 10
+)
+
+// capturedOutput keeps the first max bytes written to it, from both of a
+// command's streams, which are copied on separate goroutines.
+type capturedOutput struct {
+	max int
+
+	mu  sync.Mutex
+	buf []byte
+	cut bool
+}
+
+func (c *capturedOutput) Write(b []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	n := len(b)
+	if room := c.max - len(c.buf); n > room {
+		c.cut = true
+		b = b[:room]
+	}
+	c.buf = append(c.buf, b...)
+	return n, nil
+}
+
+func (c *capturedOutput) result() (string, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return string(c.buf), c.cut
 }
 
 // redisDone reports whether redis-cli's replies are all fine. Reading

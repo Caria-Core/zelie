@@ -135,7 +135,9 @@ type dialect struct {
 
 var dialects = map[string]dialect{
 	"postgres": {
-		client: []string{"psql", "-X", "-q", "-A", "-t", "-v", "ON_ERROR_STOP=1", "-U", "app", "-d", "app"},
+		// FETCH_COUNT makes psql print rows as they arrive. Without it the
+		// whole result sits in memory first, inside the container's limit.
+		client: []string{"psql", "-X", "-q", "-A", "-t", "-v", "ON_ERROR_STOP=1", "-v", "FETCH_COUNT=1000", "-U", "app", "-d", "app"},
 		prelude: func(t time.Duration) string {
 			return fmt.Sprintf("BEGIN READ ONLY;\nSET LOCAL statement_timeout = %d;\nSET LOCAL standard_conforming_strings = on;\n", t.Milliseconds())
 		},
@@ -164,7 +166,8 @@ ORDER BY n.nspname, c.relname, a.attnum;
 		timedOut: "statement timeout",
 	},
 	"mariadb": {
-		client: []string{"sh", "-c", `MYSQL_PWD="$MARIADB_PASSWORD" exec mariadb -u app -N -B -r app`},
+		// --quick prints rows as they arrive, like FETCH_COUNT above.
+		client: []string{"sh", "-c", `MYSQL_PWD="$MARIADB_PASSWORD" exec mariadb --quick -u app -N -B -r app`},
 		prelude: func(t time.Duration) string {
 			// Without backslash escapes a quoted value is only ever closed
 			// by a doubled quote, as in Postgres.
@@ -463,6 +466,10 @@ func Export(ctx context.Context, exec Exec, engineName string, q Query, w io.Wri
 	return err
 }
 
+// maxRow is the longest line of output run reads: one exported row, with
+// its values whole.
+const maxRow = 64 << 20
+
 // run sends sql to the database's client, inside a read-only transaction,
 // and hands each line of output to each.
 func run(ctx context.Context, exec Exec, e dialect, timeout time.Duration, sql string, each func([]byte) error) error {
@@ -481,7 +488,7 @@ func run(ctx context.Context, exec Exec, e dialect, timeout time.Duration, sql s
 	}()
 	sc := bufio.NewScanner(pr)
 	// An exported row keeps its values whole.
-	sc.Buffer(make([]byte, 64<<10), 64<<20)
+	sc.Buffer(make([]byte, 64<<10), maxRow)
 	var failed error
 	for sc.Scan() {
 		if failed != nil || len(sc.Bytes()) == 0 {
@@ -489,10 +496,16 @@ func run(ctx context.Context, exec Exec, e dialect, timeout time.Duration, sql s
 		}
 		failed = each(sc.Bytes())
 	}
-	if err := sc.Err(); err != nil && failed == nil {
-		failed = err
+	if err := sc.Err(); errors.Is(err, bufio.ErrTooLong) {
+		// Nothing reads the pipe any more, so the client would block on its
+		// output until the deadline. Stop it now.
 		pr.CloseWithError(err)
-		io.Copy(io.Discard, pr)
+		cancel()
+		<-done
+		if failed == nil {
+			failed = fmt.Errorf("a row is longer than %d MB: %w", maxRow>>20, err)
+		}
+		return failed
 	}
 	if err := <-done; err != nil {
 		return err
@@ -532,6 +545,24 @@ func (l *limited) Write(b []byte) (int, error) {
 		l.n -= k
 	}
 	return len(b), nil
+}
+
+// capped keeps the first n bytes written to it and drops the rest, noting
+// that it did. It has no lock: it is for one stream.
+type capped struct {
+	buf  bytes.Buffer
+	n    int
+	over bool
+}
+
+func (c *capped) Write(b []byte) (int, error) {
+	n := len(b)
+	if room := c.n - c.buf.Len(); n > room {
+		c.over = true
+		b = b[:room]
+	}
+	c.buf.Write(b)
+	return n, nil
 }
 
 // IsUser reports whether err is meant for the user rather than Zelie's own.

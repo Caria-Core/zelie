@@ -869,7 +869,7 @@ export default {
 	'viewer.filter': 'Filter',
 	'viewer.filtersOn': '{n, plural, one {1 filter} other {# filters}}',
 	'viewer.export': 'CSV',
-	'viewer.exportHint': 'Download every row that matches, as CSV',
+	'viewer.exportHint': 'Download every row that matches, as CSV. Text that starts with = + - or @ gets a leading apostrophe, so a spreadsheet does not run it as a formula.',
 	'viewer.column': 'Column',
 	'viewer.condition': 'Condition',
 	'viewer.value': 'Value',

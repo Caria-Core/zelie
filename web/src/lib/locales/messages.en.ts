@@ -91,6 +91,7 @@ export default {
 	'msg.data.query_failed': 'The database refused the query: {detail}',
 	'msg.data.redis_tables': 'A Redis database has keys, not tables.',
 	'msg.data.timeout': 'The query took longer than {seconds} seconds. Narrow it down with a filter.',
+	'msg.data.too_large': 'Redis answered with more than the viewer can show.',
 	'msg.db.bad_engine': 'The engine must be postgres, mariadb or redis.',
 	'msg.db.bad_version': '{engine} comes in versions {versions}.',
 	'msg.db.fixed': 'Only a database\'s memory and CPU can change.',

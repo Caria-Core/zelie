@@ -2,6 +2,7 @@ package core
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"net"
@@ -10,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -258,5 +260,70 @@ func TestExternalUser(t *testing.T) {
 	}
 	if !strings.Contains(script, "DROP ROLE zelie_external") {
 		t.Errorf("drop script:\n%s", script)
+	}
+}
+
+// chattyEngine runs a client of the test's making in place of the
+// database's.
+type chattyEngine struct {
+	*fakeEngine
+	run func(ctx context.Context, stdout, stderr io.Writer) (uint32, error)
+}
+
+func (e *chattyEngine) Exec(ctx context.Context, _ string, _ []string, _ io.Reader, stdout, stderr io.Writer) (uint32, error) {
+	return e.run(ctx, stdout, stderr)
+}
+
+// A database's client can print without end, on both streams at once, and
+// never finish. The core keeps a little of the output and gives up.
+func TestExternalUserClientLimits(t *testing.T) {
+	s, f, _ := externalServer(t)
+	e := &chattyEngine{fakeEngine: f}
+	s.Engine = e
+
+	var deadline time.Time
+	e.run = func(ctx context.Context, stdout, stderr io.Writer) (uint32, error) {
+		deadline, _ = ctx.Deadline()
+		chunk := []byte(strings.Repeat("NOTICE: x\n", 400))
+		var wg sync.WaitGroup
+		for _, w := range []io.Writer{stdout, stderr} {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for range 512 {
+					w.Write(chunk)
+				}
+			}()
+		}
+		wg.Wait()
+		return 1, nil
+	}
+	err := s.externalUser(context.Background(), "postgres", "db-1", extPassword)
+	if err == nil || len(err.Error()) > maxExternalOutput+100 || !strings.HasSuffix(err.Error(), "…") {
+		t.Errorf("an endless client: %v", err)
+	}
+	if d := time.Until(deadline); d <= 0 || d > externalTimeout {
+		t.Errorf("the client had a deadline of %v", d)
+	}
+
+	// The end of kept output may be the start of the password.
+	e.run = func(ctx context.Context, stdout, stderr io.Writer) (uint32, error) {
+		io.WriteString(stdout, strings.Repeat("x", maxExternalOutput-10)+extPassword)
+		return 1, nil
+	}
+	err = s.externalUser(context.Background(), "postgres", "db-1", extPassword)
+	if err == nil || strings.Contains(err.Error(), "Abc") {
+		t.Errorf("a cut password: %v", err)
+	}
+
+	// A client that does not finish is stopped, and the error says so.
+	e.run = func(ctx context.Context, stdout, stderr io.Writer) (uint32, error) {
+		<-ctx.Done()
+		return 0, ctx.Err()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if err := s.externalUser(ctx, "postgres", "db-1", extPassword); err == nil || !strings.Contains(err.Error(), "did not finish") {
+		t.Errorf("a client that hangs: %v", err)
 	}
 }
