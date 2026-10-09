@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"syscall"
 
 	containerd "github.com/containerd/containerd/v2/client"
 	"github.com/containerd/errdefs"
@@ -100,35 +99,42 @@ func (e *Engine) RemoveVolume(ctx context.Context, name string) error {
 	return os.RemoveAll(dir)
 }
 
-// VolumeSizes returns how much disk each volume takes, by name.
-func (e *Engine) VolumeSizes() (map[string]int64, error) {
+// VolumeSizes returns how much disk each volume takes, by name. A volume
+// that cannot be measured is left out of the sizes and comes back with the
+// reason instead, so one tenant cannot keep the others from being measured,
+// and the caller can tell a volume it knows nothing about from one with
+// nothing in it. The error is for when the volumes cannot be listed at all.
+func (e *Engine) VolumeSizes() (sizes map[string]int64, unmeasured map[string]error, err error) {
 	entries, err := os.ReadDir(e.paths.Volumes)
 	if errors.Is(err, fs.ErrNotExist) {
-		return map[string]int64{}, nil
+		return map[string]int64{}, nil, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	out := make(map[string]int64, len(entries))
+	sizes = make(map[string]int64, len(entries))
 	for _, d := range entries {
 		if !d.IsDir() || !validID().MatchString(d.Name()) {
 			continue
 		}
 		n, err := diskUsage(filepath.Join(e.paths.Volumes, d.Name()))
 		if err != nil {
-			return nil, err
+			if unmeasured == nil {
+				unmeasured = map[string]error{}
+			}
+			unmeasured[d.Name()] = err
+			continue
 		}
-		out[d.Name()] = n
+		sizes[d.Name()] = n
 	}
-	return out, nil
+	return sizes, unmeasured, nil
 }
 
 // diskUsage adds up the blocks a directory tree takes, like du: sparse files
 // count what they use, and a file with several links counts once.
 //
-// The tree is walked through an os.Root: a tenant can swap a folder for a
-// link to somewhere else while this runs as root, and the root refuses to
-// follow it out of the volume.
+// A tenant can swap a folder for a link to somewhere else while this runs as
+// root, so the tree is walked with WalkTree, which follows no link.
 func diskUsage(dir string) (int64, error) {
 	root, err := os.OpenRoot(dir)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -141,27 +147,9 @@ func diskUsage(dir string) (int64, error) {
 	type inode struct{ dev, ino uint64 }
 	seen := map[inode]bool{}
 	var total int64
-	err = fs.WalkDir(root.FS(), ".", func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			// A file removed while walking is not an error.
-			if errors.Is(err, fs.ErrNotExist) {
-				return nil
-			}
-			return err
-		}
-		info, err := d.Info()
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		st, ok := info.Sys().(*syscall.Stat_t)
-		if !ok {
-			total += info.Size()
-			return nil
-		}
-		if st.Nlink > 1 && !d.IsDir() {
+	err = WalkTree(root, ".", func(n *TreeNode) error {
+		st := &n.Stat
+		if st.Nlink > 1 && !n.IsDir() {
 			key := inode{uint64(st.Dev), uint64(st.Ino)}
 			if seen[key] {
 				return nil

@@ -434,9 +434,13 @@ func TestSFTPRoom(t *testing.T) {
 	if _, out := sftpAsk(e, sftpUID, "POST", "/local/sftp/room", sftpd.RoomRequest{Server: "survival"}); out["room"] != nil {
 		t.Errorf("before a measurement: %v", out)
 	}
-	e.s.sizes.set(map[string]int64{vols[0].Name: vols[0].LimitMB<<20 - 1000}, e.s.now())
+	e.s.sizes.set(map[string]int64{vols[0].Name: vols[0].LimitMB<<20 - 1000}, nil, e.s.now())
 	if _, out := sftpAsk(e, sftpUID, "POST", "/local/sftp/room", sftpd.RoomRequest{Server: "survival"}); out["room"] != 1000.0 {
 		t.Errorf("room %v", out)
+	}
+	e.s.sizes.set(nil, []string{vols[0].Name}, e.s.now())
+	if _, out := sftpAsk(e, sftpUID, "POST", "/local/sftp/room", sftpd.RoomRequest{Server: "survival"}); out["room"] != 0.0 {
+		t.Errorf("room of a volume that cannot be measured %v", out)
 	}
 }
 

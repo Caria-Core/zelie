@@ -2,13 +2,16 @@ package core
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
+	"github.com/Caria-Core/zelie/internal/engine"
 	"github.com/Caria-Core/zelie/internal/peer"
 )
 
@@ -178,6 +181,73 @@ func TestCopyFilesStopsAtLimit(t *testing.T) {
 	err := copyFiles(context.Background(), sr, dr, 100<<10, errNoRoomCopy.Err("need", "1 KB", "free", "1 KB"))
 	if err == nil || !strings.Contains(err.Error(), "Not enough disk space") {
 		t.Fatalf("err = %v, want the no-room error", err)
+	}
+	if left, _ := os.ReadDir(dst); len(left) != 0 {
+		t.Errorf("left behind: %v", left)
+	}
+}
+
+// A server can hold a file of terabytes that takes no disk. Cloning it costs
+// what its data costs, and its holes need no room.
+func TestCopyFilesSkipsHoles(t *testing.T) {
+	const size = 1 << 40
+	src, dst := t.TempDir(), t.TempDir()
+	f, err := os.Create(filepath.Join(src, "world.dat"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Truncate(size); err != nil {
+		t.Skipf("no sparse files here: %v", err)
+	}
+	f.WriteAt([]byte("head"), 0)
+	f.WriteAt([]byte("middle"), size/2)
+	f.WriteAt([]byte("tail"), size-4)
+	f.Close()
+	if st, err := os.Stat(filepath.Join(src, "world.dat")); err != nil || st.Sys().(*syscall.Stat_t).Blocks*512 > size/2 {
+		t.Skip("this file system does not keep holes")
+	}
+	sr, _ := os.OpenRoot(src)
+	dr, _ := os.OpenRoot(dst)
+	defer sr.Close()
+	defer dr.Close()
+
+	// Only ten seconds, where reading the holes would take hours.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := copyFiles(ctx, sr, dr, 1<<20, errNoRoomCopy.Err("need", "1 KB", "free", "1 KB")); err != nil {
+		t.Fatalf("copy: %v", err)
+	}
+	out, err := os.Open(filepath.Join(dst, "world.dat"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer out.Close()
+	if st, _ := out.Stat(); st.Size() != size {
+		t.Errorf("the copy is %d bytes, want %d", st.Size(), int64(size))
+	}
+	for off, want := range map[int64]string{0: "head", size / 2: "middle", size - 4: "tail"} {
+		got := make([]byte, len(want))
+		if _, err := out.ReadAt(got, off); err != nil || string(got) != want {
+			t.Errorf("at %d: %q, %v; want %q", off, got, err, want)
+		}
+	}
+}
+
+// A server can nest folders as deep as it likes while it is being cloned, so
+// the walk of the source gives up at a depth instead of costing more at each
+// level.
+func TestCopyFilesStopsAtFoldersNestedTooDeep(t *testing.T) {
+	defer func(n int) { engine.MaxWalkDepth = n }(engine.MaxWalkDepth)
+	engine.MaxWalkDepth = 10
+	src, dst := t.TempDir(), t.TempDir()
+	deepChain(t, src, "d", 15)
+	sr, _ := os.OpenRoot(src)
+	dr, _ := os.OpenRoot(dst)
+	defer sr.Close()
+	defer dr.Close()
+	err := copyFiles(context.Background(), sr, dr, -1, nil)
+	if !errors.Is(err, engine.ErrTooDeep) {
+		t.Fatalf("err = %v, want the depth limit", err)
 	}
 	if left, _ := os.ReadDir(dst); len(left) != 0 {
 		t.Errorf("left behind: %v", left)

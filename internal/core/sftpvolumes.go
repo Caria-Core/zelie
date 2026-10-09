@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -34,7 +35,10 @@ type SFTPVolumes struct {
 	set  map[string]bool
 }
 
-// LoadSFTPVolumes reads the list at path. A missing file is an empty list.
+// LoadSFTPVolumes reads the list at path. A missing file is an empty list. A
+// file that cannot be parsed gives an empty list as well, along with the
+// error: the panel tells the core the list again, so a damaged file should
+// not keep the core from starting. SFTP logins find no volume until then.
 func LoadSFTPVolumes(path string) (*SFTPVolumes, error) {
 	v := &SFTPVolumes{path: path, set: map[string]bool{}}
 	b, err := os.ReadFile(path)
@@ -46,7 +50,7 @@ func LoadSFTPVolumes(path string) (*SFTPVolumes, error) {
 	}
 	var names []string
 	if err := json.Unmarshal(b, &names); err != nil {
-		return nil, err
+		return v, fmt.Errorf("the list of SFTP volumes is damaged: %w", err)
 	}
 	for _, n := range names {
 		v.set[n] = true
@@ -73,14 +77,10 @@ func (v *SFTPVolumes) Set(names []string) error {
 	}
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	tmp := v.path + ".tmp"
 	if err := os.MkdirAll(filepath.Dir(v.path), 0o755); err != nil {
 		return err
 	}
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
-		return err
-	}
-	if err := os.Rename(tmp, v.path); err != nil {
+	if err := writeFileAtomic(v.path, b); err != nil {
 		return err
 	}
 	v.set = make(map[string]bool, len(names))

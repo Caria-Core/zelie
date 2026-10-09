@@ -95,6 +95,7 @@ type appCore struct {
 
 	volumes     map[string]bool
 	sizes       map[string]int64
+	unmeasured  []string                        // volumes VolumeSizes cannot measure
 	mounts      map[string][]engine.VolumeMount // by container
 	overlapping bool                            // two containers had the same volume running
 
@@ -624,14 +625,16 @@ func (c *appCore) RemoveVolume(_ context.Context, name string) error {
 	return nil
 }
 
-func (c *appCore) VolumeSizes(context.Context) (map[string]int64, error) {
+func (c *appCore) VolumeSizes(context.Context) (map[string]int64, []string, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	out := map[string]int64{}
 	for name := range c.volumes {
-		out[name] = c.sizes[name]
+		if !slices.Contains(c.unmeasured, name) {
+			out[name] = c.sizes[name]
+		}
 	}
-	return out, nil
+	return out, c.unmeasured, nil
 }
 
 func (c *appCore) SecretKey(context.Context) (secret.PublicKey, error) { return c.keys.Public(), nil }

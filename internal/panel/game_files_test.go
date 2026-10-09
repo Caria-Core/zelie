@@ -180,15 +180,22 @@ func TestGameFilesAreForwardedToTheCore(t *testing.T) {
 
 	// Once the volume has been measured, the core hears how much room is
 	// left under the limit.
-	e.s.sizes.set(map[string]int64{vols[0].Name: vols[0].LimitMB<<20 - 1000}, e.s.now())
+	e.s.sizes.set(map[string]int64{vols[0].Name: vols[0].LimitMB<<20 - 1000}, nil, e.s.now())
 	e.b.do("GET", "/api/games/survival/files/list?path=", nil)
 	if room := e.core.fs.refs[1].Room; room == nil || *room != 1000 {
 		t.Errorf("room %v", room)
 	}
-	e.s.sizes.set(map[string]int64{vols[0].Name: vols[0].LimitMB<<20 + 5}, e.s.now())
+	e.s.sizes.set(map[string]int64{vols[0].Name: vols[0].LimitMB<<20 + 5}, nil, e.s.now())
 	e.b.do("GET", "/api/games/survival/files/list?path=", nil)
 	if room := e.core.fs.refs[2].Room; room == nil || *room != 0 {
 		t.Errorf("room over the limit %v", room)
+	}
+	// A volume that could not be measured is not known to have room, which
+	// is not the same as no measurement yet.
+	e.s.sizes.set(nil, []string{vols[0].Name}, e.s.now())
+	e.b.do("GET", "/api/games/survival/files/list?path=", nil)
+	if room := e.core.fs.refs[3].Room; room == nil || *room != 0 {
+		t.Errorf("room of a volume that cannot be measured %v", room)
 	}
 
 	if rec := e.b.record("PUT", "/api/games/survival/files/content?path=eula.txt&new=1", []byte("eula=true\n")); rec.Code != http.StatusNoContent {

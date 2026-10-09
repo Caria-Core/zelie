@@ -35,6 +35,9 @@ type fakeEngine struct {
 	links         map[string][]engine.Link
 	forwards      map[string][]engine.Forward
 
+	// unmeasured is what VolumeSizes cannot measure.
+	unmeasured map[string]error
+
 	containers []engine.Status // replaces List's answer when set
 	listMu     sync.Mutex      // for tests that change containers while the core reads them
 	exec       func(args []string, stdin io.Reader, stdout io.Writer) uint32
@@ -131,8 +134,8 @@ func (f *fakeEngine) RemoveVolume(_ context.Context, name string) error {
 	return nil
 }
 
-func (f *fakeEngine) VolumeSizes() (map[string]int64, error) {
-	return map[string]int64{"data": 4096}, nil
+func (f *fakeEngine) VolumeSizes() (map[string]int64, map[string]error, error) {
+	return map[string]int64{"data": 4096}, f.unmeasured, nil
 }
 
 func (f *fakeEngine) Links(app string) ([]engine.Link, error) { return f.links[app], nil }

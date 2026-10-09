@@ -22,6 +22,9 @@ type volumeMountJSON struct {
 type volumeJSON struct {
 	Name  string `json:"name"`
 	Bytes int64  `json:"bytes"`
+	// Unmeasured is set for a volume that could not be measured. It has no
+	// size, which is not the same as an empty one.
+	Unmeasured bool `json:"unmeasured,omitempty"`
 }
 
 func (s *Server) createVolume(w http.ResponseWriter, r *http.Request) {
@@ -59,16 +62,37 @@ func (s *Server) removeVolume(w http.ResponseWriter, r *http.Request) {
 // volumes lists every volume with the disk it takes. Measuring walks every
 // file, so the panel asks now and then, not on each page view.
 func (s *Server) volumes(w http.ResponseWriter, r *http.Request) {
-	sizes, err := s.Engine.VolumeSizes()
+	sizes, unmeasured, err := s.Engine.VolumeSizes()
 	if err != nil {
 		s.volumeFailed(w, "measure volumes", "", err)
 		return
 	}
-	out := make([]volumeJSON, 0, len(sizes))
+	s.noteUnmeasured(unmeasured)
+	out := make([]volumeJSON, 0, len(sizes)+len(unmeasured))
 	for name, n := range sizes {
 		out = append(out, volumeJSON{Name: name, Bytes: n})
 	}
+	for name := range unmeasured {
+		out = append(out, volumeJSON{Name: name, Unmeasured: true})
+	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// noteUnmeasured logs each volume that cannot be measured when it first
+// cannot, not at every check: the panel asks every minute, and the reason
+// stays the same.
+func (s *Server) noteUnmeasured(now map[string]error) {
+	s.unmeasuredMu.Lock()
+	defer s.unmeasuredMu.Unlock()
+	for name, err := range now {
+		if !s.unmeasured[name] {
+			s.Log.Warn("volume cannot be measured", "volume", name, "err", err)
+		}
+	}
+	s.unmeasured = make(map[string]bool, len(now))
+	for name := range now {
+		s.unmeasured[name] = true
+	}
 }
 
 func (s *Server) volumeFailed(w http.ResponseWriter, op, name string, err error) {
@@ -94,15 +118,20 @@ func (c *Client) RemoveVolume(ctx context.Context, name string) error {
 	return c.do(ctx, http.MethodDelete, "/v1/volumes/"+url.PathEscape(name), nil, nil)
 }
 
-// VolumeSizes returns the disk each volume takes, by name.
-func (c *Client) VolumeSizes(ctx context.Context) (map[string]int64, error) {
+// VolumeSizes returns the disk each volume takes, by name, and the names of
+// the volumes that could not be measured.
+func (c *Client) VolumeSizes(ctx context.Context) (sizes map[string]int64, unmeasured []string, err error) {
 	var list []volumeJSON
 	if err := c.do(ctx, http.MethodGet, "/v1/volumes", nil, &list); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	out := make(map[string]int64, len(list))
+	sizes = make(map[string]int64, len(list))
 	for _, v := range list {
-		out[v.Name] = v.Bytes
+		if v.Unmeasured {
+			unmeasured = append(unmeasured, v.Name)
+			continue
+		}
+		sizes[v.Name] = v.Bytes
 	}
-	return out, nil
+	return sizes, unmeasured, nil
 }

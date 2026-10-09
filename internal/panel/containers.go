@@ -66,7 +66,7 @@ type Core interface {
 	Host(ctx context.Context) (engine.Host, error)
 	CreateVolume(ctx context.Context, name string) error
 	RemoveVolume(ctx context.Context, name string) error
-	VolumeSizes(ctx context.Context) (map[string]int64, error)
+	VolumeSizes(ctx context.Context) (sizes map[string]int64, unmeasured []string, err error)
 	CreateBackup(ctx context.Context, app, container, kind string) (core.Backup, error)
 	DownloadBackup(ctx context.Context, app, name string, w io.Writer) error
 	RemoveBackup(ctx context.Context, app, name string) error

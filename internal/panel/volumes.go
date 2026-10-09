@@ -28,11 +28,14 @@ const (
 	volumeStopGrace = 30
 )
 
-// volumeSizes is what the last measurement found, by core volume name.
+// volumeSizes is what the last measurement found, by core volume name. A
+// volume the core could not measure is kept apart from one not measured yet:
+// it has no size, and what it holds is not known to be within its limit.
 type volumeSizes struct {
-	mu    sync.Mutex
-	bytes map[string]int64
-	at    time.Time
+	mu         sync.Mutex
+	bytes      map[string]int64
+	unmeasured map[string]bool
+	at         time.Time
 }
 
 func (v *volumeSizes) get(name string) (int64, bool) {
@@ -42,14 +45,26 @@ func (v *volumeSizes) get(name string) (int64, bool) {
 	return n, ok
 }
 
-func (v *volumeSizes) set(m map[string]int64, at time.Time) {
+// failed reports whether the last measurement could not measure the volume.
+func (v *volumeSizes) failed(name string) bool {
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	v.bytes, v.at = m, at
+	return v.unmeasured[name]
+}
+
+func (v *volumeSizes) set(m map[string]int64, unmeasured []string, at time.Time) {
+	failed := make(map[string]bool, len(unmeasured))
+	for _, name := range unmeasured {
+		failed[name] = true
+	}
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.bytes, v.unmeasured, v.at = m, failed, at
 }
 
 var (
 	errVolumeFull      = msg.Define(http.StatusConflict, "volume.full", "The volume at {path} holds {used}, over its {limit} limit. Raise the limit to start the app.")
+	errVolumeUnknown   = msg.Define(http.StatusConflict, "volume.unmeasured", "The volume at {path} cannot be measured, so its {limit} limit cannot be checked. Folders nested too deep in it are the usual cause; remove them to start the app.")
 	errVolumePath      = msg.Define(http.StatusBadRequest, "volume.bad_path", "The path must start with / and name a directory such as /data. /proc, /sys and /dev are taken.")
 	errVolumeBadChars  = msg.Define(http.StatusBadRequest, "volume.bad_chars", "That path cannot hold a volume.")
 	errVolumeSmall     = msg.Define(http.StatusBadRequest, "volume.small", "A volume's limit must be at least {min} MB.")
@@ -89,12 +104,31 @@ func (s *Server) volumeOut(v store.Volume) volumeJSON {
 }
 
 // overLimit returns why the app may not run: a volume that has grown past
-// its limit. Empty means none has.
+// its limit, or one whose size cannot be found out, which would leave its
+// limit unchecked. Empty means neither.
 func (s *Server) overLimit(vols []store.Volume) *msg.Error {
 	for _, v := range vols {
+		if s.sizes.failed(v.Name) {
+			return errVolumeUnknown.Err("path", v.Path, "limit", formatMB(v.LimitMB))
+		}
 		if n, ok := s.sizes.get(v.Name); ok && n > v.LimitMB<<20 {
 			return errVolumeFull.Err("path", v.Path, "used", formatMB(n>>20), "limit", formatMB(v.LimitMB))
 		}
+	}
+	return nil
+}
+
+// roomOf is how much more the volume may take, by the last measurement. It
+// is nil when there is none yet. A volume that cannot be measured has no
+// room, as nothing says how much it already holds.
+func (s *Server) roomOf(v store.Volume) *int64 {
+	if s.sizes.failed(v.Name) {
+		none := int64(0)
+		return &none
+	}
+	if used, ok := s.sizes.get(v.Name); ok {
+		room := max(v.LimitMB<<20-used, 0)
+		return &room
 	}
 	return nil
 }
@@ -382,12 +416,12 @@ func (s *Server) checkVolumes(ctx context.Context) bool {
 	if len(vols) == 0 {
 		return false
 	}
-	sizes, err := s.Core.VolumeSizes(ctx)
+	sizes, unmeasured, err := s.Core.VolumeSizes(ctx)
 	if err != nil {
 		s.Log.Error("volumes: measure", "err", err)
 		return true
 	}
-	s.sizes.set(sizes, s.now())
+	s.sizes.set(sizes, unmeasured, s.now())
 	byApp := map[string][]store.Volume{}
 	for _, v := range vols {
 		byApp[v.AppID] = append(byApp[v.AppID], v)
@@ -402,9 +436,26 @@ func (s *Server) checkVolumes(ctx context.Context) bool {
 			continue
 		}
 		s.Log.Warn("volume over its limit, stopping the app", "app", appID, "reason", over.Text)
-		if err := s.stopApp(ctx, a); err != nil {
+		if err := s.stopOverLimit(ctx, a); err != nil {
 			s.Log.Error("volumes: stop app", "app", appID, "err", err)
 		}
 	}
 	return true
+}
+
+// stopOverLimit stops an app that has outgrown a volume. An app that runs an
+// egg stops the way its egg says and gets the time to save, as with its stop
+// button: killing a game halfway through saving could cost its world.
+func (s *Server) stopOverLimit(ctx context.Context, a store.App) error {
+	if !a.RunsEgg() {
+		return s.stopApp(ctx, a)
+	}
+	g, err := s.Store.GameServer(ctx, a.ID)
+	if err != nil {
+		return err
+	}
+	if _, merr := s.power(ctx, a, g, "stop", 0); merr != nil {
+		return merr
+	}
+	return nil
 }

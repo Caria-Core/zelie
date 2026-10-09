@@ -439,6 +439,24 @@ func TestDiagnosisDiskFull(t *testing.T) {
 	}
 }
 
+// A volume the core could not measure is not a full one, and raising its
+// limit, which is the fix for a full one, would not help.
+func TestDiagnosisTakesAVolumeThatCannotBeMeasuredForNoCause(t *testing.T) {
+	e := newPowerEnv(t)
+	e.newGame(t, "survival", consoleEggURL, nil)
+	vol := volumesOf(t, e, "survival")[0]
+	e.crashWith(t, "survival", "[Server thread/INFO]: Saving chunks\n", 1)
+
+	e.s.sizes.set(nil, []string{vol.Name}, e.s.now())
+	if _, out := e.b.do("GET", "/api/games/survival/diagnosis", nil); len(out) != 0 {
+		t.Errorf("a volume that cannot be measured: %v", out)
+	}
+	e.s.sizes.set(map[string]int64{vol.Name: vol.LimitMB<<20 + 1}, nil, e.s.now())
+	if _, out := e.b.do("GET", "/api/games/survival/diagnosis", nil); out["cause"].(map[string]any)["code"] != "diagnosis.disk_full" {
+		t.Errorf("a volume over its limit: %v", out)
+	}
+}
+
 func TestDiagnosisOfAFailedInstall(t *testing.T) {
 	e := newPowerEnv(t)
 	e.newGame(t, "survival", consoleEggURL, nil)

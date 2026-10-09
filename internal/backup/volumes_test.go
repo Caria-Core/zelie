@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -13,6 +14,10 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
+
+	"github.com/Caria-Core/zelie/internal/engine"
 )
 
 func openRoot(t *testing.T, dir string) *os.Root {
@@ -356,5 +361,179 @@ func TestRestoreStopsAtLimit(t *testing.T) {
 	}
 	if left, _ := os.ReadDir(dst); len(left) != 0 {
 		t.Errorf("left behind: %v", left)
+	}
+}
+
+// cancelAfter cancels a context once n bytes have been written, and says how
+// many were, so a test can tell a copy that stops from one that carries on.
+type cancelAfter struct {
+	n, seen int64
+	cancel  func()
+}
+
+func (c *cancelAfter) Write(p []byte) (int, error) {
+	if c.seen += int64(len(p)); c.seen > c.n {
+		c.cancel()
+	}
+	return len(p), nil
+}
+
+func fileOf(t *testing.T, path string, size int) {
+	t.Helper()
+	b := bytes.Repeat([]byte("0123456789abcdef"), size/16)
+	if err := os.WriteFile(path, b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A file takes a long time to copy when it is big, so the checks between
+// files do not stop a copy that is stuck in one.
+func TestWriteTarStopsInsideAFile(t *testing.T) {
+	src := t.TempDir()
+	fileOf(t, filepath.Join(src, "big"), 32<<20)
+	ctx, cancel := context.WithCancel(context.Background())
+	w := &cancelAfter{n: 1 << 20, cancel: cancel}
+	_, err := WriteTar(ctx, w, []Volume{{"data", openRoot(t, src)}})
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("err = %v, want the cancellation", err)
+	}
+	if w.seen > 4<<20 {
+		t.Errorf("wrote %d bytes after the context ended", w.seen)
+	}
+}
+
+// The same inside the data of a file that has holes.
+func TestWriteTarStopsInsideTheDataOfASparseFile(t *testing.T) {
+	src := t.TempDir()
+	sparseFile(t, filepath.Join(src, "world.dat"), 1<<40, map[int64]string{
+		0:         strings.Repeat("0123456789abcdef", 2<<20), // 32 MiB
+		1<<40 - 4: "tail",
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	w := &cancelAfter{n: 1 << 20, cancel: cancel}
+	_, err := WriteTar(ctx, w, []Volume{{"data", openRoot(t, src)}})
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("err = %v, want the cancellation", err)
+	}
+	if w.seen > 4<<20 {
+		t.Errorf("wrote %d bytes after the context ended", w.seen)
+	}
+}
+
+// sparseFile makes a file of size bytes with the given text at the given
+// places, and skips the test where the file system keeps no holes.
+func sparseFile(t *testing.T, path string, size int64, at map[int64]string) {
+	t.Helper()
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if err := f.Truncate(size); err != nil {
+		t.Skipf("no sparse files here: %v", err)
+	}
+	for off, text := range at {
+		if _, err := f.WriteAt([]byte(text), off); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if a := allocated(t, path); a > size/2 {
+		t.Skipf("this file system gives a sparse file %d bytes", a)
+	}
+	if known, _ := dataRuns(f, size, func(_, _ int64) error { return nil }); !known {
+		t.Skip("this file system cannot say where a file's holes are")
+	}
+}
+
+// zeroStream is an archive of one file of zeros, which is what a sparse file
+// looks like in a tar stream made before holes were left out. It is long
+// enough to be stopped, and short enough for a test that does not stop it to
+// end in seconds.
+func zeroStream(t *testing.T, name string) io.Reader {
+	t.Helper()
+	var head bytes.Buffer
+	tw := tar.NewWriter(&head)
+	if err := tw.WriteHeader(&tar.Header{Name: "data/" + name, Typeflag: tar.TypeReg, Mode: 0o644, Size: 8 << 30}); err != nil {
+		t.Fatal(err)
+	}
+	return io.MultiReader(&head, zeros{})
+}
+
+func TestRestoreStopsInsideAFile(t *testing.T) {
+	dst := t.TempDir()
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(100*time.Millisecond, cancel)
+	start := time.Now()
+	_, err := RestoreTarCapped(ctx, zeroStream(t, "sparse"), []Volume{{"data", openRoot(t, dst)}}, -1, nil)
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("err = %v, want the cancellation", err)
+	}
+	if took := time.Since(start); took > 3*time.Second {
+		t.Errorf("went on for %v after the context ended", took)
+	}
+	if left, _ := os.ReadDir(dst); len(left) != 0 {
+		t.Errorf("left behind: %v", left)
+	}
+}
+
+// deepChain makes n folders called name inside each other below dir, one
+// openat at a time, so the whole is longer than a path can be.
+func deepChain(t *testing.T, dir, name string, n int) {
+	t.Helper()
+	fd, err := unix.Open(dir, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range n {
+		if err := unix.Mkdirat(fd, name, 0o755); err != nil {
+			unix.Close(fd)
+			t.Fatal(err)
+		}
+		next, err := unix.Openat(fd, name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+		unix.Close(fd)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fd = next
+	}
+	unix.Close(fd)
+}
+
+// Each folder is opened from the one above it, so a chain that is longer than
+// any path is written whole, and one nested past the walk's limit stops it
+// instead of costing a root process time that grows with the square of the
+// depth.
+func TestWriteTarGoesDeepButNotWithoutLimit(t *testing.T) {
+	dir := t.TempDir()
+	name := strings.Repeat("d", 100)
+	deepChain(t, dir, name, 60)
+	var buf bytes.Buffer
+	st, err := WriteTar(context.Background(), &buf, []Volume{{"data", openRoot(t, dir)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	folders := 0
+	tr := tar.NewReader(&buf)
+	for {
+		h, err := tr.Next()
+		if err != nil {
+			break
+		}
+		folders++
+		if want := "data/" + strings.Repeat(name+"/", max(folders-1, 0)); folders > 1 && h.Name != want {
+			t.Fatalf("entry %d is %q", folders, h.Name[len(h.Name)-min(len(h.Name), 30):])
+		}
+	}
+	if folders != 61 || st.Files != 0 {
+		t.Errorf("%d folders and %d files in the archive, want 61 and none", folders, st.Files)
+	}
+
+	defer func(n int) { engine.MaxWalkDepth = n }(engine.MaxWalkDepth)
+	engine.MaxWalkDepth = 20
+	deep := t.TempDir()
+	deepChain(t, deep, "d", 25)
+	_, err = WriteTar(context.Background(), io.Discard, []Volume{{"data", openRoot(t, deep)}})
+	if !errors.Is(err, engine.ErrTooDeep) {
+		t.Errorf("err = %v, want the depth limit", err)
 	}
 }

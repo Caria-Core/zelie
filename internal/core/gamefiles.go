@@ -237,28 +237,15 @@ func writeConfigFile(root *os.Root, name string, content []byte, mode fs.FileMod
 }
 
 // chownAll gives every file of the volume to uid:gid. Symbolic links are
-// changed themselves and never followed, and the root keeps the walk inside
-// the volume, so nothing outside it is touched.
+// changed themselves and never followed, and the walk keeps inside the
+// volume, so nothing outside it is touched.
 func chownAll(root *os.Root, uid, gid int) error {
-	return fs.WalkDir(root.FS(), ".", func(p string, d fs.DirEntry, err error) error {
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		info, err := d.Info()
-		if err != nil {
-			if errors.Is(err, fs.ErrNotExist) {
-				return nil
-			}
-			return err
-		}
+	return engine.WalkTree(root, ".", func(n *engine.TreeNode) error {
 		// Most files of a server that ran before already belong to it.
-		if st, ok := info.Sys().(*syscall.Stat_t); ok && int(st.Uid) == uid && int(st.Gid) == gid {
+		if int(n.Stat.Uid) == uid && int(n.Stat.Gid) == gid {
 			return nil
 		}
-		return root.Lchown(p, uid, gid)
+		return n.Lchown(uid, gid)
 	})
 }
 

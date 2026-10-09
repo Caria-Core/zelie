@@ -125,6 +125,45 @@ func TestVolumeOverItsLimitStopsTheApp(t *testing.T) {
 	}
 }
 
+// A volume the core cannot measure has no size to compare with its limit. If
+// that let the app run, a tenant could switch its own limit off by nesting
+// folders deeper than the measurement goes.
+func TestVolumeThatCannotBeMeasuredStopsTheApp(t *testing.T) {
+	e := newAppEnv(t)
+	e.b.do("POST", "/api/apps", map[string]any{"id": "mc", "source": "image", "image": "itzg/minecraft-server",
+		"volumes": []map[string]any{{"path": "/data", "limit_mb": 100}}})
+	e.settle(t, "mc")
+	vol := volumesOf(t, e, "mc")[0]
+
+	// It was measured once, and fine. Now the measurement fails.
+	e.core.sizes = map[string]int64{vol.Name: 1 << 20}
+	e.s.checkVolumes(context.Background())
+	if a, _ := e.s.Store.App(context.Background(), "mc"); a.Stopped {
+		t.Fatal("the app was stopped with its volume within the limit")
+	}
+	e.core.unmeasured = []string{vol.Name}
+	e.s.checkVolumes(context.Background())
+	a, _ := e.s.Store.App(context.Background(), "mc")
+	if !a.Stopped {
+		t.Fatal("the app kept running with a volume that cannot be measured")
+	}
+	_, out := e.b.do("GET", "/api/apps/mc", nil)
+	if why, _ := out["volume_full"].(map[string]any); why["code"] != "volume.unmeasured" || !strings.Contains(fmt.Sprint(why["params"]), "path:/data") {
+		t.Errorf("volume_full %v", out["volume_full"])
+	}
+	if code, out := e.b.do("POST", "/api/apps/mc/start", nil); code != http.StatusConflict || out["code"] != "volume.unmeasured" {
+		t.Errorf("start: %d %v", code, out)
+	}
+
+	// A measurement that works again lets it start.
+	e.core.unmeasured = nil
+	e.s.checkVolumes(context.Background())
+	e.b.do("POST", "/api/apps/mc/start", nil)
+	if d := e.settle(t, "mc"); d.State != store.DeployLive {
+		t.Fatalf("start after it could be measured: %+v", d)
+	}
+}
+
 func TestFailedVersionWithVolumesBringsTheOldOneBack(t *testing.T) {
 	e := newAppEnv(t)
 	e.b.do("POST", "/api/apps", map[string]any{"id": "mc", "source": "image", "image": "good:1",
@@ -173,5 +212,59 @@ func TestGameServersMainVolumeStaysWhereItIs(t *testing.T) {
 	}
 	if got := volumesOf(t, e, "survival")[0]; got.Path != main.Path {
 		t.Errorf("the volume is now at %s", got.Path)
+	}
+}
+
+// A game server that outgrows its disk stops the way its egg says, with the
+// time to save, not with a SIGTERM and a kill ten seconds later.
+func TestGameServerOverItsLimitStopsLikeThePowerButton(t *testing.T) {
+	e := newPowerEnv(t)
+	e.newGame(t, "survival", consoleEggURL, nil)
+	e.power(t, "survival", "start")
+	e.settle(t, "survival")
+	id := e.liveContainer(t, "survival")
+	e.core.emit(id, "Done (1s)! For help, type \"help\"\n")
+	e.waitState(t, "survival", "running")
+
+	vol := volumesOf(t, e, "survival")[0]
+	e.core.sizes = map[string]int64{vol.Name: vol.LimitMB<<20 + 1}
+	e.s.checkVolumes(context.Background())
+	e.settle(t, "survival")
+	e.waitState(t, "survival", "stopped")
+
+	if got := e.core.consoles[id]; len(got) != 1 || got[0] != "stop\n" {
+		t.Errorf("console %q, want the egg's stop command", got)
+	}
+	if len(e.core.signals[id]) != 0 {
+		t.Errorf("signals %v", e.core.signals[id])
+	}
+	if a, _ := e.s.Store.App(context.Background(), "survival"); !a.Stopped {
+		t.Error("the server is not kept down")
+	}
+}
+
+// A files app runs an egg and has the same stop button as a game server, so
+// over its limit it stops the way that button stops it.
+func TestFilesAppOverItsLimitStopsLikeItsStopButton(t *testing.T) {
+	e := newRuntimeEnv(t)
+	e.newFiles(t, "bot", nil)
+	e.power(t, "bot", "start")
+	e.settle(t, "bot")
+	e.waitState(t, "bot", "running")
+	id := e.liveContainer(t, "bot")
+
+	vol := volumesOf(t, e, "bot")[0]
+	e.core.sizes = map[string]int64{vol.Name: vol.LimitMB<<20 + 1}
+	e.s.checkVolumes(context.Background())
+	e.settle(t, "bot")
+	e.waitState(t, "bot", "stopped")
+
+	// The egg stops with ^C, which is a signal to the process, not the
+	// container's stop with its ten seconds.
+	if got := e.core.signals[id]; len(got) != 1 || got[0] != "SIGINT" {
+		t.Errorf("signals %v, want the egg's stop signal", got)
+	}
+	if a, _ := e.s.Store.App(context.Background(), "bot"); !a.Stopped {
+		t.Error("the app is not kept down")
 	}
 }

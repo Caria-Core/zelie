@@ -168,6 +168,33 @@ Backups are encrypted with [age](https://age-encryption.org) before they touch t
 The key is the core's; a recovery file, which the panel asks you to save, lets another
 server open them.
 
+A backup is a tar archive. A file that has holes is stored as the stretches of it that hold
+data, so a backup, a restore and a clone take time in proportion to what the file takes on
+disk, not to its length: a game or a container can make a file of terabytes that takes no
+space. Such a file is a sparse entry in the format GNU tar uses (PAX version 1.0): a header
+with the records `GNU.sparse.major=1`, `GNU.sparse.minor=0`, `GNU.sparse.name` and
+`GNU.sparse.realsize`, then the entry, which holds a map of the pieces that have data (a
+count, then an offset and a length for each, one number to a line, padded to a whole block)
+followed by the pieces. `tar`, `bsdtar` and Go's `archive/tar` expand it to the whole file,
+so a backup can be restored by hand or by an older version of Zelie. Zelie's own restore
+reads the map and leaves the holes as holes. A map is kept under a MiB, which is as much as
+Go's reader accepts, so a file with more pieces than fit is written with the shortest holes
+between them filled in, and no more of them than it takes. The zeros that come of it are read,
+compressed and encrypted like data, so a file that would need more of them than it takes on
+disk, or a GiB, is refused with an error that names it: a container can scatter small pieces
+of data over a file of terabytes, and joining them would take as long as reading the whole
+file. Files without holes, and every archive made before this, are plain tar entries. The
+file manager's Compress writes sparse files the same way, and Extract writes an entry out
+whole, so it counts the length of the file against the room, not its data.
+
+Sparse entries that other tools write in the older formats (old GNU, and PAX 0.0 and 0.1) are
+expanded by Go's reader, holes as zeros, and restored as holes where the blocks are zeros. That
+takes time in proportion to the length the archive claims, and the same goes for such an entry
+that is skipped because it lies outside the volumes being restored. A restore can be
+cancelled while it runs. A restore only reads archives that Zelie made (the backups it keeps,
+their offsite copies and the stream of a clone), and a backup of volumes cannot be imported
+from an upload, so these formats matter only if an archive was damaged or altered.
+
 ## Game servers
 
 Zelie reads Pterodactyl and Pelican eggs, so existing game definitions work. The console
@@ -198,10 +225,20 @@ with the panel again, so changing the password, removing a key or deleting the s
 it; after 15 minutes without traffic it is closed. Files are written whole, through a
 temporary file in the core, so an upload that breaks halfway leaves the old file as it was;
 for the same reason a file can only be written from start to end, which every common SFTP
-program does. The core makes the host key in `/etc/zelie-sftp`, a folder only root can
-write, so its fingerprint is on the Server page before anyone has connected. The SFTP
-server can read the key but not change anything next to it. The SFTP port can never be
-given to a game server, or SFTP logins would be forwarded to it.
+program does. A folder is listed whole, however many items it holds: the core sends them a
+page at a time and the server hands them on as the client asks. A connection can have 32
+folders open at once, since each keeps a request to the core going. A client can change the
+permission bits of a file, which is how `scp -p` and `sftp put -p` keep the mode of an
+upload, and cut or extend a file within the room its server has left; the special bits are
+never set, and the owner cannot be changed. Access and modification times are set too, to
+the second, on the item named and not on what a link points to, which is how those two
+commands keep the times of an upload. On a file still being uploaded the mode, the length
+and the times wait for the core to have the file, and an error in setting them is reported
+when the client closes it. The core
+makes the host key in `/etc/zelie-sftp`, a folder only root can write, so its fingerprint is
+on the Server page before anyone has connected. The SFTP server can read the key but not
+change anything next to it. The SFTP port can never be given to a game server, or SFTP
+logins would be forwarded to it.
 
 Players connect straight to the game server, not through the proxy. The administrator
 gives Zelie a pool of ports, as in Pterodactyl and Pelican, and each server takes some of

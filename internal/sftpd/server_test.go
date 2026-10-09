@@ -16,8 +16,10 @@ import (
 	"path"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -36,6 +38,18 @@ type fakeFiles struct {
 	dirs  map[string]string
 	paths []string
 	rooms []*int64
+	// made lists folders that are not on a disk: n items, and then err
+	// instead of the end.
+	made map[string]madeFolder
+	// opened counts the folders that were closed.
+	opened atomic.Int32
+	// failMode makes setting a mode fail.
+	failMode error
+}
+
+type madeFolder struct {
+	n   int
+	err error
 }
 
 func (f *fakeFiles) root(ref core.FileRef, p string) (*os.Root, string, error) {
@@ -75,29 +89,115 @@ func entry(name string, fi fs.FileInfo) core.FileEntry {
 	return core.FileEntry{Name: name, Size: fi.Size(), Mode: fi.Mode().String(), Modified: fi.ModTime(), Dir: fi.IsDir(), Symlink: fi.Mode()&fs.ModeSymlink != 0}
 }
 
-func (f *fakeFiles) ListFiles(_ context.Context, ref core.FileRef, dir string) (core.FileList, error) {
+// fakeFolder serves entries one at a time, as the core's stream does.
+type fakeFolder struct {
+	next   func() (core.FileEntry, error)
+	closed *atomic.Int32
+}
+
+func (f *fakeFolder) Next() (core.FileEntry, error) { return f.next() }
+func (f *fakeFolder) Close() error                  { f.closed.Add(1); return nil }
+
+func (f *fakeFiles) OpenFolder(_ context.Context, ref core.FileRef, dir string) (core.Folder, error) {
+	// A folder that is made up as it is read, of any size, for the ones too
+	// big to put on a disk in a test.
+	f.mu.Lock()
+	made, ok := f.made[dir]
+	f.mu.Unlock()
+	if ok {
+		i := 0
+		return &fakeFolder{closed: &f.opened, next: func() (core.FileEntry, error) {
+			if i == made.n {
+				if made.err != nil {
+					return core.FileEntry{}, made.err
+				}
+				return core.FileEntry{}, io.EOF
+			}
+			i++
+			return core.FileEntry{Name: "file-" + strconv.Itoa(i), Size: int64(i), Mode: "-rw-r--r--"}, nil
+		}}, nil
+	}
 	r, p, err := f.root(ref, dir)
 	if err != nil {
-		return core.FileList{}, err
+		return nil, err
 	}
 	defer r.Close()
 	d, err := r.Open(p)
 	if err != nil {
-		return core.FileList{}, fail(err)
+		return nil, fail(err)
 	}
 	defer d.Close()
 	des, err := d.ReadDir(-1)
 	if err != nil {
-		return core.FileList{}, fail(err)
+		return nil, fail(err)
 	}
-	out := core.FileList{Path: p}
+	var entries []core.FileEntry
 	for _, de := range des {
-		fi, err := de.Info()
-		if err == nil {
-			out.Entries = append(out.Entries, entry(de.Name(), fi))
+		if fi, err := de.Info(); err == nil {
+			entries = append(entries, entry(de.Name(), fi))
 		}
 	}
-	return out, nil
+	return &fakeFolder{closed: &f.opened, next: func() (core.FileEntry, error) {
+		if len(entries) == 0 {
+			return core.FileEntry{}, io.EOF
+		}
+		e := entries[0]
+		entries = entries[1:]
+		return e, nil
+	}}, nil
+}
+
+func (f *fakeFiles) setFailMode(err error) {
+	f.mu.Lock()
+	f.failMode = err
+	f.mu.Unlock()
+}
+
+func (f *fakeFiles) SetFileMode(_ context.Context, ref core.FileRef, p string, mode fs.FileMode) error {
+	f.mu.Lock()
+	failMode := f.failMode
+	f.mu.Unlock()
+	if failMode != nil {
+		return failMode
+	}
+	r, c, err := f.root(ref, p)
+	if err != nil {
+		return err
+	}
+	defer r.Close()
+	return fail(r.Chmod(c, mode))
+}
+
+func (f *fakeFiles) SetFileTimes(_ context.Context, ref core.FileRef, p string, atime, mtime time.Time) error {
+	f.mu.Lock()
+	failMode := f.failMode
+	f.mu.Unlock()
+	if failMode != nil {
+		return failMode
+	}
+	r, c, err := f.root(ref, p)
+	if err != nil {
+		return err
+	}
+	defer r.Close()
+	return fail(r.Chtimes(c, atime, mtime))
+}
+
+func (f *fakeFiles) TruncateFile(_ context.Context, ref core.FileRef, p string, size int64) error {
+	f.mu.Lock()
+	f.rooms = append(f.rooms, ref.Room)
+	f.mu.Unlock()
+	r, c, err := f.root(ref, p)
+	if err != nil {
+		return err
+	}
+	defer r.Close()
+	file, err := r.OpenFile(c, os.O_WRONLY, 0)
+	if err != nil {
+		return fail(err)
+	}
+	defer file.Close()
+	return fail(file.Truncate(size))
 }
 
 func (f *fakeFiles) StatFile(_ context.Context, ref core.FileRef, p string) (core.FileEntry, error) {
@@ -553,11 +653,291 @@ func TestFileOperations(t *testing.T) {
 	if _, err := c.Stat("/plugins"); err == nil {
 		t.Error("the folder is still there")
 	}
+	// A mode and a length are applied, not only answered.
+	props := filepath.Join(e.alpha, "server.properties")
 	if err := c.Chmod("/server.properties", 0o600); err != nil {
-		t.Errorf("setstat must be accepted and ignored: %v", err)
+		t.Errorf("chmod: %v", err)
+	}
+	if st, _ := os.Stat(props); st.Mode() != 0o600 {
+		t.Errorf("mode after chmod 600: %v", st.Mode())
+	}
+	// Only the nine bits of read, write and execute are the client's to set.
+	if err := c.Chmod("/server.properties", 0o4755); err != nil {
+		t.Errorf("chmod 4755: %v", err)
+	}
+	if st, _ := os.Stat(props); st.Mode() != 0o755 {
+		t.Errorf("mode after chmod 4755: %v, want 755 with no special bit", st.Mode())
+	}
+	e.files.rooms = nil
+	if err := c.Truncate("/server.properties", 4); err != nil {
+		t.Errorf("truncate: %v", err)
+	}
+	if got, _ := os.ReadFile(props); string(got) != "motd" {
+		t.Errorf("content after truncate to 4: %q", got)
+	}
+	if len(e.files.rooms) != 1 || e.files.rooms[0] == nil {
+		t.Errorf("the truncate was not told the room the volume has: %v", e.files.rooms)
+	}
+	if err := c.Chmod("/nothing", 0o600); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("chmod of a file that is not there: %v", err)
+	}
+	if err := c.Truncate("/nothing", 0); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("truncate of a file that is not there: %v", err)
+	}
+	// The owner is not the client's to change, and it is told so.
+	for name, err := range map[string]error{"chown": c.Chown("/server.properties", 0, 0), "chgrp": c.Chown("/server.properties", -1, 0)} {
+		if !errors.Is(err, os.ErrPermission) {
+			t.Errorf("%s: %v, want a permission error", name, err)
+		}
+	}
+	// Times are what clients send after an upload, and they are set.
+	at, mt := time.Unix(1700000000, 0), time.Unix(1600000000, 0)
+	if err := c.Chtimes("/server.properties", at, mt); err != nil {
+		t.Errorf("setting times: %v", err)
+	}
+	if st, _ := os.Stat(props); !st.ModTime().Equal(mt) {
+		t.Errorf("modified %v after setting %v", st.ModTime(), mt)
+	}
+	if err := c.Chtimes("/nothing", at, mt); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("times of a file that is not there: %v", err)
 	}
 	if err := c.Symlink("/server.properties", "/link"); err == nil {
 		t.Error("made a link")
+	}
+}
+
+// OpenSSH's sftp put -p and scp -p set the mode on the open file before they
+// close it. The core has no file at the path until the upload is done, so
+// the mode waits for that.
+func TestModeSetOnAnOpenUploadIsApplied(t *testing.T) {
+	e := newEnv(t)
+	c := e.sftpAs(t, "alpha", ssh.Password("alpha-secret"))
+	mode := func(name string) fs.FileMode {
+		st, err := os.Stat(filepath.Join(e.alpha, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return st.Mode()
+	}
+
+	// A new file.
+	f, err := c.Create("/new.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Write([]byte("new content"))
+	if err := f.Chmod(0o640); err != nil {
+		t.Fatalf("chmod on an open upload: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	if got := mode("new.txt"); got != 0o640 {
+		t.Errorf("new.txt is %v, want the mode that was set", got)
+	}
+	if b, _ := os.ReadFile(filepath.Join(e.alpha, "new.txt")); string(b) != "new content" {
+		t.Errorf("content %q", b)
+	}
+
+	// A file that is replaced.
+	f, err = c.OpenFile("/server.properties", os.O_WRONLY|os.O_TRUNC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Write([]byte("motd=again\n"))
+	if err := f.Chmod(0o4700); err != nil {
+		t.Fatalf("chmod on an open upload: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if got := mode("server.properties"); got != 0o700 {
+		t.Errorf("server.properties is %v, want 700 with no special bit", got)
+	}
+
+	// If the mode cannot be set when the file is in, the client hears of it
+	// when it closes the file, not never.
+	f, err = c.Create("/failed.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Write([]byte("x"))
+	f.Chmod(0o600)
+	e.files.setFailMode(errors.New("the disk went away"))
+	err = f.Close()
+	e.files.setFailMode(nil)
+	if err == nil {
+		t.Error("an upload whose mode could not be set closed without an error")
+	}
+
+	// A file that is abandoned halfway keeps nothing, mode included.
+	f, err = c.Create("/half.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Write([]byte("half"))
+	f.Chmod(0o600)
+	c.Close()
+	for range 100 {
+		if _, err := os.Stat(filepath.Join(e.alpha, "half.txt.tmp")); err != nil {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if _, err := os.Stat(filepath.Join(e.alpha, "half.txt")); err == nil {
+		t.Error("an upload that was cut off left a file")
+	}
+}
+
+// OpenSSH's sftp put -p and scp -p also set the times of the open file, which
+// are the times the file has once it is in.
+func TestTimesSetOnAnOpenUploadAreApplied(t *testing.T) {
+	e := newEnv(t)
+	c := e.sftpAs(t, "alpha", ssh.Password("alpha-secret"))
+	modified := func(name string) time.Time {
+		st, err := os.Stat(filepath.Join(e.alpha, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return st.ModTime()
+	}
+	at, mt := time.Unix(1700000000, 0), time.Unix(1600000000, 0)
+
+	// A new file, with the mode as well.
+	f, err := c.Create("/new.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Write([]byte("new content"))
+	if err := f.Chmod(0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Chtimes("/new.txt", at, mt); err != nil {
+		t.Fatalf("times on an open upload: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	if got := modified("new.txt"); !got.Equal(mt) {
+		t.Errorf("new.txt was modified %v, want %v", got, mt)
+	}
+	if st, _ := os.Stat(filepath.Join(e.alpha, "new.txt")); st.Mode() != 0o640 {
+		t.Errorf("new.txt is %v", st.Mode())
+	}
+
+	// A file that is replaced.
+	f, err = c.OpenFile("/server.properties", os.O_WRONLY|os.O_TRUNC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Write([]byte("motd=again\n"))
+	if err := c.Chtimes("/server.properties", at, mt); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if got := modified("server.properties"); !got.Equal(mt) {
+		t.Errorf("server.properties was modified %v, want %v", got, mt)
+	}
+
+	// If the times cannot be set when the file is in, the client hears of it
+	// when it closes the file.
+	f, err = c.Create("/failed.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Write([]byte("x"))
+	c.Chtimes("/failed.txt", at, mt)
+	e.files.setFailMode(errors.New("the disk went away"))
+	err = f.Close()
+	e.files.setFailMode(nil)
+	if err == nil {
+		t.Error("an upload whose times could not be set closed without an error")
+	}
+}
+
+// Some clients set the length of a file before they send any of it.
+func TestLengthSetOnAnOpenUpload(t *testing.T) {
+	e := newEnv(t)
+	c := e.sftpAs(t, "alpha", ssh.Password("alpha-secret"))
+	size := func(name string) int64 {
+		st, err := os.Stat(filepath.Join(e.alpha, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return st.Size()
+	}
+
+	// The whole length first, then all of it.
+	f, _ := c.Create("/pre.bin")
+	if err := f.Truncate(10); err != nil {
+		t.Fatalf("setting the length of an open upload: %v", err)
+	}
+	f.Write([]byte("0123456789"))
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if got := size("pre.bin"); got != 10 {
+		t.Errorf("pre.bin is %d bytes", got)
+	}
+
+	// A length above what was sent leaves a hole at the end.
+	f, _ = c.Create("/hole.bin")
+	f.Truncate(100)
+	f.Write([]byte("0123456789"))
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if got := size("hole.bin"); got != 100 {
+		t.Errorf("hole.bin is %d bytes, want the length that was set", got)
+	}
+
+	// Cutting what was already sent is not something to answer yes to.
+	f, _ = c.Create("/cut.bin")
+	f.Write([]byte("0123456789"))
+	if err := f.Truncate(4); err == nil {
+		t.Error("a length below what was sent was accepted")
+	}
+	f.Close()
+}
+
+// A folder is listed whole, however many items it holds.
+func TestFolderOfAnySizeIsListedWhole(t *testing.T) {
+	e := newEnv(t)
+	c := e.sftpAs(t, "alpha", ssh.Password("alpha-secret"))
+	e.files.made = map[string]madeFolder{"/big": {n: 25000}, "/breaks": {n: 150, err: &core.Error{Status: 500, Message: "listing the folder failed, see the core log"}}}
+
+	infos, err := c.ReadDir("/big")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(infos) != 25000 {
+		t.Fatalf("%d items, want 25000", len(infos))
+	}
+	seen := map[string]bool{}
+	for _, fi := range infos {
+		seen[fi.Name()] = true
+	}
+	if len(seen) != 25000 || !seen["file-1"] || !seen["file-25000"] {
+		t.Errorf("%d different names", len(seen))
+	}
+	if e.files.opened.Load() != 1 {
+		t.Errorf("%d listings were closed, want 1", e.files.opened.Load())
+	}
+
+	// A listing that breaks off is an error to the client, not a short list.
+	infos, err = c.ReadDir("/breaks")
+	if err == nil {
+		t.Errorf("a listing that broke off after %d items came back whole", len(infos))
+	}
+	if e.files.opened.Load() != 2 {
+		t.Errorf("%d listings were closed, want 2", e.files.opened.Load())
+	}
+
+	// A folder that is not there is still said so.
+	if _, err := c.ReadDir("/nothing"); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("a folder that is not there: %v", err)
 	}
 }
 

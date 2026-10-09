@@ -134,9 +134,12 @@ func runCore(stderr io.Writer) int {
 	}()
 
 	sftpVolumes, err := core.LoadSFTPVolumes("/var/lib/zelie/sftp-volumes.json")
-	if err != nil {
+	if sftpVolumes == nil {
 		log.Error("start core", "err", err)
 		return 1
+	}
+	if err != nil {
+		log.Warn("starting with no SFTP volumes until the panel sends the list", "err", err)
 	}
 
 	s := &core.Server{

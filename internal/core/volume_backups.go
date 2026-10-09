@@ -23,8 +23,9 @@ type VolumeRef struct {
 }
 
 // diskReserve is left free by backups and restores, so they never fill the
-// disk the apps write to.
-const diskReserve = 1 << 30
+// disk the apps write to. A variable so a test can change what is free
+// between two requests.
+var diskReserve int64 = 1 << 30
 
 var (
 	errNoRoomBackup  = msg.Define(http.StatusUnprocessableEntity, "backup.no_room", "Not enough disk space: the backup needs up to {need} and {free} is free, and Zelie keeps 1 GB free for the apps.")
@@ -69,7 +70,7 @@ func (s *Server) roomFor(need int64, what msg.Template) error {
 	if err != nil {
 		return err
 	}
-	if free-need < diskReserve {
+	if need > free-diskReserve {
 		return what.Err("need", sizeLabel(need), "free", sizeLabel(free))
 	}
 	return nil

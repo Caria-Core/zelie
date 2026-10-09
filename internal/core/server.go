@@ -18,6 +18,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -45,7 +46,7 @@ type Engine interface {
 	Usage(id string) (engine.Usage, error)
 	CreateVolume(name string) error
 	RemoveVolume(ctx context.Context, name string) error
-	VolumeSizes() (map[string]int64, error)
+	VolumeSizes() (sizes map[string]int64, unmeasured map[string]error, err error)
 	Links(app string) ([]engine.Link, error)
 	SetLinks(ctx context.Context, app string, links []engine.Link) error
 	SetForwards(ctx context.Context, app string, forwards []engine.Forward) error
@@ -86,6 +87,10 @@ type Server struct {
 
 	busy          busy
 	uploadSweeper uploadSweeper
+	// unmeasured holds the volumes the last measurement could not do, so the
+	// log tells of each once and not at every check.
+	unmeasuredMu sync.Mutex
+	unmeasured   map[string]bool
 }
 
 func (s *Server) Handler() http.Handler {
@@ -106,9 +111,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/volumes/{name}/prepare", s.prepareVolume)
 	mux.HandleFunc("POST /v1/volume-copies", s.copyVolume)
 	mux.HandleFunc("POST /v1/volumes/{name}/files/list", s.listFiles)
+	mux.HandleFunc("POST /v1/volumes/{name}/files/entries", s.streamFolder)
 	mux.HandleFunc("GET /v1/volumes/{name}/files/content", s.readFile)
 	mux.HandleFunc("PUT /v1/volumes/{name}/files/content", s.writeFile)
 	mux.HandleFunc("POST /v1/volumes/{name}/files/stat", s.statFile)
+	mux.HandleFunc("POST /v1/volumes/{name}/files/chmod", s.chmodFile)
+	mux.HandleFunc("POST /v1/volumes/{name}/files/truncate", s.truncateFile)
+	mux.HandleFunc("POST /v1/volumes/{name}/files/chtimes", s.chtimesFile)
 	mux.HandleFunc("POST /v1/volumes/{name}/files/remove", s.removeFile)
 	mux.HandleFunc("POST /v1/volumes/{name}/files/mkdir", s.makeFolder)
 	mux.HandleFunc("POST /v1/volumes/{name}/files/rename", s.renameFile)
@@ -169,7 +178,11 @@ func (s *Server) Handler() http.Handler {
 // anything. Which volume a login gets is the panel's decision.
 var SFTPRoutes = []string{
 	"POST /v1/volumes/{name}/files/list",
+	"POST /v1/volumes/{name}/files/entries",
 	"POST /v1/volumes/{name}/files/stat",
+	"POST /v1/volumes/{name}/files/chmod",
+	"POST /v1/volumes/{name}/files/truncate",
+	"POST /v1/volumes/{name}/files/chtimes",
 	"POST /v1/volumes/{name}/files/mkdir",
 	"POST /v1/volumes/{name}/files/rename",
 	"POST /v1/volumes/{name}/files/remove",
@@ -531,6 +544,10 @@ func (s *Server) fail(w http.ResponseWriter, op, id string, err error) {
 		writeError(w, http.StatusConflict, errors.New("container already exists"))
 	case errdefs.IsFailedPrecondition(err):
 		writeError(w, http.StatusConflict, errors.New("the container cannot do that in its state"))
+	case errors.Is(err, engine.ErrTooDeep):
+		s.Log.Warn(op+" failed", "id", id, "err", err)
+		e := errFileTooDeep.Err()
+		writeError(w, e.Status, e)
 	default:
 		s.Log.Error(op+" failed", "id", id, "err", err)
 		writeError(w, http.StatusInternalServerError, fmt.Errorf("%s failed, see the core log", op))

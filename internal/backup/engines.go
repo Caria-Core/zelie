@@ -72,17 +72,18 @@ rc=$?; rm -f ` + restoreFile + `; exit $rc`},
 // that is not right, fails with one of these. They are meant for the user;
 // other errors are Zelie's own.
 var (
-	errDumpFailed  = msg.Define(http.StatusUnprocessableEntity, "backup.dump_failed", "The dump failed with exit code {code}: {detail}")
-	errDumpKind    = msg.Define(http.StatusUnprocessableEntity, "backup.dump_kind", "The dump is not a {kind} file: {detail}")
-	errDumpCut     = msg.Define(http.StatusUnprocessableEntity, "backup.dump_cut", "The dump stopped before its end: {detail}")
-	errCopyFailed  = msg.Define(http.StatusUnprocessableEntity, "restore.copy_failed", "Copying the backup into the database failed with exit code {code}: {detail}")
-	errCopyShort   = msg.Define(http.StatusUnprocessableEntity, "restore.copy_short", "The backup did not arrive whole in the database: {sent} bytes were sent, and it reports {got}.")
-	errLoadFailed  = msg.Define(http.StatusUnprocessableEntity, "restore.load_failed", "Loading the backup failed with exit code {code}: {detail}")
-	errNotRedis    = msg.Define(http.StatusUnprocessableEntity, "restore.not_redis", "The backup is not a Redis file.")
-	errDamaged     = msg.Define(http.StatusUnprocessableEntity, "restore.damaged", "The backup is damaged: {detail}")
-	errCutShort    = msg.Define(http.StatusUnprocessableEntity, "restore.cut_short", "The backup is damaged: it ends in the middle of {file}.")
-	errLinkOut     = msg.Define(http.StatusUnprocessableEntity, "restore.link_out", "The backup links {file} to {target}, outside its volume.")
-	errThroughLink = msg.Define(http.StatusUnprocessableEntity, "restore.through_link", "The backup writes through the symbolic link {link}.")
+	errDumpFailed    = msg.Define(http.StatusUnprocessableEntity, "backup.dump_failed", "The dump failed with exit code {code}: {detail}")
+	errDumpKind      = msg.Define(http.StatusUnprocessableEntity, "backup.dump_kind", "The dump is not a {kind} file: {detail}")
+	errDumpCut       = msg.Define(http.StatusUnprocessableEntity, "backup.dump_cut", "The dump stopped before its end: {detail}")
+	errCopyFailed    = msg.Define(http.StatusUnprocessableEntity, "restore.copy_failed", "Copying the backup into the database failed with exit code {code}: {detail}")
+	errCopyShort     = msg.Define(http.StatusUnprocessableEntity, "restore.copy_short", "The backup did not arrive whole in the database: {sent} bytes were sent, and it reports {got}.")
+	errLoadFailed    = msg.Define(http.StatusUnprocessableEntity, "restore.load_failed", "Loading the backup failed with exit code {code}: {detail}")
+	errNotRedis      = msg.Define(http.StatusUnprocessableEntity, "restore.not_redis", "The backup is not a Redis file.")
+	errDamaged       = msg.Define(http.StatusUnprocessableEntity, "restore.damaged", "The backup is damaged: {detail}")
+	errCutShort      = msg.Define(http.StatusUnprocessableEntity, "restore.cut_short", "The backup is damaged: it ends in the middle of {file}.")
+	errLinkOut       = msg.Define(http.StatusUnprocessableEntity, "restore.link_out", "The backup links {file} to {target}, outside its volume.")
+	errThroughLink   = msg.Define(http.StatusUnprocessableEntity, "restore.through_link", "The backup writes through the symbolic link {link}.")
+	errTooFragmented = msg.Define(http.StatusUnprocessableEntity, "backup.too_fragmented", "{file} has its data in too many separate pieces to go into an archive without writing far more than it takes on disk. Move it out of the volume, or rewrite it without holes, and try again.")
 )
 
 // Kinds lists the kinds of backup a database can have.

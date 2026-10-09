@@ -11,6 +11,10 @@ import (
 	"slices"
 	"strings"
 	"syscall"
+
+	"golang.org/x/sys/unix"
+
+	"github.com/Caria-Core/zelie/internal/engine"
 )
 
 // Volume is one of an app's volumes in a backup. Dir is the folder it gets
@@ -43,11 +47,11 @@ type TarStats struct {
 // host. Sockets, pipes and devices are left out, and so are extended
 // attributes.
 func WriteTar(ctx context.Context, w io.Writer, vols []Volume) (TarStats, error) {
-	tw := tar.NewWriter(w)
+	tw := NewTarWriter(w)
 	var st TarStats
 	for _, v := range vols {
-		t := tarWalk{ctx: ctx, tw: tw, root: v.Root, dir: v.Dir, links: map[inode]string{}, stats: &st}
-		if err := t.walk("."); err != nil {
+		t := tarWalk{ctx: ctx, tw: tw, dir: v.Dir, links: map[inode]string{}, stats: &st}
+		if err := engine.WalkTree(v.Root, ".", t.visit); err != nil {
 			return st, err
 		}
 	}
@@ -58,73 +62,49 @@ type inode struct{ dev, ino uint64 }
 
 type tarWalk struct {
 	ctx   context.Context
-	tw    *tar.Writer
-	root  *os.Root
+	tw    *TarWriter
 	dir   string
 	links map[inode]string
 	stats *TarStats
 }
 
-func (t *tarWalk) walk(name string) error {
+// visit writes one item. A folder is written before what is in it, and every
+// item is reached from the folder that holds it, so a tree that is nested
+// deep costs no more than one that is not.
+func (t *tarWalk) visit(n *engine.TreeNode) error {
 	if err := t.ctx.Err(); err != nil {
 		return err
 	}
-	fi, err := t.root.Lstat(name)
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil // removed while the backup ran
+	name := n.Path()
+	if name == staging || name == old {
+		return fs.SkipDir
 	}
-	if err != nil {
-		return err
-	}
-	hdr := header(fi)
+	hdr := header(n.Info(), n.Stat.Uid, n.Stat.Gid)
 	hdr.Name = path.Join(t.dir, name)
-	switch {
-	case fi.IsDir():
+	switch n.Stat.Mode & unix.S_IFMT {
+	case unix.S_IFDIR:
 		hdr.Name += "/"
-		if err := t.tw.WriteHeader(hdr); err != nil {
-			return err
-		}
-		f, err := t.root.Open(name)
+		return t.tw.WriteHeader(hdr)
+	case unix.S_IFLNK:
+		target, err := n.Readlink()
 		if errors.Is(err, fs.ErrNotExist) {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		entries, err := f.ReadDir(-1)
-		f.Close()
-		if err != nil {
-			return err
-		}
-		for _, e := range entries {
-			if name == "." && (e.Name() == staging || e.Name() == old) {
-				continue
-			}
-			if err := t.walk(path.Join(name, e.Name())); err != nil {
-				return err
-			}
-		}
-		return nil
-	case fi.Mode()&fs.ModeSymlink != 0:
-		target, err := t.root.Readlink(name)
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil
+			return nil // removed while the backup ran
 		}
 		if err != nil {
 			return err
 		}
 		hdr.Typeflag, hdr.Linkname = tar.TypeSymlink, target
 		return t.tw.WriteHeader(hdr)
-	case fi.Mode().IsRegular():
-		if sys, ok := fi.Sys().(*syscall.Stat_t); ok && sys.Nlink > 1 {
-			key := inode{uint64(sys.Dev), uint64(sys.Ino)}
+	case unix.S_IFREG:
+		if n.Stat.Nlink > 1 {
+			key := inode{uint64(n.Stat.Dev), uint64(n.Stat.Ino)}
 			if first, ok := t.links[key]; ok {
 				hdr.Typeflag, hdr.Linkname = tar.TypeLink, first
 				return t.tw.WriteHeader(hdr)
 			}
 			t.links[key] = hdr.Name
 		}
-		return t.file(name, hdr, fi)
+		return t.file(n, hdr)
 	}
 	return nil
 }
@@ -132,42 +112,50 @@ func (t *tarWalk) walk(name string) error {
 // file copies one file. The header already carries its size; if the file
 // shrinks or grows meanwhile, the copy is padded or cut to that size so the
 // archive stays whole, and the file is counted as changed.
-func (t *tarWalk) file(name string, hdr *tar.Header, before fs.FileInfo) error {
-	// Non-blocking, in case the file became a pipe since it was looked at.
-	f, err := t.root.OpenFile(name, os.O_RDONLY|syscall.O_NONBLOCK, 0)
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil
+func (t *tarWalk) file(n *engine.TreeNode, hdr *tar.Header) error {
+	before := n.Info()
+	// Not through a link and not waiting for a writer, in case the file
+	// became one or a pipe since it was looked at.
+	f, err := n.Open()
+	if errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ELOOP) || errors.Is(err, syscall.ENOTDIR) {
+		return nil // removed, or replaced by a link or a folder
 	}
 	if err != nil {
 		return err
 	}
 	defer f.Close()
-	if fi, err := f.Stat(); err != nil || !fi.Mode().IsRegular() {
+	fi, err := f.Stat()
+	if err != nil || !fi.Mode().IsRegular() {
 		return err
 	}
-	hdr.Typeflag, hdr.Size = tar.TypeReg, before.Size()
-	if err := t.tw.WriteHeader(hdr); err != nil {
+	hdr.Size = before.Size()
+	data, changed, err := t.tw.WriteFile(t.ctx, hdr, f)
+	if err != nil {
 		return err
-	}
-	n, err := io.CopyN(t.tw, f, hdr.Size)
-	if err != nil && !errors.Is(err, io.EOF) {
-		return err
-	}
-	changed := n < hdr.Size
-	if changed {
-		if _, err := io.CopyN(t.tw, zeros{}, hdr.Size-n); err != nil {
-			return err
-		}
 	}
 	if after, err := f.Stat(); err == nil && (after.Size() != before.Size() || !after.ModTime().Equal(before.ModTime())) {
 		changed = true
 	}
 	t.stats.Files++
-	t.stats.Bytes += hdr.Size
+	t.stats.Bytes += data
 	if changed {
 		t.stats.Changed++
 	}
 	return nil
+}
+
+// ctxReader stops reading once ctx is done. A file can be much larger than the
+// space it takes, so checking between files is not enough to stop a copy.
+type ctxReader struct {
+	ctx context.Context
+	r   io.Reader
+}
+
+func (c ctxReader) Read(b []byte) (int, error) {
+	if err := c.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return c.r.Read(b)
 }
 
 type zeros struct{}
@@ -177,7 +165,7 @@ func (zeros) Read(b []byte) (int, error) {
 	return len(b), nil
 }
 
-func header(fi fs.FileInfo) *tar.Header {
+func header(fi fs.FileInfo, uid, gid uint32) *tar.Header {
 	mode := int64(fi.Mode().Perm())
 	if fi.Mode()&fs.ModeSetuid != 0 {
 		mode |= 0o4000
@@ -188,11 +176,7 @@ func header(fi fs.FileInfo) *tar.Header {
 	if fi.Mode()&fs.ModeSticky != 0 {
 		mode |= 0o1000
 	}
-	hdr := &tar.Header{Typeflag: tar.TypeDir, Mode: mode, ModTime: fi.ModTime(), Format: tar.FormatPAX}
-	if sys, ok := fi.Sys().(*syscall.Stat_t); ok {
-		hdr.Uid, hdr.Gid = int(sys.Uid), int(sys.Gid)
-	}
-	return hdr
+	return &tar.Header{Typeflag: tar.TypeDir, Mode: mode, ModTime: fi.ModTime(), Uid: int(uid), Gid: int(gid), Format: tar.FormatPAX}
 }
 
 // RestoreTar replaces the volumes' files with what the archive holds.
@@ -229,13 +213,28 @@ func RestoreTarCapped(ctx context.Context, r io.Reader, vols []Volume, limit int
 			v.Root.RemoveAll(staging)
 		}
 	}
-	tr := tar.NewReader(r)
+	rec := &recorder{r: r}
+	tr := tar.NewReader(rec)
 	for {
 		if err := ctx.Err(); err != nil {
 			cleanUp()
 			return nil, err
 		}
+		// What is left of the entry before is read now, so that what the
+		// recorder keeps from here is the headers of the next one. For an
+		// entry in an older sparse format, which Go expands, that means its
+		// holes are read as zeros even when it was skipped. The read stops
+		// when the restore is cancelled.
+		if _, err := io.Copy(io.Discard, ctxReader{ctx, tr}); err != nil {
+			cleanUp()
+			if cerr := ctx.Err(); cerr != nil {
+				return nil, cerr
+			}
+			return nil, errDamaged.Err("detail", err.Error())
+		}
+		rec.start()
 		hdr, err := tr.Next()
+		rec.on = false
 		if errors.Is(err, io.EOF) {
 			break
 		}
@@ -243,21 +242,33 @@ func RestoreTarCapped(ctx context.Context, r io.Reader, vols []Volume, limit int
 			cleanUp()
 			return nil, errDamaged.Err("detail", err.Error())
 		}
-		i, rel, ok := owning(vols, hdr.Name)
-		if !ok {
-			continue
-		}
-		if hdr.Typeflag == tar.TypeLink {
-			j, target, ok := owning(vols, hdr.Linkname)
-			if !ok || j != i || target == "." {
+		var body io.Reader = ctxReader{ctx, tr}
+		var sparse *sparseEntry
+		if isSparse(hdr) {
+			// The reader would write the holes out as zeros. It has read the
+			// map, so what follows in the archive is the pieces, which are
+			// read here and the reader starts again after them.
+			if sparse, err = readSparse(rec, ctxReader{ctx, rec}, hdr); err != nil {
 				cleanUp()
-				return nil, errLinkOut.Err("file", hdr.Name, "target", hdr.Linkname)
+				return nil, err
 			}
-			hdr.Linkname = target
 		}
-		if err := unpacks[i].entry(hdr, rel, tr); err != nil {
+		if err := restoreEntry(vols, unpacks, hdr, body, sparse); err != nil {
 			cleanUp()
 			return nil, err
+		}
+		if sparse != nil {
+			if err := sparse.finish(); err != nil {
+				cleanUp()
+				switch {
+				case ctx.Err() != nil:
+					return nil, ctx.Err()
+				case errors.Is(err, io.ErrUnexpectedEOF):
+					return nil, errCutShort.Err("file", hdr.Name)
+				}
+				return nil, errDamaged.Err("detail", err.Error())
+			}
+			tr = tar.NewReader(rec)
 		}
 	}
 	var restored []string
@@ -273,6 +284,22 @@ func RestoreTarCapped(ctx context.Context, r io.Reader, vols []Volume, limit int
 		restored = append(restored, v.Dir)
 	}
 	return restored, nil
+}
+
+// restoreEntry puts one entry in the volume it belongs to, if any.
+func restoreEntry(vols []Volume, unpacks []*unpack, hdr *tar.Header, body io.Reader, sparse *sparseEntry) error {
+	i, rel, ok := owning(vols, hdr.Name)
+	if !ok {
+		return nil
+	}
+	if hdr.Typeflag == tar.TypeLink {
+		j, target, ok := owning(vols, hdr.Linkname)
+		if !ok || j != i || target == "." {
+			return errLinkOut.Err("file", hdr.Name, "target", hdr.Linkname)
+		}
+		hdr.Linkname = target
+	}
+	return unpacks[i].entry(hdr, rel, body, sparse)
 }
 
 // owning finds the volume an archive path belongs to and the path inside
@@ -323,39 +350,43 @@ func (b *budget) take(n int64) error {
 // a sparse file in the archive does not grow to its full size on disk. The
 // final truncate keeps a hole at the end in the file's length.
 func copySparse(f *os.File, body io.Reader, b *budget) error {
+	n, hole, err := copyBlocks(f, body, b)
+	if err == nil && hole {
+		err = f.Truncate(n)
+	}
+	return err
+}
+
+// copyBlocks is copySparse without the truncate. It says how many bytes
+// body held and whether it ended in a hole, which the file is then short by.
+func copyBlocks(f *os.File, body io.Reader, b *budget) (n int64, hole bool, err error) {
 	buf := make([]byte, 64<<10)
-	var pos int64
-	hole := false
 	for {
-		n, rerr := fill(body, buf)
-		if n > 0 {
-			if isZero(buf[:n]) {
-				if _, err := f.Seek(int64(n), io.SeekCurrent); err != nil {
-					return err
+		m, rerr := fill(body, buf)
+		if m > 0 {
+			if isZero(buf[:m]) {
+				if _, err := f.Seek(int64(m), io.SeekCurrent); err != nil {
+					return n, hole, err
 				}
 				hole = true
 			} else {
-				if err := b.take(int64(n)); err != nil {
-					return err
+				if err := b.take(int64(m)); err != nil {
+					return n, hole, err
 				}
-				if _, err := f.Write(buf[:n]); err != nil {
-					return err
+				if _, err := f.Write(buf[:m]); err != nil {
+					return n, hole, err
 				}
 				hole = false
 			}
-			pos += int64(n)
+			n += int64(m)
 		}
 		if rerr == io.EOF {
-			break
+			return n, hole, nil
 		}
 		if rerr != nil {
-			return rerr
+			return n, hole, rerr
 		}
 	}
-	if hole {
-		return f.Truncate(pos)
-	}
-	return nil
 }
 
 // fill reads until buf is full or body ends. Unlike io.ReadFull it returns
@@ -387,7 +418,9 @@ type dirTimes struct {
 	hdr  *tar.Header
 }
 
-func (u *unpack) entry(hdr *tar.Header, rel string, body io.Reader) error {
+// entry makes one entry of the archive. A sparse file is given as sparse,
+// and its body is not read.
+func (u *unpack) entry(hdr *tar.Header, rel string, body io.Reader, sparse *sparseEntry) error {
 	u.found = true
 	if rel == "." {
 		if hdr.Typeflag == tar.TypeDir {
@@ -412,12 +445,18 @@ func (u *unpack) entry(hdr *tar.Header, rel string, body io.Reader) error {
 		}
 		u.dirs = append(u.dirs, dirTimes{name, hdr})
 		return nil
-	case tar.TypeReg:
+	case tar.TypeReg, tar.TypeGNUSparse:
+		// The reader has expanded the old GNU sparse type ('S') already, so
+		// its body is read like a regular file's, holes as zeros.
 		f, err := u.root.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 		if err != nil {
 			return err
 		}
-		err = copySparse(f, body, u.budget)
+		if sparse != nil {
+			err = copyPieces(f, sparse, u.budget)
+		} else {
+			err = copySparse(f, body, u.budget)
+		}
 		if cerr := f.Close(); err == nil {
 			err = cerr
 		}

@@ -65,6 +65,7 @@ export default {
 	'msg.backup.not_made': 'This backup was not made.',
 	'msg.backup.not_offsite': 'Set up off-site storage first.',
 	'msg.backup.panel_restarted': 'The panel restarted during this backup.',
+	'msg.backup.too_fragmented': '{file} has its data in too many separate pieces to go into an archive without writing far more than it takes on disk. Move it out of the volume, or rewrite it without holes, and try again.',
 	'msg.console.bad_command': 'A command is one line of at most {max} bytes.',
 	'msg.console.bad_message': 'The message was not understood.',
 	'msg.console.bad_origin': 'The console only opens from the panel\'s own page.',
@@ -155,6 +156,7 @@ export default {
 	'msg.files.not_folder': '{path} is not a folder.',
 	'msg.files.not_found': 'There is no {path} in the server\'s files.',
 	'msg.files.root': 'The server\'s top folder cannot be moved, renamed or deleted.',
+	'msg.files.too_deep': 'Folders in here are nested too deep to go through. Remove the deepest ones first.',
 	'msg.files.too_large': 'The file is larger than {limit}.',
 	'msg.files.too_many': 'Too many items were chosen at once.',
 	'msg.files.too_many_favorites': 'A server can have at most {limit} favourites. Remove one first.',
@@ -376,4 +378,5 @@ export default {
 	'msg.volume.small': 'A volume\'s limit must be at least {min} MB.',
 	'msg.volume.stop_first': 'Stop the app before deleting one of its volumes.',
 	'msg.volume.too_many': 'An app can have at most {max} volumes.',
+	'msg.volume.unmeasured': 'The volume at {path} cannot be measured, so its {limit} limit cannot be checked. Folders nested too deep in it are the usual cause; remove them to start the app.',
 } as const;

@@ -3,6 +3,7 @@ package core
 import (
 	"encoding/json"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -98,6 +99,37 @@ func TestImportRefused(t *testing.T) {
 	}
 }
 
+// The disk was checked when the upload began, and what else writes to it
+// does not wait. Each piece is checked against what is free now.
+func TestUploadPieceIsRefusedWhenTheDiskFilledUp(t *testing.T) {
+	s, _, _ := backupServer(t)
+	root := &peer.Peer{UID: 0}
+	rec := request(t, s, root, "POST", "/v1/uploads", `{"app":"db","size":40}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("start: %d %s", rec.Code, rec.Body)
+	}
+	var u Upload
+	json.Unmarshal(rec.Body.Bytes(), &u)
+	if rec = request(t, s, root, "PUT", "/v1/uploads/"+u.ID+"?offset=0", strings.Repeat("a", 20)); rec.Code != http.StatusOK {
+		t.Fatalf("first piece: %d %s", rec.Code, rec.Body)
+	}
+
+	defer func(n int64) { diskReserve = n }(diskReserve)
+	diskReserve = math.MaxInt64 / 2
+	rec = request(t, s, root, "PUT", "/v1/uploads/"+u.ID+"?offset=20", strings.Repeat("b", 20))
+	if rec.Code != http.StatusUnprocessableEntity || !strings.Contains(rec.Body.String(), "upload.no_room") {
+		t.Errorf("piece with no room: %d %s", rec.Code, rec.Body)
+	}
+	if rec = request(t, s, root, "GET", "/v1/uploads/"+u.ID, ""); !strings.Contains(rec.Body.String(), `"received":20`) {
+		t.Errorf("a refused piece was kept: %s", rec.Body)
+	}
+
+	diskReserve = 1 << 30
+	if rec = request(t, s, root, "PUT", "/v1/uploads/"+u.ID+"?offset=20", strings.Repeat("b", 20)); rec.Code != http.StatusOK {
+		t.Errorf("piece once there is room: %d %s", rec.Code, rec.Body)
+	}
+}
+
 func TestUploadChecks(t *testing.T) {
 	s, _, _ := backupServer(t)
 	root := &peer.Peer{UID: 0}
@@ -109,6 +141,13 @@ func TestUploadChecks(t *testing.T) {
 	if rec := request(t, s, root, "POST", "/v1/uploads", `{"app":"db","size":1099511627776000}`); rec.Code != http.StatusUnprocessableEntity ||
 		!strings.Contains(rec.Body.String(), "upload.no_room") {
 		t.Errorf("huge: %d %s", rec.Code, rec.Body)
+	}
+	// Sizes whose double does not fit in a number must not pass as small.
+	for _, size := range []string{"9223372036854775807", "6917529027641081856", "4611686018427387905"} {
+		if rec := request(t, s, root, "POST", "/v1/uploads", `{"app":"db","size":`+size+`}`); rec.Code != http.StatusUnprocessableEntity ||
+			!strings.Contains(rec.Body.String(), "upload.no_room") {
+			t.Errorf("size %s: %d %s", size, rec.Code, rec.Body)
+		}
 	}
 	for _, path := range []string{"/v1/uploads/../../etc", "/v1/uploads/ABC"} {
 		if rec := request(t, s, root, "PUT", path+"?offset=0", "x"); rec.Code == http.StatusOK {

@@ -570,10 +570,7 @@ func (s *Server) sftpRoom(w http.ResponseWriter, r *http.Request) {
 		if v.Path != gameVolumePath {
 			continue
 		}
-		if used, ok := s.sizes.get(v.Name); ok {
-			room := max(v.LimitMB<<20-used, 0)
-			out.Room = &room
-		}
+		out.Room = s.roomOf(v)
 	}
 	writeJSON(w, http.StatusOK, out)
 }

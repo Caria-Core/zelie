@@ -335,7 +335,8 @@ func (s *Server) diagnose(ctx context.Context, a store.App) (*diagnosis, error) 
 	if err != nil {
 		return nil, err
 	}
-	in.volumeFull = s.overLimit(vols) != nil
+	over := s.overLimit(vols)
+	in.volumeFull = over != nil && over.Code == errVolumeFull.Code
 	for _, v := range vols {
 		if v.Path == gameVolumePath {
 			in.diskMB = v.LimitMB

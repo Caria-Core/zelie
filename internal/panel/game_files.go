@@ -43,10 +43,7 @@ func (s *Server) filesFrom(w http.ResponseWriter, r *http.Request) (store.App, c
 		ref := core.FileRef{Volume: v.Name, FileOwner: core.FileOwner{UID: gameUID, GID: gameGID}}
 		// The limit is measured, not enforced, so this is what the last
 		// measurement leaves. Nothing is said when there is none yet.
-		if used, ok := s.sizes.get(v.Name); ok {
-			room := max(v.LimitMB<<20-used, 0)
-			ref.Room = &room
-		}
+		ref.Room = s.roomOf(v)
 		return a, ref, true
 	}
 	writeError(w, errNoVolume.Err())

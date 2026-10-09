@@ -329,12 +329,12 @@ func TestCloneRefusals(t *testing.T) {
 	// Not enough disk for the files, going by the last measurement. The
 	// core measures again when it copies.
 	host(&engine.Host{CPUs: 8, MemoryBytes: 8 << 30, DiskBytes: 100 << 30, DiskFreeBytes: 10 << 30})
-	e.s.sizes.set(map[string]int64{e.volumeOf(t, "survival").Name: 9<<30 + 512<<20}, e.s.now())
+	e.s.sizes.set(map[string]int64{e.volumeOf(t, "survival").Name: 9<<30 + 512<<20}, nil, e.s.now())
 	if code, out := post("survival", "roomy"); code != http.StatusUnprocessableEntity || out["code"] != "game.clone_no_room" {
 		t.Errorf("disk: %d %v", code, out)
 	}
 	e.unchanged(t, snap, "roomy")
-	e.s.sizes.set(nil, e.s.now())
+	e.s.sizes.set(nil, nil, e.s.now())
 	host(nil)
 
 	// A server that is still installing or failed to install has nothing to

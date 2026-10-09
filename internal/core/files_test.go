@@ -1151,7 +1151,11 @@ func TestSFTPUserGetsFileRoutesOnly(t *testing.T) {
 		want               int
 	}{
 		{"POST", "/v1/volumes/srv-vol/files/list", `{"path":""}`, http.StatusOK},
+		{"POST", "/v1/volumes/srv-vol/files/entries", `{"path":""}`, http.StatusOK},
 		{"POST", "/v1/volumes/srv-vol/files/stat", `{"path":"a.txt"}`, http.StatusOK},
+		{"POST", "/v1/volumes/srv-vol/files/chmod", `{"path":"a.txt","mode":420}`, http.StatusNoContent},
+		{"POST", "/v1/volumes/srv-vol/files/truncate", `{"path":"a.txt","size":1}`, http.StatusNoContent},
+		{"POST", "/v1/volumes/srv-vol/files/chtimes", `{"path":"a.txt","atime":1,"mtime":1}`, http.StatusNoContent},
 		{"GET", "/v1/volumes/srv-vol/files/download?path=a.txt", "", http.StatusOK},
 		{"POST", "/v1/volumes/srv-vol/files/delete", `{"paths":["a.txt"]}`, http.StatusForbidden},
 		{"POST", "/v1/volumes/srv-vol/files/compress", `{}`, http.StatusForbidden},

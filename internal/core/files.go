@@ -7,6 +7,7 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/rand"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -17,6 +18,7 @@ import (
 	"os"
 	"path"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -25,6 +27,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"github.com/Caria-Core/zelie/internal/backup"
 	"github.com/Caria-Core/zelie/internal/engine"
 	"github.com/Caria-Core/zelie/internal/msg"
 )
@@ -34,7 +37,7 @@ import (
 // so any path in it, a symbolic link included, may point anywhere, and the
 // root is what keeps each step inside. The panel only sends typed requests.
 // The volume may be in use; files are changed the way a person at a shell
-// would, by replacing them whole.
+// would, by replacing them whole. Only a truncate works on a file in place.
 
 const (
 	// MaxEditBytes is the largest file the editor opens or saves.
@@ -65,6 +68,7 @@ var (
 	errFileFull     = msg.Define(http.StatusConflict, "files.volume_full", "The server's disk limit leaves {room} free, which is not enough.")
 	errFileNoRoom   = msg.Define(http.StatusUnprocessableEntity, "files.no_room", "Not enough disk space on the machine: {free} is free, and Zelie keeps 1 GB free for the apps.")
 	errFileChanged  = msg.Define(http.StatusConflict, "files.changed", "{path} changed while it was being read. Try again.")
+	errFileTooDeep  = msg.Define(http.StatusConflict, "files.too_deep", "Folders in here are nested too deep to go through. Remove the deepest ones first.")
 	errFilesBusy    = msg.Define(http.StatusConflict, "files.busy", "Another archive is being made or unpacked for this server.")
 	errNotArchive   = msg.Define(http.StatusBadRequest, "files.not_archive", "{path} is not a .zip, .tar, .tar.gz or .tgz file.")
 	errArchiveBad   = msg.Define(http.StatusUnprocessableEntity, "files.archive_bad", "The archive could not be read: {detail}")
@@ -193,6 +197,9 @@ func (s *Server) fileFailed(w http.ResponseWriter, op, volume, name string, err 
 		writeError(w, http.StatusConflict, errFileFull.Err("room", "0 KB"))
 	case errors.Is(err, errOverLimit):
 		writeError(w, http.StatusRequestEntityTooLarge, errFileBig.Err("limit", sizeLabel(maxUploadBytes)))
+	case errors.Is(err, engine.ErrTooDeep):
+		s.Log.Warn(op+" failed", "volume", volume, "path", name, "err", err)
+		writeError(w, http.StatusConflict, errFileTooDeep.Err())
 	default:
 		s.Log.Error(op+" failed", "volume", volume, "path", name, "err", err)
 		writeError(w, http.StatusInternalServerError, fmt.Errorf("%s failed, see the core log", op))
@@ -267,6 +274,15 @@ func limitFor(root *os.Root, room *int64, fixed int64, fixedOver *msg.Error) (ce
 		c = ceiling{max(free-diskReserve, 0), errFileNoRoom.Err("free", sizeLabel(free))}
 	}
 	return c, nil
+}
+
+// onDisk is the room a file gives back when it goes: its size, or the blocks
+// it holds when it has holes, which is what the volume's limit counts.
+func onDisk(st fs.FileInfo) int64 {
+	if sys, ok := st.Sys().(*syscall.Stat_t); ok {
+		return min(st.Size(), int64(sys.Blocks)*512)
+	}
+	return st.Size()
 }
 
 func freeIn(root *os.Root) (int64, error) {
@@ -434,17 +450,36 @@ func (s *Server) listFiles(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, list)
 }
 
+// openFolder opens a folder of the volume to read it.
+func openFolder(root *os.Root, dir string) (*os.File, error) {
+	// O_DIRECTORY makes a named pipe fail at once. Opening one waits for a
+	// writer, which takes a thread of the core with it for good.
+	return root.OpenFile(dir, os.O_RDONLY|syscall.O_DIRECTORY, 0)
+}
+
+// entryOf describes an item that was read from the folder dir. It is false
+// for one that is gone since.
+func entryOf(root *os.Root, dir string, e fs.DirEntry) (FileEntry, bool) {
+	info, err := e.Info()
+	if err != nil {
+		return FileEntry{}, false
+	}
+	fe := FileEntry{
+		Name: e.Name(), Size: info.Size(), Mode: info.Mode().String(), Modified: info.ModTime().UTC(),
+		Dir: info.IsDir(), Symlink: info.Mode()&fs.ModeSymlink != 0,
+	}
+	if fe.Symlink {
+		fe.Target, _ = root.Readlink(path.Join(dir, e.Name()))
+	}
+	return fe, true
+}
+
 func listFolder(root *os.Root, dir string) (FileList, error) {
-	f, err := root.Open(dir)
+	f, err := openFolder(root, dir)
 	if err != nil {
 		return FileList{}, err
 	}
 	defer f.Close()
-	if st, err := f.Stat(); err != nil {
-		return FileList{}, err
-	} else if !st.IsDir() {
-		return FileList{}, errFileNotDir.Err("path", label(dir))
-	}
 	entries, err := f.ReadDir(maxListed + 1)
 	if err != nil && !errors.Is(err, io.EOF) {
 		return FileList{}, err
@@ -454,19 +489,9 @@ func listFolder(root *os.Root, dir string) (FileList, error) {
 		entries, out.Truncated = entries[:maxListed], true
 	}
 	for _, e := range entries {
-		info, err := e.Info()
-		if err != nil {
-			// Gone since the folder was read.
-			continue
+		if fe, ok := entryOf(root, dir, e); ok {
+			out.Entries = append(out.Entries, fe)
 		}
-		fe := FileEntry{
-			Name: e.Name(), Size: info.Size(), Mode: info.Mode().String(), Modified: info.ModTime().UTC(),
-			Dir: info.IsDir(), Symlink: info.Mode()&fs.ModeSymlink != 0,
-		}
-		if fe.Symlink {
-			fe.Target, _ = root.Readlink(path.Join(dir, e.Name()))
-		}
-		out.Entries = append(out.Entries, fe)
 	}
 	slices.SortFunc(out.Entries, func(a, b FileEntry) int {
 		if a.Dir != b.Dir {
@@ -528,7 +553,7 @@ func (s *Server) readFile(w http.ResponseWriter, r *http.Request) {
 // writeFile saves the editor's text, or makes a new file with it.
 func (s *Server) writeFile(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-	p, owner, _, err := fileQuery(r, true)
+	p, owner, room, err := fileQuery(r, true)
 	if err != nil {
 		s.fileFailed(w, "write file", name, r.URL.Query().Get("path"), err)
 		return
@@ -552,7 +577,13 @@ func (s *Server) writeFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer root.Close()
-	c, err := limitFor(root, nil, 0, nil)
+	// Saving over a file gives its room back, so a server at its limit can
+	// still have a file edited.
+	if st, lerr := root.Lstat(p); room != nil && lerr == nil && st.Mode().IsRegular() {
+		more := satAdd(*room, onDisk(st))
+		room = &more
+	}
+	c, err := limitFor(root, room, 0, nil)
 	if err == nil {
 		_, err = replaceFile(root, p, bytes.NewReader(body), putOptions{Owner: owner, Exclusive: r.URL.Query().Get("new") == "1", Limit: c.bytes})
 	}
@@ -974,7 +1005,7 @@ func packFiles(ctx context.Context, root *os.Root, dir string, items []string, o
 		return err
 	}
 	gz := gzip.NewWriter(&capWriter{f, limit})
-	tw := tar.NewWriter(gz)
+	tw := backup.NewTarWriter(gz)
 	entries := 0
 	err = func() error {
 		for _, item := range items {
@@ -982,34 +1013,29 @@ func packFiles(ctx context.Context, root *os.Root, dir string, items []string, o
 			if err != nil {
 				return err
 			}
-			// A link chosen by itself goes in as a link; WalkDir would
+			// A link chosen by itself goes in as a link; the walk would
 			// follow it.
 			if !li.IsDir() {
 				if entries++; entries > maxArchiveEntries {
 					return errArchiveCount.Err("limit", maxArchiveEntries)
 				}
-				if err := packEntry(root, tw, dir, item, fs.FileInfoToDirEntry(li)); err != nil {
+				if err := packEntry(ctx, rootEntry{root, item}, tw, dir, item, li); err != nil {
 					return err
 				}
 				continue
 			}
-			err = fs.WalkDir(root.FS(), item, func(p string, d fs.DirEntry, err error) error {
-				if errors.Is(err, fs.ErrNotExist) && p != item {
-					return nil
-				}
-				if err != nil {
-					return err
-				}
+			err = engine.WalkTree(root, item, func(n *engine.TreeNode) error {
 				if err := ctx.Err(); err != nil {
 					return err
 				}
+				p := path.Join(item, n.Path())
 				if p == tmp {
 					return nil
 				}
 				if entries++; entries > maxArchiveEntries {
 					return errArchiveCount.Err("limit", maxArchiveEntries)
 				}
-				return packEntry(root, tw, dir, p, d)
+				return packEntry(ctx, n, tw, dir, p, n.Info())
 			})
 			if err != nil {
 				return err
@@ -1046,15 +1072,33 @@ func packFiles(ctx context.Context, root *os.Root, dir string, items []string, o
 	return err
 }
 
-func packEntry(root *os.Root, tw *tar.Writer, dir, p string, d fs.DirEntry) error {
-	info, err := d.Info()
-	if err != nil {
-		return err
-	}
+// entrySource is where packEntry reads an item from. A walk reaches an item
+// from the folder that holds it, which costs the same however deep it is; one
+// named in the request is found from the top of the volume.
+type entrySource interface {
+	Readlink() (string, error)
+	Open() (*os.File, error)
+}
+
+type rootEntry struct {
+	root *os.Root
+	p    string
+}
+
+func (e rootEntry) Readlink() (string, error) { return e.root.Readlink(e.p) }
+
+// Open does not wait for a writer, so a named pipe in the place of a file
+// does not hold the request up.
+func (e rootEntry) Open() (*os.File, error) {
+	return e.root.OpenFile(e.p, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+}
+
+func packEntry(ctx context.Context, src entrySource, tw *backup.TarWriter, dir, p string, info fs.FileInfo) error {
 	var link string
+	var err error
 	switch m := info.Mode().Type(); {
 	case m == fs.ModeSymlink:
-		if link, err = root.Readlink(p); err != nil {
+		if link, err = src.Readlink(); err != nil {
 			return err
 		}
 	case m != 0 && m != fs.ModeDir:
@@ -1074,18 +1118,27 @@ func packEntry(root *os.Root, tw *tar.Writer, dir, p string, d fs.DirEntry) erro
 	}
 	// Who owned it here means nothing where it is unpacked.
 	hdr.Uid, hdr.Gid, hdr.Uname, hdr.Gname = 0, 0, "", ""
-	if err := tw.WriteHeader(hdr); err != nil || !info.Mode().IsRegular() {
-		return err
+	if !info.Mode().IsRegular() {
+		return tw.WriteHeader(hdr)
 	}
-	f, st, err := openRegular(root, p)
+	f, err := src.Open()
 	if err != nil {
 		return err
 	}
 	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	if !st.Mode().IsRegular() {
+		return errFileNotFile.Err("path", label(p))
+	}
 	if st.Size() != hdr.Size {
 		return errFileChanged.Err("path", label(p))
 	}
-	if n, err := io.Copy(tw, io.LimitReader(f, hdr.Size)); err != nil || n != hdr.Size {
+	// A file with holes goes in as its data, so packing a sparse file takes
+	// what it takes on disk, and the copy stops when the request does.
+	if _, changed, err := tw.WriteFile(ctx, hdr, f); err != nil || changed {
 		if err == nil {
 			err = errFileChanged.Err("path", label(p))
 		}
@@ -1188,6 +1241,8 @@ type extractor struct {
 	links   map[string]bool
 	entries int
 	written int64
+	// headers counts every tar header read, the ones that make nothing too.
+	headers int
 }
 
 func unpack(ctx context.Context, root *os.Root, archive, format, dir string, o FileOwner, limit ceiling) (ExtractResult, error) {
@@ -1219,6 +1274,9 @@ func (x *extractor) tar(r io.Reader, gzipped bool) error {
 		defer gz.Close()
 		r = gz
 	}
+	// Entries that make nothing, such as a "./", are still read through, so
+	// the reader gets what may be written plus room for the headers.
+	r = &capReader{r: r, left: satAdd(x.left, int64(maxArchiveEntries)*tarHeaderBytes), over: x.limit.over}
 	tr := tar.NewReader(r)
 	for {
 		hdr, err := tr.Next()
@@ -1231,6 +1289,9 @@ func (x *extractor) tar(r io.Reader, gzipped bool) error {
 		}
 		if err != nil {
 			return x.readFailed(err)
+		}
+		if x.headers++; x.headers > maxArchiveEntries {
+			return errArchiveCount.Err("limit", maxArchiveEntries)
 		}
 		var kind entryKind
 		switch hdr.Typeflag {
@@ -1254,7 +1315,20 @@ func (x *extractor) tar(r io.Reader, gzipped bool) error {
 }
 
 func (x *extractor) zip(f *os.File, size int64) error {
-	zr, err := zip.NewReader(f, size)
+	var me *msg.Error
+	pinned, err := checkZipCount(f, size)
+	if err != nil {
+		if errors.As(err, &me) {
+			return err
+		}
+		return errArchiveBad.Err("detail", err.Error())
+	}
+	dr := newDirReader(pinned)
+	zr, err := zip.NewReader(dr, size)
+	dr.done = true
+	if errors.As(err, &me) {
+		return err
+	}
 	if err != nil && !errors.Is(err, zip.ErrInsecurePath) {
 		return errArchiveBad.Err("detail", err.Error())
 	}
@@ -1312,6 +1386,232 @@ func (x *extractor) zip(f *os.File, size int64) error {
 		}
 	}
 	return nil
+}
+
+const (
+	// tarHeaderBytes is what the headers of one entry may take in a tar
+	// stream: its blocks, the padding after its content and a long name.
+	tarHeaderBytes = 4096
+	// zipRecordBytes is what a record of a zip's central directory may take
+	// on average, and zipTailBytes what is read around it to find it. A
+	// record is 46 bytes and a name, and Go holds some 200 bytes in memory for
+	// each one it reads, so a bigger share here lets a hostile archive take
+	// that much more memory before it is counted.
+	zipRecordBytes = 256
+	zipTailBytes   = 128 << 10
+)
+
+// capReader fails with over once more than left bytes have been read.
+type capReader struct {
+	r    io.Reader
+	left int64
+	over error
+}
+
+func (c *capReader) Read(p []byte) (int, error) {
+	if c.left <= 0 {
+		return 0, c.over
+	}
+	if int64(len(p)) > c.left {
+		p = p[:c.left]
+	}
+	n, err := c.r.Read(p)
+	c.left -= int64(n)
+	return n, err
+}
+
+// dirReader lets zip.NewReader read only as much of the archive as the most
+// entries allowed can take. NewReader holds an entry in memory for every
+// record of the central directory before the caller can count them, so
+// without this an archive of empty records is many times its own size in
+// memory.
+type dirReader struct {
+	r    io.ReaderAt
+	left int64
+	done bool
+}
+
+func newDirReader(r io.ReaderAt) *dirReader {
+	return &dirReader{r: r, left: int64(maxArchiveEntries)*zipRecordBytes + zipTailBytes}
+}
+
+func (d *dirReader) ReadAt(p []byte, off int64) (int, error) {
+	if !d.done {
+		if d.left -= int64(len(p)); d.left < 0 {
+			return 0, errArchiveCount.Err("limit", maxArchiveEntries)
+		}
+	}
+	return d.r.ReadAt(p, off)
+}
+
+// The records at the end of a zip that say how many entries it has. The
+// zip64 ones come in two parts: a locator, which sits right before the end
+// record and names the place of the record that holds the count.
+const (
+	zipEndSig       = "PK\x05\x06"
+	zipEndLen       = 22
+	zip64LocSig     = "PK\x06\x07"
+	zip64LocLen     = 20
+	zip64EndSig     = "PK\x06\x06"
+	zip64EndLen     = 56
+	zipEndRecordsAt = 10
+	zip64RecordsAt  = 32
+)
+
+// pinnedReader serves the bytes checkZipCount looked at from memory, and
+// nothing past the size it was given. An archive in a live volume can be
+// rewritten, or made longer, by the program that runs in it, so a second
+// read of the same place could give another count than the one that was
+// checked, and a read past the end could find a record that never was.
+type pinnedReader struct {
+	r     io.ReaderAt
+	tail  pinnedPart
+	parts []pinnedPart // the records, by offset
+	reach int64        // the longest of them
+}
+
+type pinnedPart struct {
+	off int64
+	b   []byte
+}
+
+func (p pinnedPart) holds(off int64, n int) ([]byte, bool) {
+	if off >= p.off && off+int64(n) <= p.off+int64(len(p.b)) {
+		return p.b[off-p.off:][:n], true
+	}
+	return nil, false
+}
+
+// held is the n bytes at off when a pinned part has all of them.
+func (p *pinnedReader) held(off int64, n int) ([]byte, bool) {
+	if b, ok := p.tail.holds(off, n); ok {
+		return b, true
+	}
+	// A record is short, so only those that start just before off can hold it.
+	i := sort.Search(len(p.parts), func(i int) bool { return p.parts[i].off > off })
+	for ; i > 0 && off-p.parts[i-1].off < p.reach; i-- {
+		if b, ok := p.parts[i-1].holds(off, n); ok {
+			return b, true
+		}
+	}
+	return nil, false
+}
+
+func (p *pinnedReader) read(off int64, n int) ([]byte, error) {
+	b := make([]byte, n)
+	if got, err := p.r.ReadAt(b, off); got < n {
+		if err == nil || errors.Is(err, io.EOF) {
+			err = io.ErrUnexpectedEOF
+		}
+		return nil, err
+	}
+	return b, nil
+}
+
+// pinTail keeps the last n bytes of the file, which hold the end records.
+func (p *pinnedReader) pinTail(size int64, n int) ([]byte, error) {
+	b, err := p.read(size-int64(n), n)
+	if err != nil {
+		return nil, err
+	}
+	p.tail = pinnedPart{off: size - int64(n), b: b}
+	return b, nil
+}
+
+// pin reads n bytes at off once and keeps them. It is for records, which are
+// short; the places they are asked for are the archive's to choose, so a
+// part is kept once however many times it is named.
+func (p *pinnedReader) pin(off int64, n int) ([]byte, error) {
+	if b, ok := p.held(off, n); ok {
+		return b, nil
+	}
+	b, err := p.read(off, n)
+	if err != nil {
+		return nil, err
+	}
+	i := sort.Search(len(p.parts), func(i int) bool { return p.parts[i].off > off })
+	p.parts = slices.Insert(p.parts, i, pinnedPart{off: off, b: b})
+	p.reach = max(p.reach, int64(n))
+	return b, nil
+}
+
+func (p *pinnedReader) ReadAt(b []byte, off int64) (int, error) {
+	if held, ok := p.held(off, len(b)); ok {
+		return copy(b, held), nil
+	}
+	return p.r.ReadAt(b, off)
+}
+
+// checkZipCount refuses a zip whose end records claim more entries than
+// maxArchiveEntries. zip.NewReader makes room for that many entries before
+// it reads one, so a claim with no entries behind it, in a file that is only
+// sparse, would cost the memory anyway. dirReader cannot stop that: it only
+// limits what is read afterwards.
+//
+// Every end record signature in the last bytes is looked at, not only the
+// one zip.NewReader picks, so a difference in how it searches is of no use
+// to an archive made for it. The cost is that a small zip is refused as well
+// when it holds, stored as it is, a zip64 archive of more entries than the
+// limit.
+//
+// The reader it returns is the one to give zip.NewReader: it answers from
+// what was checked, so the count that is allocated for is the one that was
+// below the limit, and it ends at size, so a record the file got after it
+// was measured is not found.
+func checkZipCount(r io.ReaderAt, size int64) (io.ReaderAt, error) {
+	pr := &pinnedReader{r: io.NewSectionReader(r, 0, size)}
+	n := int(min(size, zipTailBytes))
+	tail, err := pr.pinTail(size, n)
+	if err != nil {
+		return nil, err
+	}
+	over := func(records uint64) error {
+		if records > uint64(maxArchiveEntries) {
+			return errArchiveCount.Err("limit", maxArchiveEntries)
+		}
+		return nil
+	}
+	for i := len(tail) - zipEndLen; i >= 0; i-- {
+		if string(tail[i:i+4]) != zipEndSig {
+			continue
+		}
+		if err := over(uint64(binary.LittleEndian.Uint16(tail[i+zipEndRecordsAt:]))); err != nil {
+			return nil, err
+		}
+		at := size - int64(n) + int64(i)
+		if at < zip64LocLen {
+			continue
+		}
+		loc, err := pr.pin(at-zip64LocLen, zip64LocLen)
+		if err != nil {
+			return nil, err
+		}
+		if string(loc[:4]) != zip64LocSig {
+			continue
+		}
+		off := binary.LittleEndian.Uint64(loc[8:])
+		if size < zip64EndLen || off > uint64(size-zip64EndLen) {
+			continue // the reader ends before such a record does
+		}
+		rec, err := pr.pin(int64(off), zip64EndLen)
+		if err != nil {
+			return nil, err
+		}
+		if string(rec[:4]) != zip64EndSig {
+			continue
+		}
+		if err := over(binary.LittleEndian.Uint64(rec[zip64RecordsAt:])); err != nil {
+			return nil, err
+		}
+	}
+	return pr, nil
+}
+
+func satAdd(a, b int64) int64 {
+	if a > noLimit-b {
+		return noLimit
+	}
+	return a + b
 }
 
 // readFailed tells a broken archive from the errors that are ours to report.

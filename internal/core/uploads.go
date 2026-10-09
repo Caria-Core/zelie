@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
@@ -155,8 +156,13 @@ func (s *Server) createUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.sweepUploads()
-	// The file itself, then the backup made from it.
-	if err := s.roomFor(2*req.Size, errNoRoomUpload); err != nil {
+	// The file itself, then the backup made from it. A size that doubles past
+	// the largest number is too large for any disk.
+	need := int64(math.MaxInt64)
+	if req.Size <= math.MaxInt64/2 {
+		need = 2 * req.Size
+	}
+	if err := s.roomFor(need, errNoRoomUpload); err != nil {
 		s.backupFailed(w, "start upload", req.App, err)
 		return
 	}
@@ -226,6 +232,12 @@ func (s *Server) appendUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	defer f.Close()
 	room := u.Size - u.Received
+	// The disk was checked when the upload began, and other things have
+	// written to it since.
+	if err := s.roomFor(min(room, MaxUploadChunk), errNoRoomUpload); err != nil {
+		s.backupFailed(w, "upload", u.App, err)
+		return
+	}
 	n, err := io.Copy(f, io.LimitReader(r.Body, min(room, MaxUploadChunk)+1))
 	switch {
 	case n > room:

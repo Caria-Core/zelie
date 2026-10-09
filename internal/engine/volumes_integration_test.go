@@ -68,9 +68,9 @@ func TestVolumeKeepsOwnersAcrossContainers(t *testing.T) {
 		t.Errorf("removing a volume in use: %v", err)
 	}
 
-	sizes, err := e.VolumeSizes()
-	if err != nil {
-		t.Fatal(err)
+	sizes, unmeasured, err := e.VolumeSizes()
+	if err != nil || len(unmeasured) != 0 {
+		t.Fatalf("%v %v", err, unmeasured)
 	}
 	if sizes["it-vol"] <= 0 {
 		t.Errorf("volume size is %d", sizes["it-vol"])

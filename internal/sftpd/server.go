@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net"
 	"net/netip"
@@ -26,13 +27,16 @@ import (
 
 // Files is the part of the core's file API that SFTP uses.
 type Files interface {
-	ListFiles(ctx context.Context, ref core.FileRef, dir string) (core.FileList, error)
+	OpenFolder(ctx context.Context, ref core.FileRef, dir string) (core.Folder, error)
 	StatFile(ctx context.Context, ref core.FileRef, p string) (core.FileEntry, error)
 	DownloadRange(ctx context.Context, ref core.FileRef, p string, offset, length int64) (io.ReadCloser, int64, error)
 	UploadFile(ctx context.Context, ref core.FileRef, p string, size int64, body io.Reader) error
 	MakeFolder(ctx context.Context, ref core.FileRef, p string) error
 	RenameFile(ctx context.Context, ref core.FileRef, from, to string) error
 	RemoveFile(ctx context.Context, ref core.FileRef, p string) error
+	SetFileMode(ctx context.Context, ref core.FileRef, p string, mode fs.FileMode) error
+	TruncateFile(ctx context.Context, ref core.FileRef, p string, size int64) error
+	SetFileTimes(ctx context.Context, ref core.FileRef, p string, atime, mtime time.Time) error
 }
 
 const (
