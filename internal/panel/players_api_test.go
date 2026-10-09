@@ -3,6 +3,7 @@ package panel
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -168,6 +169,56 @@ func TestMinecraftActions(t *testing.T) {
 	}
 }
 
+func TestMinecraftActionRefusesANameAnotherPlayerHasTaken(t *testing.T) {
+	e, id := newMinecraftGame(t)
+	const alexID = "11111111-2222-3333-4444-555555555555"
+	// Steve was renamed and has not joined since; the old name is Alex's now.
+	err := e.s.Store.RecordPlayerEvents(context.Background(), "survival", []players.Event{
+		{Kind: players.Join, PlayerID: alexID, Name: "Steve", At: e.s.now().Add(time.Hour)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := len(e.stdin(id))
+	for action, body := range map[string]map[string]any{"kick": {}, "ban": {}, "op": {"on": true}, "whitelist": {"on": true}} {
+		if code, out := e.b.do("POST", "/api/games/survival/players/"+steveID+"/"+action, body); code != http.StatusConflict || out["code"] != "players.name_reused" {
+			t.Errorf("%s: %d %v", action, code, out)
+		}
+	}
+	if got := e.stdin(id); len(got) != before {
+		t.Errorf("a command reached the game: %q", got[before:])
+	}
+	if bans, _ := e.s.Store.PlayerBans(context.Background(), "survival", "", true, e.s.now()); len(bans) != 0 {
+		t.Errorf("bans %+v", bans)
+	}
+
+	// The player who has the name now can be acted on.
+	if code, out := e.b.do("POST", "/api/games/survival/players/"+alexID+"/kick", map[string]string{}); code != http.StatusNoContent {
+		t.Errorf("kick the new owner: %d %v", code, out)
+	}
+	if got := e.stdin(id); got[len(got)-1] != "kick Steve\n" {
+		t.Errorf("console got %q", got)
+	}
+}
+
+func TestMinecraftActionIgnoresANewerRecordKeyedByTheName(t *testing.T) {
+	e, id := newMinecraftGame(t)
+	// The parser forgot Steve's id, so his chat came in under his name. That
+	// is the same person, not another account with the name.
+	err := e.s.Store.RecordPlayerEvents(context.Background(), "survival", []players.Event{
+		{Kind: players.Chat, PlayerID: "name:Steve", Name: "Steve", Channel: "global", Text: "hi", At: e.s.now().Add(time.Hour)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code, out := e.b.do("POST", "/api/games/survival/players/"+steveID+"/kick", map[string]string{}); code != http.StatusNoContent {
+		t.Fatalf("kick: %d %v", code, out)
+	}
+	if got := e.stdin(id); got[len(got)-1] != "kick Steve\n" {
+		t.Errorf("console got %q", got)
+	}
+}
+
 func TestActionsNeedARunningServer(t *testing.T) {
 	e, _ := newMinecraftGame(t)
 	e.power(t, "survival", "kill")
@@ -330,6 +381,121 @@ func TestTimedBanIsLiftedWhenItRunsOut(t *testing.T) {
 	})
 	if got := e.auditActions(t, "survival"); got[0] != "ban_expired" {
 		t.Errorf("audit %v", got)
+	}
+}
+
+func TestBanKeeperSurvivesTheCoreBeingAway(t *testing.T) {
+	old := banCheckEvery
+	banCheckEvery = 5 * time.Millisecond
+	t.Cleanup(func() { banCheckEvery = old })
+	clock := &moveable{base: time.Now()}
+	e, id := newMinecraftGame(t, func(e *appEnv) { clock.base = e.s.now(); e.s.Now = clock.now })
+	base := "/api/games/survival/players/" + steveID
+	if code, out := e.b.do("POST", base+"/ban", map[string]any{"reason": "grief", "minutes": 30}); code != http.StatusNoContent {
+		t.Fatalf("ban: %d %v", code, out)
+	}
+
+	// The core is restarting at some of the keeper's checks; the server runs on.
+	e.core.mu.Lock()
+	e.core.listErr = errors.New("reach the Zelie core: connection refused")
+	e.core.mu.Unlock()
+	time.Sleep(50 * time.Millisecond)
+	e.s.banKeepers.mu.Lock()
+	keepers := len(e.s.banKeepers.m)
+	e.s.banKeepers.mu.Unlock()
+	if keepers != 1 {
+		t.Fatalf("%d keepers after the core failed a check", keepers)
+	}
+	e.core.mu.Lock()
+	e.core.listErr = nil
+	e.core.mu.Unlock()
+
+	clock.advance(31 * time.Minute)
+	waitFor(t, func() bool { return slices.Contains(e.stdin(id), "pardon Steve\n") })
+}
+
+func TestBannedAgainBeforeTheOldBanWasLiftedStaysBanned(t *testing.T) {
+	e, id := newMinecraftGame(t)
+	ctx := context.Background()
+	// A timed ban that ran out a moment ago, which the keeper has not lifted yet.
+	if _, err := e.s.Store.AddPlayerBan(ctx, "survival", store.PlayerBan{PlayerID: steveID, Name: "Steve", CreatedAt: e.s.now().Add(-2 * time.Hour), ExpiresAt: e.s.now().Add(-time.Second)}); err != nil {
+		t.Fatal(err)
+	}
+	base := "/api/games/survival/players/" + steveID
+	if code, out := e.b.do("POST", base+"/ban", map[string]any{"reason": "again", "minutes": 0}); code != http.StatusNoContent {
+		t.Fatalf("ban: %d %v", code, out)
+	}
+
+	e.s.liftExpiredBans(ctx, "survival")
+	if slices.Contains(e.stdin(id), "pardon Steve\n") {
+		t.Error("the new ban was undone in the game")
+	}
+	all, _ := e.s.Store.PlayerBans(ctx, "survival", steveID, true, e.s.now())
+	active, _ := e.s.Store.PlayerBans(ctx, "survival", steveID, false, e.s.now())
+	if len(all) != 2 || len(active) != 1 || active[0].Reason != "again" {
+		t.Errorf("bans %+v, active %+v", all, active)
+	}
+	for _, b := range all {
+		if b.Reason != "again" && b.LiftedAt.IsZero() {
+			t.Errorf("the old ban was left to be tried again: %+v", b)
+		}
+	}
+}
+
+func TestMinecraftBanKeptUnderTheSameNameHoldsThePardon(t *testing.T) {
+	e, id := newMinecraftGame(t)
+	ctx := context.Background()
+	// Steve's ban ran out. A duplicate record of him, keyed by his name and
+	// written in other letters, is banned for good, and the game pardons by name.
+	e.s.Store.AddPlayerBan(ctx, "survival", store.PlayerBan{PlayerID: steveID, Name: "Steve", CreatedAt: e.s.now().Add(-2 * time.Hour), ExpiresAt: e.s.now().Add(-time.Second)})
+	e.s.Store.AddPlayerBan(ctx, "survival", store.PlayerBan{PlayerID: "name:steve", Name: "steve", CreatedAt: e.s.now().Add(-time.Hour)})
+
+	e.s.liftExpiredBans(ctx, "survival")
+	if slices.Contains(e.stdin(id), "pardon Steve\n") {
+		t.Error("the ban that is still in force was undone in the game")
+	}
+	active, _ := e.s.Store.PlayerBans(ctx, "survival", "", false, e.s.now())
+	if len(active) != 1 || active[0].PlayerID != "name:steve" {
+		t.Errorf("active bans %+v", active)
+	}
+	if expired, _ := e.s.Store.ExpiredPlayerBans(ctx, "survival", e.s.now()); len(expired) != 0 {
+		t.Errorf("the old ban was left to be tried again: %+v", expired)
+	}
+}
+
+func TestRustBanOfAnotherPlayerWithTheSameNameDoesNotHoldThePardon(t *testing.T) {
+	e, rust := newRustGame(t, func(*appEnv) *fakeRust { return newFakeRust(t, "rconpass-12345", "[]") })
+	ctx := context.Background()
+	// Rust bans by id: a name is not a person.
+	e.s.Store.AddPlayerBan(ctx, "rusty", store.PlayerBan{PlayerID: steamID1, Name: "Ann", CreatedAt: e.s.now().Add(-2 * time.Hour), ExpiresAt: e.s.now().Add(-time.Second)})
+	e.s.Store.AddPlayerBan(ctx, "rusty", store.PlayerBan{PlayerID: "76561198000000042", Name: "Ann", CreatedAt: e.s.now().Add(-time.Hour)})
+
+	e.s.liftExpiredBans(ctx, "rusty")
+	if got := rust.commands(); !slices.Contains(got, `unban "`+steamID1+`"`) {
+		t.Errorf("commands %q", got)
+	}
+}
+
+func TestBansAndPardonsOfAServerTakeTurns(t *testing.T) {
+	var l banLocks
+	unlock := l.lock("a")
+	other := l.lock("b") // another server does not wait
+	other()
+	got := make(chan struct{})
+	go func() {
+		defer l.lock("a")()
+		close(got)
+	}()
+	select {
+	case <-got:
+		t.Fatal("two held the server at once")
+	case <-time.After(20 * time.Millisecond):
+	}
+	unlock()
+	select {
+	case <-got:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the next one never got its turn")
 	}
 }
 

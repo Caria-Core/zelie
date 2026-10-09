@@ -122,17 +122,23 @@ func isInstallContainer(c engine.Status) bool {
 	return c.App != "" && strings.HasPrefix(c.ID, c.App+"-install-")
 }
 
-// gameParts loads what starting or stopping a server needs.
-func (s *Server) gameParts(ctx context.Context, appID string) (store.GameServer, *egg.Egg, store.Node, error) {
+// gameEgg loads a server and its egg, as parsed and as stored.
+func (s *Server) gameEgg(ctx context.Context, appID string) (store.GameServer, store.Egg, *egg.Egg, error) {
 	g, err := s.Store.GameServer(ctx, appID)
 	if err != nil {
-		return g, nil, store.Node{}, err
+		return g, store.Egg{}, nil, err
 	}
 	stored, err := s.Store.Egg(ctx, g.EggID)
 	if err != nil {
-		return g, nil, store.Node{}, err
+		return g, stored, nil, err
 	}
 	e, err := egg.Parse(stored.Raw)
+	return g, stored, e, err
+}
+
+// gameParts loads what starting or stopping a server needs.
+func (s *Server) gameParts(ctx context.Context, appID string) (store.GameServer, *egg.Egg, store.Node, error) {
+	g, _, e, err := s.gameEgg(ctx, appID)
 	if err != nil {
 		return g, nil, store.Node{}, err
 	}

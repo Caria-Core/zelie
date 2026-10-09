@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/netip"
 	"strings"
 	"sync"
 	"time"
@@ -35,6 +36,30 @@ type banKeepers struct {
 type banKeeper struct {
 	container string
 	cancel    context.CancelFunc
+}
+
+// banLocks holds a server's bans and pardons to one at a time, from the
+// check that decides on a command to the record of it. Without it a pardon
+// for a ban that ran out could land after a new ban of the same player.
+type banLocks struct {
+	mu sync.Mutex
+	m  map[string]*sync.Mutex
+}
+
+// lock waits for the server's turn and returns the function that ends it.
+func (b *banLocks) lock(app string) (unlock func()) {
+	b.mu.Lock()
+	if b.m == nil {
+		b.m = map[string]*sync.Mutex{}
+	}
+	l := b.m[app]
+	if l == nil {
+		l = new(sync.Mutex)
+		b.m[app] = l
+	}
+	b.mu.Unlock()
+	l.Lock()
+	return l.Unlock
 }
 
 // gameReady is called once when a server's game says it is ready. Bans that
@@ -91,7 +116,13 @@ func (s *Server) keepBans(app, container string) {
 			return
 		case <-time.After(banCheckEvery):
 		}
-		if c, ok := s.runningGameContainer(ctx, app); !ok || c != container {
+		c, ok, err := s.findGameContainer(ctx, app)
+		if err != nil {
+			// The core may be restarting; the server runs on.
+			s.Log.Info("players: could not look for the server", "server", app, "err", err)
+			continue
+		}
+		if !ok || c != container {
 			return
 		}
 	}
@@ -119,21 +150,47 @@ func (s *Server) liftExpiredBans(ctx context.Context, app string) {
 		return
 	}
 	for _, b := range expired {
+		if !s.liftExpiredBan(ctx, pg, container, ip, b, now) {
+			return
+		}
+	}
+}
+
+// liftExpiredBan tells the game to forget one ban that ran out, unless the
+// player is banned again, and marks it lifted. It returns false when the game
+// could not be told or the database failed, which ends the round.
+func (s *Server) liftExpiredBan(ctx context.Context, pg playerGame, container string, ip netip.Addr, b store.PlayerBan, now time.Time) bool {
+	app := pg.app.ID
+	defer s.banLocks.lock(app)()
+	// A player banned again since this one ran out is banned in the game by
+	// the new ban: pardoning them would undo it. Minecraft bans and pardons
+	// by name, so a ban kept under another id of the same name counts.
+	name := ""
+	if pg.family == players.GameMinecraft {
+		name = b.Name
+	}
+	held, err := s.Store.BanInForce(ctx, app, b.PlayerID, name, now)
+	if err != nil {
+		s.Log.Error("expired bans", "server", app, "err", err)
+		return false
+	}
+	if !held {
 		if pg.family == players.GameMinecraft && !minecraftName.MatchString(b.Name) {
-			continue
+			return true
 		}
 		if err := s.sendPlayerCommands(ctx, pg, container, ip, unbanCommands(pg.family, b.PlayerID, b.Name)...); err != nil {
 			s.Log.Info("players: could not lift an expired ban", "server", app, "err", err)
-			return
-		}
-		if lifted, err := s.Store.LiftPlayerBan(ctx, app, b.ID, 0, now); err != nil {
-			s.Log.Error("lift ban", "server", app, "err", err)
-		} else if lifted {
-			if err := s.Store.AddAudit(ctx, now, 0, app, auditBanExpired, b.PlayerID, b.Name); err != nil {
-				s.Log.Error("audit", "err", err)
-			}
+			return false
 		}
 	}
+	if lifted, err := s.Store.LiftPlayerBan(ctx, app, b.ID, 0, now); err != nil {
+		s.Log.Error("lift ban", "server", app, "err", err)
+	} else if lifted {
+		if err := s.Store.AddAudit(ctx, now, 0, app, auditBanExpired, b.PlayerID, b.Name); err != nil {
+			s.Log.Error("audit", "err", err)
+		}
+	}
+	return true
 }
 
 // profiles is the Steam lookup, set up on first use.

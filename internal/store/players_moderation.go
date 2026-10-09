@@ -214,6 +214,19 @@ func (s *Store) PlayerByName(ctx context.Context, app, name string) (Player, err
 	return p, err
 }
 
+// AccountByName is PlayerByName among the players the game gave an id of
+// their own. A record keyed by the name alone is a guess at who it is, so it
+// does not show that another account has the name.
+func (s *Store) AccountByName(ctx context.Context, app, name string) (Player, error) {
+	p, err := scanPlayer(s.db.QueryRowContext(ctx, "SELECT "+playerColumns+` FROM players p
+		WHERE p.app_id = ? AND p.name = ? COLLATE NOCASE AND substr(p.player_id, 1, 5) <> 'name:'
+		ORDER BY p.last_seen DESC LIMIT 1`, app, name))
+	if err == sql.ErrNoRows {
+		return p, ErrNotFound
+	}
+	return p, err
+}
+
 // SearchPlayerChat lists chat the way PlayerChat does, narrowed by channel
 // and by part of the text or of the sender's name.
 func (s *Store) SearchPlayerChat(ctx context.Context, app string, f ChatFilter) ([]PlayerChat, error) {
@@ -329,6 +342,19 @@ func (s *Store) PlayerBans(ctx context.Context, app, player string, all bool, at
 		q += " AND ?3 = ?3"
 	}
 	return s.queryBans(ctx, q+" ORDER BY b.id DESC LIMIT 500", app, player, at.Unix())
+}
+
+// BanInForce says whether a ban of the player is in force at the given time.
+// With a name, a ban under another id of that name counts too, whatever the
+// case: a game that bans by name does not tell the two apart.
+func (s *Store) BanInForce(ctx context.Context, app, player, name string, at time.Time) (bool, error) {
+	var one int
+	err := s.db.QueryRowContext(ctx, `SELECT 1 FROM player_bans WHERE app_id = ?1 AND lifted_at IS NULL AND (expires_at IS NULL OR expires_at > ?2)
+		AND (player_id = ?3 OR (?4 <> '' AND name = ?4 COLLATE NOCASE)) LIMIT 1`, app, at.Unix(), player, name).Scan(&one)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	return err == nil, err
 }
 
 // ExpiredPlayerBans lists the timed bans that ended by themselves and have

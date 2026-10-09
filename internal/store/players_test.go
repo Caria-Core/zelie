@@ -94,15 +94,72 @@ func TestPlayerSessions(t *testing.T) {
 func TestLeaveWithoutJoin(t *testing.T) {
 	ctx := context.Background()
 	s := playerStore(t, "rust")
-	if err := s.RecordPlayerEvents(ctx, "rust", []players.Event{leave("1", "Ann", "x", 5)}); err != nil {
+	// Ann has chatted, so she is on record, though her join is not.
+	if err := s.RecordPlayerEvents(ctx, "rust", []players.Event{chat("1", "Ann", "hi", 0), leave("1", "Ann", "x", 5)}); err != nil {
 		t.Fatal(err)
 	}
 	p, err := s.Player(ctx, "rust", "1")
-	if err != nil || p.PlaySeconds != 0 || p.Online {
+	if err != nil || p.PlaySeconds != 0 || p.Online || !p.LastSeen.Equal(t0.Add(5*time.Second)) {
 		t.Fatalf("%v %+v", err, p)
 	}
 	if _, err := s.Player(ctx, "rust", "nobody"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("missing player: %v", err)
+	}
+}
+
+func TestLeaveOfAPlayerWithNoRecordStoresNothing(t *testing.T) {
+	old := maxPlayers
+	maxPlayers = 3
+	t.Cleanup(func() { maxPlayers = old })
+	ctx := context.Background()
+	s := playerStore(t, "rust")
+	// A console can print leave lines for any names. They must not use up
+	// the room the players that join have.
+	var events []players.Event
+	for i := range 10 {
+		events = append(events, leave(fmt.Sprintf("x%d", i), "Ghost", "gone", i))
+	}
+	dropped, err := s.RecordPlayerEventsAt(ctx, "rust", events, "", 0)
+	if err != nil || dropped != 0 {
+		t.Fatalf("dropped %d, %v", dropped, err)
+	}
+	if got, _ := s.Players(ctx, "rust", "", 10, 0); len(got) != 0 {
+		t.Fatalf("players %+v", got)
+	}
+	dropped, err = s.RecordPlayerEventsAt(ctx, "rust", []players.Event{join("1", "A", "", 20), join("2", "B", "", 21), join("3", "C", "", 22)}, "", 0)
+	if err != nil || dropped != 0 {
+		t.Fatalf("joins: dropped %d, %v", dropped, err)
+	}
+
+	// The ones that joined can leave, in the batch that joined them or after.
+	if err := s.RecordPlayerEvents(ctx, "rust", []players.Event{leave("1", "A", "left", 30), leave("9", "Z", "left", 31)}); err != nil {
+		t.Fatal(err)
+	}
+	if sess, _ := s.PlayerSessions(ctx, "rust", "1", 5); len(sess) != 1 || sess[0].LeftAt.IsZero() || sess[0].Reason != "left" {
+		t.Errorf("sessions %+v", sess)
+	}
+	if _, err := s.Player(ctx, "rust", "9"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("a player who only left: %v", err)
+	}
+	// The room is used up, so a fourth player is not recorded, and neither is
+	// his leave.
+	if err := s.RecordPlayerEvents(ctx, "rust", []players.Event{join("4", "D", "", 40), leave("4", "D", "bye", 49)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Player(ctx, "rust", "4"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("a fourth player: %v", err)
+	}
+}
+
+func TestVisitWithinOneBatchIsRecordedWithItsLeave(t *testing.T) {
+	ctx := context.Background()
+	s := playerStore(t, "rust")
+	if err := s.RecordPlayerEvents(ctx, "rust", []players.Event{join("1", "A", "", 0), leave("1", "A", "bye", 9), leave("2", "B", "bye", 9)}); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.Players(ctx, "rust", "", 10, 0)
+	if len(got) != 1 || got[0].ID != "1" || got[0].Online || got[0].PlaySeconds != 9 {
+		t.Errorf("players %+v", got)
 	}
 }
 
@@ -329,5 +386,218 @@ func TestCloseOpenSessionsSparesLaterJoins(t *testing.T) {
 	bob, _ := s.Player(ctx, "rust", "2")
 	if ann.Online || ann.PlaySeconds != 30 || !bob.Online || bob.PlaySeconds != 0 {
 		t.Errorf("ann %+v bob %+v", ann, bob)
+	}
+}
+
+func TestPlayerLogPosition(t *testing.T) {
+	ctx := context.Background()
+	s := playerStore(t, "rust")
+	now := time.Now()
+	at := func(kind players.Kind, id string, ago time.Duration) players.Event {
+		return players.Event{Kind: kind, PlayerID: id, Name: "Ann", At: now.Add(-ago)}
+	}
+	if _, _, err := s.PlayerLogPos(ctx, "rust"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("before anything: %v", err)
+	}
+	if err := s.SetPlayerLogPos(ctx, "rust", "rust-1", 0); err != nil {
+		t.Fatal(err)
+	}
+	// The position moves with the events that were read up to it.
+	if _, err := s.RecordPlayerEventsAt(ctx, "rust", []players.Event{at(players.Join, "1", time.Hour)}, "rust-1", 12); err != nil {
+		t.Fatal(err)
+	}
+	if c, n, err := s.PlayerLogPos(ctx, "rust"); err != nil || c != "rust-1" || n != 12 {
+		t.Errorf("position %q %d %v", c, n, err)
+	}
+	// Events written with no container leave it alone. They are of lines the
+	// position is not past, so it can still be trusted.
+	if err := s.RecordPlayerEvents(ctx, "rust", []players.Event{at(players.Leave, "1", 30*time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	if c, n, err := s.PlayerLogPos(ctx, "rust"); err != nil || c != "rust-1" || n != 12 {
+		t.Errorf("position %q %d %v", c, n, err)
+	}
+	// A new container starts over.
+	if err := s.SetPlayerLogPos(ctx, "rust", "rust-2", 0); err != nil {
+		t.Fatal(err)
+	}
+	if c, n, _ := s.PlayerLogPos(ctx, "rust"); c != "rust-2" || n != 0 {
+		t.Errorf("position %q %d", c, n)
+	}
+}
+
+func TestPlayerLogPositionIsLostWhenSomeoneRecordedSince(t *testing.T) {
+	ctx := context.Background()
+	s := playerStore(t, "rust")
+	if _, err := s.RecordPlayerEventsAt(ctx, "rust", []players.Event{{Kind: players.Join, PlayerID: "1", Name: "Ann", At: time.Now()}}, "rust-1", 12); err != nil {
+		t.Fatal(err)
+	}
+	// A version that does not move the position records a player later.
+	later := players.Event{Kind: players.Chat, PlayerID: "2", Name: "Bob", Text: "hi", At: time.Now().Add(time.Hour)}
+	if err := s.RecordPlayerEvents(ctx, "rust", []players.Event{later}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.PlayerLogPos(ctx, "rust"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("position after a record it was not in: %v", err)
+	}
+	// Noting a new one, as a panel does once it has caught up, makes it good
+	// again, and a clock that was ahead does not spoil it.
+	if err := s.SetPlayerLogPos(ctx, "rust", "rust-1", 20); err != nil {
+		t.Fatal(err)
+	}
+	if c, n, err := s.PlayerLogPos(ctx, "rust"); err != nil || c != "rust-1" || n != 20 {
+		t.Errorf("position %q %d %v", c, n, err)
+	}
+}
+
+func TestPlayersInAtOnceAreBounded(t *testing.T) {
+	old := maxOpenSessions
+	maxOpenSessions = 3
+	t.Cleanup(func() { maxOpenSessions = old })
+	ctx := context.Background()
+	s := playerStore(t, "rust")
+	dropped, err := s.RecordPlayerEventsAt(ctx, "rust", []players.Event{
+		join("1", "A", "", 0), join("2", "B", "", 1), join("3", "C", "", 2), join("4", "D", "", 3), join("5", "E", "", 4),
+		// A player who is in already is not a new one.
+		join("1", "A", "", 5),
+	}, "", 0)
+	if err != nil || dropped != 2 {
+		t.Fatalf("dropped %d, %v", dropped, err)
+	}
+	if got, _ := s.Players(ctx, "rust", "", 10, 0); len(got) != 3 {
+		t.Errorf("%d players", len(got))
+	}
+
+	// Room again once someone leaves.
+	dropped, err = s.RecordPlayerEventsAt(ctx, "rust", []players.Event{leave("2", "B", "", 10), join("4", "D", "", 11)}, "", 0)
+	if err != nil || dropped != 0 {
+		t.Fatalf("dropped %d, %v", dropped, err)
+	}
+	if d, err := s.Player(ctx, "rust", "4"); err != nil || !d.Online {
+		t.Errorf("D %+v %v", d, err)
+	}
+}
+
+func TestPlayersOnRecordAreBounded(t *testing.T) {
+	old := maxPlayers
+	maxPlayers = 3
+	t.Cleanup(func() { maxPlayers = old })
+	ctx := context.Background()
+	s := playerStore(t, "rust")
+	dropped, err := s.RecordPlayerEventsAt(ctx, "rust", []players.Event{
+		join("1", "A", "", 0), chat("2", "B", "hi", 1), join("3", "C", "", 2),
+		join("4", "D", "", 3), chat("5", "E", "me too", 4), join("6", "F", "", 5),
+		// The ones on record go on being recorded.
+		chat("1", "A", "still here", 6), join("2", "B", "", 7),
+	}, "", 0)
+	if err != nil || dropped != 3 {
+		t.Fatalf("dropped %d, %v", dropped, err)
+	}
+	if got, _ := s.Players(ctx, "rust", "", 10, 0); len(got) != 3 {
+		t.Errorf("%d players", len(got))
+	}
+	if c, _ := s.PlayerChat(ctx, "rust", "", 0, 10); len(c) != 2 {
+		t.Errorf("chat %+v", c)
+	}
+	if b, err := s.Player(ctx, "rust", "2"); err != nil || !b.Online {
+		t.Errorf("B %+v %v", b, err)
+	}
+
+	// Another server has its own room, and a report does not take any.
+	if err := s.CreateApp(ctx, App{ID: "other", Source: SourceImage, Image: "nginx", Port: 81, MemoryMB: 64, CPUs: 1, CreatedAt: t0}); err != nil {
+		t.Fatal(err)
+	}
+	report := players.Event{Kind: players.Report, PlayerID: "9", Name: "I", Target: "10", Text: "cheats", At: t0}
+	dropped, err = s.RecordPlayerEventsAt(ctx, "other", []players.Event{join("4", "D", "", 0), report}, "", 0)
+	if err != nil || dropped != 0 {
+		t.Fatalf("other server: dropped %d, %v", dropped, err)
+	}
+	if r, _ := s.PlayerReports(ctx, "other", "", 10); len(r) != 1 {
+		t.Errorf("reports %+v", r)
+	}
+}
+
+func TestOldestFinishedRecordsGoPastTheirLimit(t *testing.T) {
+	oldSessions, oldChat, oldReports := maxSessions, maxChatRows, maxReportRows
+	maxSessions, maxChatRows, maxReportRows = 2, 3, 1
+	t.Cleanup(func() { maxSessions, maxChatRows, maxReportRows = oldSessions, oldChat, oldReports })
+	ctx := context.Background()
+	s := playerStore(t, "rust", "other")
+	var events []players.Event
+	for i := 0; i < 5; i++ {
+		events = append(events, join("1", "A", "", 10*i), leave("1", "A", "", 10*i+5), chat("1", "A", fmt.Sprintf("m%d", i), 10*i),
+			players.Event{Kind: players.Report, PlayerID: "1", Target: "2", Text: fmt.Sprintf("r%d", i), At: t0.Add(time.Duration(i) * time.Second)})
+	}
+	// Still in: never counted, never removed.
+	events = append(events, join("2", "B", "", 1))
+	for _, app := range []string{"rust", "other"} {
+		if _, err := s.RecordPlayerEventsAt(ctx, app, events, "", 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	res, err := s.CapPlayerData(ctx, "rust")
+	if err != nil || res.Sessions != 3 || res.Chat != 2 || res.Reports != 4 || res.Players != 0 {
+		t.Fatalf("capped %+v, %v", res, err)
+	}
+	sess, _ := s.PlayerSessions(ctx, "rust", "1", 10)
+	if len(sess) != 2 || sess[0].JoinedAt != t0.Add(40*time.Second) {
+		t.Errorf("sessions %+v", sess)
+	}
+	if b, _ := s.PlayerSessions(ctx, "rust", "2", 10); len(b) != 1 {
+		t.Errorf("the open session: %+v", b)
+	}
+	c, _ := s.PlayerChat(ctx, "rust", "", 0, 10)
+	if len(c) != 3 || c[0].Text != "m4" || c[2].Text != "m2" {
+		t.Errorf("chat %+v", c)
+	}
+	if r, _ := s.PlayerReports(ctx, "rust", "", 10); len(r) != 1 || r[0].Message != "r4" {
+		t.Errorf("reports %+v", r)
+	}
+	// The other server was not asked.
+	if c, _ := s.PlayerChat(ctx, "other", "", 0, 10); len(c) != 5 {
+		t.Errorf("other server's chat: %d", len(c))
+	}
+	// Nothing over the limit, nothing to do.
+	if res, err := s.CapPlayerData(ctx, "rust"); err != nil || res.Sessions+res.Chat+res.Reports != 0 {
+		t.Errorf("capped again %+v, %v", res, err)
+	}
+}
+
+func TestBanInForce(t *testing.T) {
+	ctx := context.Background()
+	s := playerStore(t, "mc")
+	now := time.Now()
+	add := func(id, name string, from, to time.Duration) int64 {
+		b := PlayerBan{PlayerID: id, Name: name, CreatedAt: now.Add(from)}
+		if to != 0 {
+			b.ExpiresAt = now.Add(to)
+		}
+		n, err := s.AddPlayerBan(ctx, "mc", b)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	add("u1", "Steve", -2*time.Hour, -time.Hour) // over
+	lifted := add("u2", "Steve", -time.Hour, 0)
+	if _, err := s.LiftPlayerBan(ctx, "mc", lifted, 0, now); err != nil {
+		t.Fatal(err)
+	}
+	held := func(id, name string) bool {
+		ok, err := s.BanInForce(ctx, "mc", id, name, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ok
+	}
+	if held("u1", "Steve") || held("u2", "Steve") {
+		t.Error("a ban that is over or lifted holds")
+	}
+	add("name:steve", "steve", -time.Minute, 0)
+	if !held("name:steve", "") || held("u1", "") {
+		t.Error("by id")
+	}
+	if !held("u1", "Steve") || !held("u1", "STEVE") || held("u1", "Alex") {
+		t.Error("by name, whatever the case")
 	}
 }

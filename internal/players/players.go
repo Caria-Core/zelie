@@ -63,6 +63,29 @@ type Parser interface {
 	Feed(line string) []Event
 }
 
+// The longest player id and address a parser passes on. A SteamID64 has 17
+// digits and a UUID 36 characters. A console that prints longer ones is
+// making them up, and each would be stored and indexed.
+const (
+	maxIDLen = 64
+	maxIPLen = 64
+)
+
+// bounded turns the events whose ids are too long into near misses, so the
+// log says so and the database does not take them.
+func bounded(events []Event) []Event {
+	for i, ev := range events {
+		if len(ev.PlayerID) > maxIDLen || len(ev.Target) > maxIDLen {
+			text := ev.PlayerID
+			if len(text) <= maxIDLen {
+				text = ev.Target
+			}
+			events[i] = Event{Kind: NearMiss, Reason: "id too long", Text: text}
+		}
+	}
+	return events
+}
+
 // ParserFor returns the parser for a catalog egg id, or nil for games that
 // have none. Bedrock and the Velocity proxy log in other formats.
 func ParserFor(catalogID string) Parser {
@@ -74,6 +97,31 @@ func ParserFor(catalogID string) Parser {
 		return NewMinecraft()
 	}
 	return nil
+}
+
+// PlayerLines marks the lines of a game's console that carry something a
+// player made: chat, commands, emotes, and the lines the parser reads
+// events from, which hold the player's name. Whoever reads the console for
+// what the server itself said must leave these out, since a player can make
+// them say anything. lines are in the order they were printed. Games
+// without a parser have none marked.
+func PlayerLines(catalogID string, lines []string) []bool {
+	marks := make([]bool, len(lines))
+	switch Family(catalogID) {
+	case GameMinecraft:
+		m := NewMinecraft()
+		for i, l := range lines {
+			marks[i] = m.playerLine(l)
+		}
+	case GameRust:
+		r := NewRust()
+		for i, l := range lines {
+			for j := r.playerLines(l); j > 0; j-- {
+				marks[i-j+1] = true
+			}
+		}
+	}
+	return marks
 }
 
 // Game families with a parser.

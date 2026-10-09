@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/Caria-Core/zelie/internal/egg"
+	"github.com/Caria-Core/zelie/internal/players"
 	"github.com/Caria-Core/zelie/internal/store"
 )
 
@@ -35,6 +36,10 @@ var (
 // consoleQueueHard is how many messages other than lines may wait before the
 // socket is dropped as unresponsive.
 const consoleQueueHard = 4096
+
+// waitRetryMax caps the wait between asks for a container's exit, in multiples
+// of watchRetry, when the core keeps failing them.
+const waitRetryMax = 30
 
 // consoleDrain is how long a container's console is still read after the
 // container exits, for the output that was still on its way.
@@ -219,6 +224,13 @@ type consoleHub struct {
 	stopPoll  context.CancelFunc
 	taps      map[chan string]struct{}
 
+	// pushed counts the lines the console printed, of which lines holds the
+	// newest. Once the game has said it is ready, readyAt is the number of the
+	// line that said so.
+	pushed  int
+	ready   bool
+	readyAt int
+
 	// The install log being read, and how far.
 	installMu    sync.Mutex
 	installID    int64
@@ -255,6 +267,7 @@ func (h *consoleHub) push(container, kind, text string) {
 			return
 		}
 		h.lines = appendRing(h.lines, text)
+		h.pushed++
 		for tap := range h.taps {
 			select {
 			case tap <- text:
@@ -293,6 +306,28 @@ func (h *consoleHub) replace(container string, cancel context.CancelFunc) {
 		h.cancel()
 	}
 	h.container, h.cancel, h.lines, h.loaded, h.eula, h.exited = container, cancel, nil, true, false, false
+	h.pushed, h.ready = 0, false
+}
+
+// markReady notes that the line just printed is the one that said the game
+// is ready.
+func (h *consoleHub) markReady(container string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.container == container && !h.ready && h.pushed > 0 {
+		h.ready, h.readyAt = true, h.pushed-1
+	}
+}
+
+// beforeReady says how many of the oldest of the last n lines were printed
+// before the game said it was ready, which is all of them while it has not.
+// Nobody can be in the game before then, so such a line was written by the
+// server alone. The caller holds h.mu.
+func (h *consoleHub) beforeReady(n int) int {
+	if !h.ready {
+		return n
+	}
+	return min(max(h.readyAt-(h.pushed-n), 0), n)
 }
 
 // setExit records the exit code of container's process, for the crash
@@ -473,6 +508,16 @@ func (c *consoleHistory) forget(app string) {
 	delete(c.m, app)
 }
 
+// doneMatcher finds the line that says an app is ready. Generic eggs keep a
+// placeholder where a game's ready line goes. Their app is up once it runs,
+// or once it answers on its port.
+func doneMatcher(a store.App, e *egg.Egg) *egg.Done {
+	if a.IsFiles() {
+		return new(egg.Egg).DoneMatcher()
+	}
+	return e.DoneMatcher()
+}
+
 // watchGame follows a server's console from its start: to see when the
 // game says it is ready, and to keep the lines for whoever opens the
 // console. It stops when the container has exited and its output is read.
@@ -481,13 +526,7 @@ func (c *consoleHistory) forget(app string) {
 // so the players in it are not new.
 func (s *Server) watchGame(a store.App, container string, e *egg.Egg, g store.GameServer, resumed bool) {
 	app := a.ID
-	if a.IsFiles() {
-		// Generic eggs keep a placeholder where a game's ready line goes.
-		// Their app is up once it runs, or once it answers on its port.
-		e = new(*e)
-		e.Done = nil
-	}
-	done := e.DoneMatcher()
+	done := doneMatcher(a, e)
 	eula := e.HasFeature(egg.FeatureEULA)
 	h := s.consoles.hub(app)
 	ctx, cancel := context.WithCancel(s.baseContext())
@@ -517,22 +556,34 @@ func (s *Server) watchGame(a store.App, container string, e *egg.Egg, g store.Ga
 		defer cancel()
 		go func() {
 			defer s.watchers.Done()
-			// An error other than "gone" is the core being busy; the
-			// console is still worth reading.
-			code, err := s.Core.Wait(ctx, container)
-			if err == nil {
-				h.setExit(container, code)
-			}
-			if err == nil || isNotFound(err) {
-				if rec != nil {
-					exitAt.Store(s.now().UnixNano())
+			// An error other than "gone" is the core restarting or busy: the
+			// container runs on, so ask again. Giving up would leave the
+			// console followed after the server has stopped. The wait grows, so an
+			// error that stays does not fill the core's log.
+			retry := s.watchRetry()
+			for {
+				code, err := s.Core.Wait(ctx, container)
+				if err == nil {
+					h.setExit(container, code)
 				}
-				exited.Store(true)
+				if err == nil || isNotFound(err) {
+					if rec != nil {
+						exitAt.Store(s.now().UnixNano())
+					}
+					exited.Store(true)
+					select {
+					case <-ctx.Done():
+					case <-time.After(consoleDrain):
+					}
+					cancel()
+					return
+				}
 				select {
 				case <-ctx.Done():
-				case <-time.After(consoleDrain):
+					return
+				case <-time.After(retry):
 				}
-				cancel()
+				retry = min(2*retry, waitRetryMax*s.watchRetry())
 			}
 		}()
 		skip := 0
@@ -560,6 +611,7 @@ func (s *Server) watchGame(a store.App, container string, e *egg.Egg, g store.Ga
 				}
 				if !matched && done.Match(plain) {
 					matched = true
+					h.markReady(container)
 					if s.gameRuns.advance(app, container) {
 						s.gameReady(app, container)
 					}
@@ -636,9 +688,10 @@ func (s *Server) loadStoppedConsole(ctx context.Context, h *consoleHub) {
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
+	container := fmt.Sprintf("%s-%d", h.app, d.ID)
 	var lines []string
 	counted := &countWriter{w: &lineSplitter{emit: func(line string) { lines = append(lines, line) }}}
-	if err := s.Core.Logs(ctx, fmt.Sprintf("%s-%d", h.app, d.ID), false, consoleTail, counted); err != nil {
+	if err := s.Core.Logs(ctx, container, false, consoleTail, counted); err != nil {
 		return
 	}
 	if counted.n >= consoleTail && len(lines) > 0 {
@@ -646,11 +699,18 @@ func (s *Server) loadStoppedConsole(ctx context.Context, h *consoleHub) {
 		lines = lines[1:]
 	}
 	g, err := s.Store.GameServer(ctx, h.app)
+	ready := -1
 	switch {
 	case err == nil:
 		mask := secretMasker(consoleSecrets(g.Variables))
 		for i := range lines {
 			lines[i] = mask(lines[i])
+		}
+		if ready, err = s.readyLine(ctx, g, container, lines); err != nil {
+			// The lines are still worth showing. Where the game became ready
+			// stays unknown, which counts every line as printed before it.
+			s.Log.Warn("find where the game became ready in its last console", "server", h.app, "err", err)
+			ready = -1
 		}
 	case !errors.Is(err, store.ErrNotFound):
 		return
@@ -658,8 +718,66 @@ func (s *Server) loadStoppedConsole(ctx context.Context, h *consoleHub) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.container == "" && len(h.lines) == 0 {
-		h.lines = lastLines(lines, consoleBacklog)
+		h.lines, h.pushed = lastLines(lines, consoleBacklog), len(lines)
+		if ready >= 0 {
+			h.ready, h.readyAt = true, ready
+		}
 	}
+}
+
+// readyLine finds where the game said it was ready, as a place in lines, which
+// are the end of container's console. A line before them gives 0, as they all
+// came after it. It gives -1 when the game never said so, or the egg names no
+// such line.
+func (s *Server) readyLine(ctx context.Context, g store.GameServer, container string, lines []string) (int, error) {
+	a, err := s.Store.App(ctx, g.AppID)
+	if err != nil {
+		return -1, err
+	}
+	stored, err := s.Store.Egg(ctx, g.EggID)
+	if err != nil {
+		return -1, err
+	}
+	e, err := egg.Parse(stored.Raw)
+	if err != nil {
+		return -1, err
+	}
+	done := doneMatcher(a, e)
+	if done.Empty() {
+		return -1, nil
+	}
+	plain := make([]string, len(lines))
+	for i, l := range lines {
+		plain[i] = ansi().ReplaceAllString(l, "")
+	}
+	// A player can chat the words the game prints when it is ready.
+	mine := players.PlayerLines(stored.Source, plain)
+	for i, l := range plain {
+		if !mine[i] && done.Match(l) {
+			return i, nil
+		}
+	}
+
+	// The tail may have cut the line off. Reading from the start of the log
+	// stops at it, which is within the startup output, so this reads little
+	// unless the game never got ready.
+	scan, stop := context.WithCancel(ctx)
+	defer stop()
+	found := false
+	w := &lineSplitter{emit: func(line string) {
+		if !found && done.Match(ansi().ReplaceAllString(line, "")) {
+			found = true
+			stop()
+		}
+	}}
+	err = s.Core.Logs(scan, container, false, 0, w)
+	switch {
+	case found:
+		return 0, nil
+	case err != nil:
+		return -1, err
+	}
+	return -1, nil
 }
 
 type countWriter struct {

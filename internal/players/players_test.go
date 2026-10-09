@@ -251,3 +251,98 @@ func TestMinecraftRememberIsBounded(t *testing.T) {
 		t.Fatalf("remembers %d names", len(m.uuids))
 	}
 }
+
+func TestParsersRefuseIdsNoGameWouldPrint(t *testing.T) {
+	long := strings.Repeat("x", 8000)
+	for name, got := range map[string][]Event{
+		"minecraft name": NewMinecraft().Feed("[12:00:00] [Server thread/INFO]: " + long + " joined the game"),
+		"minecraft chat": NewMinecraft().Feed("[12:00:00] [Server thread/INFO]: <" + long + "> hi"),
+		"rust chat":      NewRust().Feed(`{"Channel":0,"Message":"hi","UserId":"` + long + `","Username":"bob"}`),
+		"rust report":    NewRust().Feed(`{"PlayerId":"76561198000000001","TargetId":"` + long + `","Message":"he flies"}`),
+	} {
+		if len(got) != 1 || got[0].Kind != NearMiss || got[0].PlayerID != "" || got[0].Target != "" || got[0].Reason != "id too long" {
+			t.Errorf("%s: got %+v", name, got)
+		}
+	}
+
+	// The ids of real players pass.
+	got := NewRust().Feed(`{"Channel":0,"Message":"hi","UserId":"76561198000000001","Username":"bob"}`)
+	if len(got) != 1 || got[0].Kind != Chat {
+		t.Errorf("rust chat: %+v", got)
+	}
+	got = NewMinecraft().Feed("[12:00:00] [Server thread/INFO]: Alex_01 joined the game")
+	if len(got) != 1 || got[0].Kind != Join || got[0].PlayerID != "name:Alex_01" {
+		t.Errorf("minecraft join: %+v", got)
+	}
+}
+
+func TestAddressTooLongToBeOneIsDropped(t *testing.T) {
+	long := strings.Repeat("9", 8000)
+	p := NewMinecraft()
+	got := feed(p,
+		"[12:00:00] [Server thread/INFO]: Steve[/"+long+"] logged in with entity id 4 at (0, 0, 0)",
+		"[12:00:00] [Server thread/INFO]: Steve joined the game")
+	if len(got) != 1 || got[0].Kind != Join || got[0].IP != "" {
+		t.Errorf("minecraft: %+v", got)
+	}
+	got = NewRust().Feed(long + "/76561198000000001/Bob joined [windows/76561198000000001]")
+	if len(got) != 1 || got[0].Kind != Join || got[0].IP != "" {
+		t.Errorf("rust: %+v", got)
+	}
+	if got := stripPort("10.0.0.7:5555"); got != "10.0.0.7" {
+		t.Errorf("stripPort: %q", got)
+	}
+}
+
+func TestPlayerLines(t *testing.T) {
+	marked := func(catalogID string, lines ...string) []int {
+		var out []int
+		for i, mine := range PlayerLines(catalogID, lines) {
+			if mine {
+				out = append(out, i)
+			}
+		}
+		return out
+	}
+	mc := marked("minecraft-paper",
+		"[12:00:00 INFO]: Steve joined the game",
+		"[12:00:01 INFO]: <Steve> Unable to access jarfile",
+		"[12:00:02 INFO]: [Not Secure] <Steve> Address already in use",
+		"[12:00:03 INFO]: Steve issued server command: /class file version 70",
+		"[12:00:04 INFO]: Done (3.1s)! For help, type \"help\"",
+		"Unable to access jarfile server.jar",
+		"[12:00:05 INFO]: * Steve Unable to access jarfile",
+		"[12:00:06 INFO]: [Not Secure] * Steve Address already in use",
+		"[12:00:07 INFO]: Named entity Wolf['Unable to access jarfile'/12, l='ServerLevel[world]', x=1.00] died: Wolf was slain",
+		"[12:00:08 INFO]: UUID of player Steve is 069a79f4-44e9-4726-a5be-fca90e38aaf5",
+		"[12:00:09 INFO]: Steve[/10.0.0.7:5555] logged in with entity id 4 at (0.0, 64.0, 0.0)",
+		"[12:00:10 INFO]: Steve left the game")
+	if !reflect.DeepEqual(mc, []int{0, 1, 2, 3, 6, 7, 8, 9, 10, 11}) {
+		t.Errorf("minecraft: %v", mc)
+	}
+
+	rust := marked("rust",
+		"[CHAT] Bob: Address already in use",
+		"Bob/76561198000000001/Bob joined [windows/76561198000000001]",
+		"{",
+		`  "Channel": 0,`,
+		`  "Message": "Address already in use",`,
+		`  "UserId": "76561198000000001",`,
+		`  "Username": "Bob"`,
+		"}",
+		"Address already in use",
+		`{"Channel":1,"Message":"hi","UserId":"76561198000000001","Username":"Bob"}`,
+		"[Better Chat] Bob: hi",
+		// The name is the player's own, and a Steam name can be any text.
+		"1.2.3.4:5/76561198000000002/Address already in use joined [windows/76561198000000002]",
+		"1.2.3.4:5/76561198000000002/Unable to access jarfile disconnecting: Disconnected",
+		"Address already in use[76561198000000002] disconnecting: Kicked",
+		"Server startup complete")
+	if !reflect.DeepEqual(rust, []int{0, 1, 2, 3, 4, 5, 6, 7, 9, 10, 11, 12, 13}) {
+		t.Errorf("rust: %v", rust)
+	}
+
+	if got := marked("valheim", "<Steve> hi"); len(got) != 0 {
+		t.Errorf("a game without a parser: %v", got)
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"math"
 	"net/http"
 	"os"
 	"regexp"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/Caria-Core/zelie/internal/egg"
 	"github.com/Caria-Core/zelie/internal/msg"
+	"github.com/Caria-Core/zelie/internal/players"
 	"github.com/Caria-Core/zelie/internal/store"
 )
 
@@ -76,13 +78,25 @@ type diagInput struct {
 	egg        *egg.Egg
 	volumeFull bool  // the volume is over its limit
 	diskMB     int64 // the volume's limit
+
+	// late is how many of the newest lines the game printed after it said it
+	// was ready. Players can be in by then, and a player can make the game
+	// print almost anything. The rest were printed by the server alone.
+	late int
+	// base is the place of lines[0] among all the lines, and hit the place of
+	// the newest line the rule being tried matched, or -1. Both count from
+	// the newest line.
+	base, hit int
 }
 
 // newest returns the groups of the first pattern match, looking from the
 // newest line back, or nil.
 func (in *diagInput) newest(re *regexp.Regexp) []string {
-	for _, l := range in.lines {
+	for i, l := range in.lines {
 		if m := re.FindStringSubmatch(l); m != nil {
+			if at := in.base + i; in.hit < 0 || at < in.hit {
+				in.hit = at
+			}
 			return m
 		}
 	}
@@ -91,6 +105,9 @@ func (in *diagInput) newest(re *regexp.Regexp) []string {
 
 type diagRule struct {
 	id string
+	// start marks a rule for a server that failed to start. It reads only
+	// the lines printed before the game said it was ready.
+	start bool
 	// install marks a rule that also applies to a failed install.
 	install bool
 	cause   msg.Template
@@ -107,8 +124,8 @@ func lineMatcher(pattern string) func(in *diagInput) (map[string]any, bool) {
 	}
 }
 
-// diagRules is in order of priority: the first that fits is the answer.
-// The patterns are compiled the first time anyone asks.
+// diagRules is in order of priority, which settles it when two fit equally
+// well. The patterns are compiled the first time anyone asks.
 var diagRules = sync.OnceValue(func() []diagRule {
 	var (
 		classVersion = regexp.MustCompile(`class file version (\d+)`)
@@ -121,7 +138,7 @@ var diagRules = sync.OnceValue(func() []diagRule {
 	)
 	return []diagRule{
 		{
-			id: "eula", cause: msgEULA,
+			id: "eula", start: true, cause: msgEULA,
 			match: lineMatcher(`(?i)you need to agree to the eula`),
 			fix: func(_ context.Context, _ *Server, in *diagInput, _ map[string]any) *diagnosisFix {
 				if !in.egg.HasFeature(egg.FeatureEULA) || !in.game.EULAAcceptedAt.IsZero() {
@@ -131,7 +148,7 @@ var diagRules = sync.OnceValue(func() []diagRule {
 			},
 		},
 		{
-			id: "java_version", cause: msgJava,
+			id: "java_version", start: true, cause: msgJava,
 			match: func(in *diagInput) (map[string]any, bool) {
 				m := in.newest(classVersion)
 				if m == nil {
@@ -152,7 +169,7 @@ var diagRules = sync.OnceValue(func() []diagRule {
 			},
 		},
 		{
-			id: "port_in_use", cause: msgPort,
+			id: "port_in_use", start: true, cause: msgPort,
 			match: lineMatcher(`Address already in use|FAILED TO BIND TO PORT|EADDRINUSE`),
 			fix: func(_ context.Context, _ *Server, in *diagInput, _ map[string]any) *diagnosisFix {
 				// A files app has no network page: its port is the app's.
@@ -163,7 +180,7 @@ var diagRules = sync.OnceValue(func() []diagRule {
 			},
 		},
 		{
-			id: "missing_file", cause: msgStartFile,
+			id: "missing_file", start: true, cause: msgStartFile,
 			match: func(in *diagInput) (map[string]any, bool) {
 				m := in.newest(startFile)
 				// A file inside a package is that package's problem.
@@ -178,7 +195,7 @@ var diagRules = sync.OnceValue(func() []diagRule {
 			},
 		},
 		{
-			id: "missing_module", cause: msgModule,
+			id: "missing_module", start: true, cause: msgModule,
 			match: func(in *diagInput) (map[string]any, bool) {
 				m := in.newest(module)
 				if m == nil {
@@ -192,6 +209,8 @@ var diagRules = sync.OnceValue(func() []diagRule {
 			match: func(in *diagInput) (map[string]any, bool) {
 				found := map[string]any{"size": formatMB(in.diskMB)}
 				if in.volumeFull {
+					// True now, whatever the log says.
+					in.hit = 0
 					return found, true
 				}
 				return found, in.newest(noSpace) != nil
@@ -281,7 +300,7 @@ func raiseMemory(ctx context.Context, s *Server, in *diagInput, _ map[string]any
 // diagnose looks for the cause of a crash or a failed install. It returns
 // nil when the server is not in that state or no rule fits.
 func (s *Server) diagnose(ctx context.Context, a store.App) (*diagnosis, error) {
-	g, e, _, err := s.gameParts(ctx, a.ID)
+	g, stored, e, err := s.gameEgg(ctx, a.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -295,12 +314,17 @@ func (s *Server) diagnose(ctx context.Context, a store.App) (*diagnosis, error) 
 		h := s.consoles.hub(a.ID)
 		s.loadStoppedConsole(ctx, h)
 		h.mu.Lock()
-		in.lines = slices.Clone(lastLines(h.lines, diagnoseLines))
+		printed := slices.Clone(lastLines(h.lines, diagnoseLines))
+		early := h.beforeReady(len(printed))
 		if h.exited {
 			in.exit = h.exit
 		}
 		h.mu.Unlock()
-		slices.Reverse(in.lines)
+		before := withoutPlayerLines(stored.Source, printed[:early])
+		after := withoutPlayerLines(stored.Source, printed[early:])
+		slices.Reverse(before)
+		slices.Reverse(after)
+		in.lines, in.late = slices.Concat(after, before), len(after)
 	default:
 		return nil, nil
 	}
@@ -332,17 +356,54 @@ func (s *Server) diagnose(ctx context.Context, a store.App) (*diagnosis, error) 
 	return d, nil
 }
 
-// firstRule is the rule of highest priority that fits.
+// firstRule is the rule that fits best: the one whose line is the newest, as
+// the last thing the server said is the likeliest reason it stopped. A rule
+// that fits with no line to show ranks behind the ones that have one, and of
+// two that tie the one higher in diagRules wins.
 func firstRule(in *diagInput) (diagRule, map[string]any, bool) {
+	var best diagRule
+	var bestFound map[string]any
+	bestAt, found := 0, false
 	for _, r := range diagRules() {
 		if in.install && !r.install {
 			continue
 		}
-		if found, ok := r.match(in); ok {
-			return r, found, true
+		view := *in
+		view.hit = -1
+		if r.start {
+			view.lines, view.base = in.lines[in.late:], in.base+in.late
+		}
+		values, ok := r.match(&view)
+		if !ok {
+			continue
+		}
+		at := view.hit
+		if at < 0 {
+			at = math.MaxInt
+		}
+		if !found || at < bestAt {
+			best, bestFound, bestAt, found = r, values, at, true
 		}
 	}
-	return diagRule{}, nil, false
+	return best, bestFound, found
+}
+
+// withoutPlayerLines drops the lines that carry something a player made. The
+// rules look for words anywhere in a line, and a player can make the game
+// print any.
+func withoutPlayerLines(source string, lines []string) []string {
+	plain := make([]string, len(lines))
+	for i, l := range lines {
+		plain[i] = ansi().ReplaceAllString(l, "")
+	}
+	mine := players.PlayerLines(source, plain)
+	kept := make([]string, 0, len(lines))
+	for i, l := range lines {
+		if !mine[i] {
+			kept = append(kept, l)
+		}
+	}
+	return kept
 }
 
 // installLines reads the end of an install's log, newest line first.

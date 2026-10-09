@@ -39,7 +39,9 @@ type Rust struct {
 
 func NewRust() *Rust { return &Rust{} }
 
-func (r *Rust) Feed(line string) []Event {
+func (r *Rust) Feed(line string) []Event { return bounded(r.parse(line)) }
+
+func (r *Rust) parse(line string) []Event {
 	line = strings.TrimRight(line, " \t\r")
 	if r.open {
 		switch {
@@ -68,6 +70,24 @@ func (r *Rust) Feed(line string) []Event {
 		return rustBlock(line)
 	}
 	return rustLine(line)
+}
+
+// playerLines feeds a line and says how many lines, counting this one, hold
+// a player's event or chat: one, or the whole block of a message printed as
+// JSON. It is 0 when the line has none.
+func (r *Rust) playerLines(line string) int {
+	n := 1
+	if r.open {
+		n += len(r.block)
+	}
+	if len(r.parse(line)) > 0 {
+		return n
+	}
+	if line = strings.TrimRight(line, " \t\r"); strings.HasPrefix(line, "[CHAT]") ||
+		strings.HasPrefix(line, "[TEAM CHAT]") || strings.HasPrefix(line, betterChatLine) {
+		return 1
+	}
+	return 0
 }
 
 func (r *Rust) start() {
@@ -184,13 +204,17 @@ func unixSeconds(v any) time.Time {
 	return time.Unix(n, 0)
 }
 
-// stripPort turns "1.2.3.4:5678" into "1.2.3.4".
+// stripPort turns "1.2.3.4:5678" into "1.2.3.4". Text too long to be an
+// address gives none.
 func stripPort(addr string) string {
+	ip := addr
 	if ap, err := netip.ParseAddrPort(addr); err == nil {
-		return ap.Addr().String()
+		ip = ap.Addr().String()
+	} else if i := strings.LastIndexByte(addr, ':'); i > 0 {
+		ip = addr[:i]
 	}
-	if i := strings.LastIndexByte(addr, ':'); i > 0 {
-		return addr[:i]
+	if len(ip) > maxIPLen {
+		return ""
 	}
-	return addr
+	return ip
 }

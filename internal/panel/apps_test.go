@@ -71,6 +71,9 @@ type appCore struct {
 	games       map[string]engine.Spec
 	gameLog     map[string]string
 	gameExit    map[string]int // what Wait says a game's process exited with
+	failWaits   int            // the next Waits on a game fail, as when the core restarts
+	waitFails   []time.Time    // when each of them was asked
+	listErr     error          // what List fails with, while set
 	consoles    map[string][]string
 	signals     map[string][]string
 	prepares    []preparedVolume
@@ -125,6 +128,9 @@ func (c *appCore) List(context.Context) ([]engine.Status, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.lists++
+	if c.listErr != nil {
+		return nil, c.listErr
+	}
 	var out []engine.Status
 	for _, s := range c.containers {
 		out = append(out, s)
@@ -324,12 +330,28 @@ func (c *appCore) Remove(_ context.Context, id string) error {
 	return nil
 }
 
-func (c *appCore) Logs(ctx context.Context, id string, follow bool, _ int64, w io.Writer) error {
+// tailStart is where the core starts a log read with a tail: the first whole
+// line within the last n bytes.
+func tailStart(text string, n int64) int {
+	if int64(len(text)) <= n {
+		return 0
+	}
+	start := len(text) - int(n) - 1
+	if i := strings.IndexByte(text[start:], '\n'); i >= 0 {
+		return start + i + 1
+	}
+	return len(text)
+}
+
+func (c *appCore) Logs(ctx context.Context, id string, follow bool, tail int64, w io.Writer) error {
 	c.mu.Lock()
 	_, game := c.games[id]
+	sent := 0
+	if game && tail > 0 {
+		sent = tailStart(c.gameLog[id], tail)
+	}
 	c.mu.Unlock()
 	if game {
-		sent := 0
 		for {
 			c.mu.Lock()
 			text := c.gameLog[id]
@@ -397,7 +419,17 @@ func (c *appCore) Wait(ctx context.Context, id string) (int, error) {
 	c.mu.Lock()
 	_, game := c.games[id]
 	hang := c.installHang && strings.Contains(id, "-install-")
+	failing := game && c.failWaits > 0
+	if failing {
+		c.failWaits--
+	}
 	c.mu.Unlock()
+	if failing {
+		c.mu.Lock()
+		c.waitFails = append(c.waitFails, time.Now())
+		c.mu.Unlock()
+		return 0, &core.Error{Status: http.StatusInternalServerError, Message: "context canceled"}
+	}
 	if game {
 		// A server's process ends when it is stopped or exits.
 		for {

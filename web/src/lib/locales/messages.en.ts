@@ -259,6 +259,7 @@ export default {
 	'msg.players.bad_note': 'A note takes 1 to 1000 characters, and a tag of watch, suspect, alt, vip or other, or none.',
 	'msg.players.ban_not_found': 'There is no such ban.',
 	'msg.players.ban_over': 'This ban is over already.',
+	'msg.players.name_reused': 'Another player has used this name since, so the command would reach them instead.',
 	'msg.players.no_answer': 'The server did not answer. It may still be starting.',
 	'msg.players.not_found': 'There is no such player.',
 	'msg.players.not_running': 'The server is not running.',

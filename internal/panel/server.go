@@ -101,10 +101,11 @@ type Server struct {
 	sftp  sftpState
 
 	// steamProfiles looks up players on Steam; banKeepers lift bans that
-	// run out.
+	// run out, and banLocks keep them from undoing a new ban.
 	steamProfiles players.Steam
 	steamOnce     sync.Once
 	banKeepers    banKeepers
+	banLocks      banLocks
 
 	// externalMu keeps two requests from picking the same port.
 	externalMu sync.Mutex

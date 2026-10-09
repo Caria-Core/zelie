@@ -18,6 +18,21 @@ const (
 	maxReportText = 2000
 )
 
+// What one server can have in the database, as far as the panel records. A
+// console that prints player lines without end must not be able to fill the
+// database within the days the records are kept. Sessions that are open are
+// never pruned, and every batch reads them all, so they are limited by count
+// at the door. A player over maxPlayers is not recorded at all; finished
+// sessions, chat and reports over their limits are dropped oldest first by
+// CapPlayerData. Tests lower these.
+var (
+	maxOpenSessions = 10000
+	maxPlayers      = 100000
+	maxSessions     = 500000
+	maxChatRows     = 250000
+	maxReportRows   = 50000
+)
+
 const (
 	// ReasonRejoined closes a session when the same player joins again
 	// without a leave in between.
@@ -78,13 +93,24 @@ type openSession struct {
 
 // RecordPlayerEvents stores what a parser read, in order, in one
 // transaction. Events with no time are stamped now, and near misses are not
-// stored.
+// stored. A leave of a player with no record is not stored either.
 func (s *Store) RecordPlayerEvents(ctx context.Context, app string, events []players.Event) error {
+	_, err := s.RecordPlayerEventsAt(ctx, app, events, "", 0)
+	return err
+}
+
+// RecordPlayerEventsAt stores events like RecordPlayerEvents and, in the
+// same transaction, notes that the console of container has been recorded up
+// to line lines. With no container it notes nothing. It returns how many
+// events it left out because they were of a player the server could not take
+// up, with maxPlayers on record or maxOpenSessions in.
+func (s *Store) RecordPlayerEventsAt(ctx context.Context, app string, events []players.Event, container string, lines int) (dropped int, err error) {
 	if len(events) == 0 {
-		return nil
+		return 0, nil
 	}
 	now := time.Now()
-	return s.tx(ctx, func(tx *sql.Tx) error {
+	err = s.tx(ctx, func(tx *sql.Tx) error {
+		dropped = 0
 		open := map[string]openSession{}
 		rows, err := tx.QueryContext(ctx, "SELECT player_id, id, joined_at FROM player_sessions WHERE app_id = ? AND left_at IS NULL", app)
 		if err != nil {
@@ -101,6 +127,48 @@ func (s *Store) RecordPlayerEvents(ctx context.Context, app string, events []pla
 		}
 		if err := rows.Close(); err != nil {
 			return err
+		}
+
+		// exists says whether the player has a record, or was given one by
+		// an event of this batch.
+		known := map[string]bool{}
+		exists := func(id string) (bool, error) {
+			if known[id] {
+				return true, nil
+			}
+			var one int
+			err := tx.QueryRowContext(ctx, "SELECT 1 FROM players WHERE app_id = ? AND player_id = ?", app, id).Scan(&one)
+			switch {
+			case err == nil:
+				known[id] = true
+				return true, nil
+			case err == sql.ErrNoRows:
+				return false, nil
+			}
+			return false, err
+		}
+		// admit says whether the player has a record or may have one. The
+		// count is taken at the first one that has none, which is seldom.
+		count := -1
+		admit := func(id string) (bool, error) {
+			if ok, seen := known[id]; seen {
+				return ok, nil
+			}
+			if ok, err := exists(id); ok || err != nil {
+				return ok, err
+			}
+			if count < 0 {
+				if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM players WHERE app_id = ?", app).Scan(&count); err != nil {
+					return false, err
+				}
+			}
+			if count >= maxPlayers {
+				known[id] = false
+				return false, nil
+			}
+			count++
+			known[id] = true
+			return true, nil
 		}
 
 		upsert, err := tx.PrepareContext(ctx, `INSERT INTO players (app_id, player_id, name, first_seen, last_seen, last_ip)
@@ -166,6 +234,33 @@ func (s *Store) RecordPlayerEvents(ctx context.Context, app string, events []pla
 			}
 			t := at.Unix()
 			name := clip(ev.Name, maxPlayerName)
+			if _, in := open[ev.PlayerID]; ev.Kind == players.Join && !in && len(open) >= maxOpenSessions {
+				dropped++
+				continue
+			}
+			switch ev.Kind {
+			case players.Report:
+			case players.Leave:
+				// Nobody is in who has no record, so there is nothing to
+				// close. A row made for it would let a console that prints
+				// leave lines fill the table.
+				ok, err := exists(ev.PlayerID)
+				if err != nil {
+					return err
+				}
+				if !ok {
+					continue
+				}
+			default:
+				ok, err := admit(ev.PlayerID)
+				if err != nil {
+					return err
+				}
+				if !ok {
+					dropped++
+					continue
+				}
+			}
 			switch ev.Kind {
 			case players.Join:
 				if _, err := upsert.ExecContext(ctx, app, ev.PlayerID, name, t, ev.IP); err != nil {
@@ -204,8 +299,53 @@ func (s *Store) RecordPlayerEvents(ctx context.Context, app string, events []pla
 				}
 			}
 		}
-		return nil
+		if container == "" {
+			return nil
+		}
+		return setPlayerLogPos(ctx, tx, app, container, lines)
 	})
+	return dropped, err
+}
+
+// PlayerLogPos returns the container whose console the panel last recorded
+// players from, and how many of its lines it was through, or ErrNotFound. A
+// position older than the newest player on record is not returned: whoever
+// recorded since did not move it, as a version rolled back to after an
+// update would not, so the lines after it may be recorded already.
+func (s *Store) PlayerLogPos(ctx context.Context, app string) (container string, lines int, err error) {
+	var at int64
+	err = s.db.QueryRowContext(ctx, "SELECT container, lines, at FROM player_log_pos WHERE app_id = ?", app).Scan(&container, &lines, &at)
+	if err == sql.ErrNoRows {
+		return "", 0, ErrNotFound
+	}
+	if err != nil {
+		return "", 0, err
+	}
+	var seen sql.NullInt64
+	if err := s.db.QueryRowContext(ctx, "SELECT max(last_seen) FROM players WHERE app_id = ?", app).Scan(&seen); err != nil {
+		return "", 0, err
+	}
+	if seen.Valid && seen.Int64 > at {
+		return "", 0, ErrNotFound
+	}
+	return container, lines, nil
+}
+
+// SetPlayerLogPos notes that the console of container has been recorded up
+// to line lines.
+func (s *Store) SetPlayerLogPos(ctx context.Context, app, container string, lines int) error {
+	return s.tx(ctx, func(tx *sql.Tx) error { return setPlayerLogPos(ctx, tx, app, container, lines) })
+}
+
+// setPlayerLogPos stamps the position with the time, or with the newest
+// player's if that is later: a clock that ran ahead must not make the players
+// recorded under it look like they came after.
+func setPlayerLogPos(ctx context.Context, tx *sql.Tx, app, container string, lines int) error {
+	_, err := tx.ExecContext(ctx, `INSERT INTO player_log_pos (app_id, container, lines, at)
+		VALUES (?1, ?2, ?3, max(?4, coalesce((SELECT max(last_seen) FROM players WHERE app_id = ?1), 0)))
+		ON CONFLICT (app_id) DO UPDATE SET container = excluded.container, lines = excluded.lines, at = excluded.at`,
+		app, container, lines, time.Now().Unix())
+	return err
 }
 
 // CloseOpenSessions ends every open session of a server at the given time,
@@ -315,6 +455,32 @@ func (s *Store) PrunePlayerData(ctx context.Context, app string, sessionsBefore,
 			AND NOT EXISTS (SELECT 1 FROM player_notes n WHERE n.app_id = p.app_id AND n.player_id = p.player_id)
 			AND NOT EXISTS (SELECT 1 FROM player_bans b WHERE b.app_id = p.app_id AND b.player_id = p.player_id)`,
 			app, sessionsBefore.Unix())
+	})
+	return r, err
+}
+
+// CapPlayerData deletes a server's finished sessions, chat and reports past
+// the most it keeps, the oldest first, whatever their age. Players are not
+// touched: those over maxPlayers were never recorded.
+func (s *Store) CapPlayerData(ctx context.Context, app string) (PruneResult, error) {
+	var r PruneResult
+	err := s.tx(ctx, func(tx *sql.Tx) error {
+		trim := func(n *int64, table, order, where string, limit int) error {
+			res, err := tx.ExecContext(ctx, "DELETE FROM "+table+" WHERE id IN (SELECT id FROM "+table+
+				" WHERE app_id = ?1"+where+" ORDER BY "+order+" DESC, id DESC LIMIT -1 OFFSET ?2)", app, limit)
+			if err != nil {
+				return err
+			}
+			*n, err = res.RowsAffected()
+			return err
+		}
+		if err := trim(&r.Sessions, "player_sessions", "joined_at", " AND left_at IS NOT NULL", maxSessions); err != nil {
+			return err
+		}
+		if err := trim(&r.Chat, "player_chat", "at", "", maxChatRows); err != nil {
+			return err
+		}
+		return trim(&r.Reports, "player_reports", "at", "", maxReportRows)
 	})
 	return r, err
 }

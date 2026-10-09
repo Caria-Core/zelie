@@ -577,5 +577,15 @@ CREATE TABLE restore_runs (
 	backup_id  INTEGER NOT NULL,
 	started_at INTEGER NOT NULL
 ) STRICT;
+`, `
+-- How far into a game server's console the panel has recorded players, and
+-- when it noted so. A panel that starts while the server runs reads on from
+-- here, so what the game printed while the panel was off is not lost.
+CREATE TABLE player_log_pos (
+	app_id    TEXT PRIMARY KEY REFERENCES apps(id) ON DELETE CASCADE,
+	container TEXT NOT NULL,
+	lines     INTEGER NOT NULL,
+	at        INTEGER NOT NULL
+) STRICT;
 `,
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"net"
@@ -202,6 +203,24 @@ func TestRCONErrorsHideThePassword(t *testing.T) {
 	}
 	if _, err := DialRCON(context.Background(), "127.0.0.1:1", "secretpw"); err == nil || strings.Contains(err.Error(), "secretpw") {
 		t.Errorf("error %v", err)
+	}
+}
+
+func TestRCONDoesNotFollowARedirect(t *testing.T) {
+	var hits atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { hits.Add(1) }))
+	t.Cleanup(target.Close)
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL+"/admin", http.StatusFound)
+	}))
+	t.Cleanup(redirector.Close)
+
+	_, err := DialRCON(context.Background(), strings.TrimPrefix(redirector.URL, "http://"), "pw")
+	if !errors.Is(err, ErrRCON) {
+		t.Errorf("error %v", err)
+	}
+	if n := hits.Load(); n != 0 {
+		t.Errorf("the dial followed a redirect to another server (%d requests)", n)
 	}
 }
 

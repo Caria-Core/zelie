@@ -15,6 +15,10 @@ var (
 	mcChat   = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^(?:\[Not Secure\] )?<([^>\s]+)> (.*)$`) })
 	mcUUID   = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^UUID of player (\S+) is ([0-9a-fA-F-]{32,36})$`) })
 	mcLogin  = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^(\S+)\[/([^\]]+)\] logged in with entity id `) })
+	mcCmd    = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^\S+ issued server command: `) })
+	mcEmote  = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^(?:\[Not Secure\] )?\* \S`) })
+	// A name tag puts a player's text in the line a mob's death is logged on.
+	mcNamed = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^Named entity `) })
 )
 
 // What the parser remembers about players that logged in, so the join that
@@ -32,7 +36,9 @@ func NewMinecraft() *Minecraft {
 	return &Minecraft{uuids: map[string]string{}, ips: map[string]string{}}
 }
 
-func (m *Minecraft) Feed(line string) []Event {
+func (m *Minecraft) Feed(line string) []Event { return bounded(m.parse(line)) }
+
+func (m *Minecraft) parse(line string) []Event {
 	sub := mcPrefix().FindStringSubmatch(strings.TrimRight(line, " \t\r"))
 	if sub == nil {
 		return nil
@@ -69,4 +75,19 @@ func (m *Minecraft) id(name string) string {
 		return u
 	}
 	return "name:" + name
+}
+
+// playerLine says whether the line carries something a player made: an event
+// of the parser's, a command, an emote or a named mob.
+func (m *Minecraft) playerLine(line string) bool {
+	sub := mcPrefix().FindStringSubmatch(strings.TrimRight(line, " \t\r"))
+	if sub == nil {
+		return false
+	}
+	for _, re := range []*regexp.Regexp{mcCmd(), mcEmote(), mcNamed(), mcUUID(), mcLogin()} {
+		if re.MatchString(sub[1]) {
+			return true
+		}
+	}
+	return len(m.parse(line)) > 0
 }

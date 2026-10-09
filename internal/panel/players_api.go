@@ -45,6 +45,7 @@ var (
 	errBadPlayerName = msg.Define(http.StatusBadRequest, "players.bad_name", "This player's name cannot be used in a console command.")
 	errBadBanLength  = msg.Define(http.StatusBadRequest, "players.bad_ban_length", "The ban length must be 0, for good, or at most {max} minutes.")
 	errAlreadyBanned = msg.Define(http.StatusConflict, "players.already_banned", "This player is banned already.")
+	errNameReused    = msg.Define(http.StatusConflict, "players.name_reused", "Another player has used this name since, so the command would reach them instead.")
 	errNoBan         = msg.Define(http.StatusNotFound, "players.ban_not_found", "There is no such ban.")
 	errBanOver       = msg.Define(http.StatusConflict, "players.ban_over", "This ban is over already.")
 	errBadNote       = msg.Define(http.StatusBadRequest, "players.bad_note", "A note takes 1 to 1000 characters, and a tag of watch, suspect, alt, vip or other, or none.")
@@ -428,6 +429,22 @@ func (s *Server) actOn(w http.ResponseWriter, r *http.Request, family string) (p
 			writeError(w, errBadPlayerName.Err())
 			return playerAct{}, false
 		}
+		// Commands go by name, and Mojang gives a name to someone else once
+		// its owner has changed it. A player not seen since may have a name
+		// that is another account's now. Only another id proves that: a
+		// record keyed by the name is often the same person, whose id the
+		// parser had forgotten.
+		if !strings.HasPrefix(p.ID, "name:") {
+			latest, err := s.Store.AccountByName(ctx, pg.app.ID, p.Name)
+			if err != nil && !errors.Is(err, store.ErrNotFound) {
+				s.fail(w, "load player", err)
+				return playerAct{}, false
+			}
+			if err == nil && latest.ID != p.ID {
+				writeError(w, errNameReused.Err())
+				return playerAct{}, false
+			}
+		}
 	}
 	container, ip, running := s.runningAddr(ctx, pg.app.ID)
 	if !running {
@@ -511,6 +528,7 @@ func (s *Server) banPlayer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx, app := r.Context(), act.pg.app.ID
+	defer s.banLocks.lock(app)()
 	now := s.now()
 	held, err := s.Store.PlayerBans(ctx, app, act.player.ID, false, now)
 	if err != nil {
@@ -579,6 +597,7 @@ func (s *Server) unbanPlayer(w http.ResponseWriter, r *http.Request) {
 		writeError(w, errPlayerNotRunning.Err())
 		return
 	}
+	defer s.banLocks.lock(app)()
 	if err := s.sendPlayerCommands(ctx, pg, container, ip, unbanCommands(pg.family, b.PlayerID, b.Name)...); err != nil {
 		s.failWith(w, "player command", err)
 		return

@@ -3,6 +3,7 @@ package panel
 import (
 	"context"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -172,5 +173,96 @@ func TestResumeClosesSessionsOfServersThatAreNotRunning(t *testing.T) {
 	sess, _ := e.s.Store.PlayerSessions(ctx, "survival", "1", 1)
 	if sess[0].Reason != store.ReasonPanelRestarted {
 		t.Errorf("session %+v", sess[0])
+	}
+}
+
+func TestWatcherAsksAgainWhenTheCoreFailsItsWait(t *testing.T) {
+	// The core restarted while the first Wait was open.
+	e, id := newPlayerGame(t, func(e *appEnv) { e.core.failWaits = 1 })
+	ctx := context.Background()
+	e.core.emit(id, "[12:00:00 INFO]: Steve joined the game\n")
+	waitFor(t, func() bool {
+		p, _ := e.s.Store.Player(ctx, "survival", "name:Steve")
+		return p.Online
+	})
+
+	e.core.mu.Lock()
+	e.core.gameExit = map[string]int{id: 137}
+	e.core.mu.Unlock()
+	e.crash(t, "survival")
+
+	h := e.s.consoles.hub("survival")
+	waitFor(t, func() bool {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		return h.exited && h.exit == 137
+	})
+	waitFor(t, func() bool {
+		p, _ := e.s.Store.Player(ctx, "survival", "name:Steve")
+		return !p.Online
+	})
+	sess, _ := e.s.Store.PlayerSessions(ctx, "survival", "name:Steve", 5)
+	if len(sess) != 1 || sess[0].Reason != reasonServerStopped {
+		t.Errorf("sessions %+v", sess)
+	}
+}
+
+func TestWatcherWaitsLongerAfterEachFailedWait(t *testing.T) {
+	// A core that goes on failing is not asked once a second for as long as
+	// it takes.
+	const base = 20 * time.Millisecond
+	e, _ := newPlayerGame(t, func(e *appEnv) {
+		e.s.testWatchRetry = base
+		e.core.failWaits = 5
+	})
+	var at []time.Time
+	waitFor(t, func() bool {
+		e.core.mu.Lock()
+		defer e.core.mu.Unlock()
+		at = slices.Clone(e.core.waitFails)
+		return len(at) == 5
+	})
+	for i := 1; i < len(at); i++ {
+		if gap, least := at[i].Sub(at[i-1]), base<<(i-1); gap < least {
+			t.Errorf("ask %d came %v after the one before, want at least %v", i+1, gap, least)
+		}
+	}
+}
+
+func TestResumedServerRecordsWhatTheGamePrintedWhilePanelWasOff(t *testing.T) {
+	e, id := newPlayerGame(t)
+	ctx := context.Background()
+	e.core.emit(id, "[12:00:00 INFO]: Steve joined the game\n[12:00:01 INFO]: Alex joined the game\n")
+	waitFor(t, func() bool {
+		got, _ := e.s.Store.Players(ctx, "survival", "", 10, 0)
+		return len(got) == 2
+	})
+
+	// The panel goes away; the game does not.
+	h := e.s.consoles.hub("survival")
+	h.mu.Lock()
+	stop := h.cancel
+	h.mu.Unlock()
+	stop()
+	e.s.watchers.Wait()
+	e.core.emit(id, "[12:05:00 INFO]: Steve left the game\n[12:05:01 INFO]: <Alex> anyone there?\n[12:06:00 INFO]: Bob joined the game\n")
+
+	e.s.gameRuns = gameRuns{}
+	e.s.resumeGames(ctx)
+	waitFor(t, func() bool {
+		bob, err := e.s.Store.Player(ctx, "survival", "name:Bob")
+		return err == nil && bob.Online
+	})
+	steve, _ := e.s.Store.Player(ctx, "survival", "name:Steve")
+	alex, _ := e.s.Store.Player(ctx, "survival", "name:Alex")
+	if steve.Online || !alex.Online {
+		t.Errorf("steve %+v, alex %+v", steve, alex)
+	}
+	chat, _ := e.s.Store.PlayerChat(ctx, "survival", "", 0, 10)
+	if len(chat) != 1 || chat[0].Text != "anyone there?" {
+		t.Errorf("chat %+v", chat)
+	}
+	if sess, _ := e.s.Store.PlayerSessions(ctx, "survival", "name:Alex", 10); len(sess) != 1 {
+		t.Errorf("alex sessions %+v", sess)
 	}
 }

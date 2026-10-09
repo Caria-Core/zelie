@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"strings"
 	"time"
@@ -26,11 +27,19 @@ type RCON struct {
 	next int
 }
 
+// rconClient talks only to the address it is given: the server on the other
+// end may be hostile, so no proxy from the environment, and a redirect is an
+// answer, not a place to go.
+var rconClient = &http.Client{
+	Transport:     &http.Transport{DisableKeepAlives: true},
+	CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+}
+
 // DialRCON connects to a Rust server's WebRCON at host:port.
 func DialRCON(ctx context.Context, hostport, password string) (*RCON, error) {
 	ctx, cancel := context.WithTimeout(ctx, RCONTimeout)
 	defer cancel()
-	conn, _, err := websocket.Dial(ctx, "ws://"+hostport+"/"+url.PathEscape(password), nil)
+	conn, _, err := websocket.Dial(ctx, "ws://"+hostport+"/"+url.PathEscape(password), &websocket.DialOptions{HTTPClient: rconClient})
 	if err != nil {
 		return nil, rconError("connect", err, password)
 	}

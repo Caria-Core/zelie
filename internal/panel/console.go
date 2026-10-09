@@ -446,20 +446,27 @@ func (c *consoleConn) power(ctx context.Context, h *consoleHub, action string) {
 // runningGameContainer is the container of the server that is up and not
 // on its way down.
 func (s *Server) runningGameContainer(ctx context.Context, app string) (string, bool) {
+	id, ok, _ := s.findGameContainer(ctx, app)
+	return id, ok
+}
+
+// findGameContainer is runningGameContainer for a caller that must tell a
+// server that is not running from a core that could not say.
+func (s *Server) findGameContainer(ctx context.Context, app string) (string, bool, error) {
 	list, err := s.Core.List(ctx)
 	if err != nil {
-		return "", false
+		return "", false, err
 	}
 	for _, c := range list {
 		if c.App != app || c.State != "running" || isInstallContainer(c) {
 			continue
 		}
 		if r, ok := s.gameRuns.get(app); ok && r.container == c.ID && r.state == stateStopping {
-			return "", false
+			return "", false, nil
 		}
-		return c.ID, true
+		return c.ID, true, nil
 	}
-	return "", false
+	return "", false, nil
 }
 
 // rateLimit lets through perSecond messages a second, with a burst as

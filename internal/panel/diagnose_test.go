@@ -2,6 +2,7 @@ package panel
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Caria-Core/zelie/internal/core"
 	"github.com/Caria-Core/zelie/internal/egg"
 	"github.com/Caria-Core/zelie/internal/store"
 )
@@ -101,6 +103,85 @@ func TestDiagnosisPriority(t *testing.T) {
 	slicesReverse(in.lines)
 	if r, _, ok := firstRule(in); !ok || r.id != "eula" {
 		t.Errorf("matched %q", r.id)
+	}
+}
+
+func TestDiagnosisFailuresToStartComeFromBeforeTheGameWasReady(t *testing.T) {
+	tests := []struct {
+		name string
+		log  string
+		late int // how many of the newest lines came after the game was ready
+		want string
+	}{
+		{"before", "Unable to access jarfile server.jar\nStopping", 0, "missing_file"},
+		{"after", "Done\nAlex was slain by Steve using [Unable to access jarfile]\nStopping", 2, ""},
+		{"port after", "Done\nNamed entity Wolf['Address already in use'/12] died\nStopping", 2, ""},
+		{"eula after", "Done\nSteve whispers: you need to agree to the EULA", 1, ""},
+		{"java after", "Done\nclass file version 70", 1, ""},
+		{"module after", "Done\nCannot find module 'express'", 1, ""},
+		{"before and after", "Address already in use\nDone\nUnable to access jarfile", 2, "port_in_use"},
+		{"other causes still count", "Done\njava.lang.OutOfMemoryError: Java heap space", 1, "oom"},
+	}
+	for _, c := range tests {
+		t.Run(c.name, func(t *testing.T) {
+			in := &diagInput{lines: lines(c.log), late: c.late, exit: 1, egg: &egg.Egg{}}
+			slicesReverse(in.lines)
+			r, _, ok := firstRule(in)
+			if c.want == "" {
+				if ok {
+					t.Fatalf("matched %s", r.id)
+				}
+				return
+			}
+			if !ok || r.id != c.want {
+				t.Fatalf("matched %q (%v), want %q", r.id, ok, c.want)
+			}
+		})
+	}
+}
+
+func TestDiagnosisPrefersTheNewestLine(t *testing.T) {
+	tests := []struct {
+		name string
+		log  string
+		disk bool
+		want string
+	}{
+		{"memory last", "No space left on device\njava.lang.OutOfMemoryError: Java heap space", false, "oom"},
+		{"disk last", "java.lang.OutOfMemoryError: Java heap space\nNo space left on device", false, "disk_full"},
+		{"world last", "java.lang.OutOfMemoryError: Java heap space\nFailed to load level world", false, "world_corrupt"},
+		{"same line, listed first", "No space left on device: java.lang.OutOfMemoryError", false, "disk_full"},
+		{"a full volume holds", "java.lang.OutOfMemoryError: Java heap space\nSaving chunks", true, "disk_full"},
+		{"a line beats a silent kill", "Failed to load level world", false, "world_corrupt"},
+	}
+	for _, c := range tests {
+		t.Run(c.name, func(t *testing.T) {
+			in := &diagInput{lines: lines(c.log), exit: 137, egg: &egg.Egg{}, volumeFull: c.disk}
+			slicesReverse(in.lines)
+			if r, _, ok := firstRule(in); !ok || r.id != c.want {
+				t.Fatalf("matched %q (%v), want %q", r.id, ok, c.want)
+			}
+		})
+	}
+}
+
+func TestDiagnosisDropsTheLinesOfPlayerNames(t *testing.T) {
+	// A Steam name can be any text, and the server prints it in the lines of
+	// a join, a leave and a kill.
+	got := withoutPlayerLines("rust", []string{
+		"\x1b[32m1.2.3.4:5/76561198000000002/Address already in use joined [windows/76561198000000002]\x1b[0m",
+		"Unable to access jarfile[76561198000000002] disconnecting: Kicked",
+		"Server startup complete",
+	})
+	if len(got) != 1 || got[0] != "Server startup complete" {
+		t.Errorf("kept %q", got)
+	}
+	got = withoutPlayerLines("minecraft-paper", []string{
+		"[12:00:00 INFO]: * Steve Unable to access jarfile",
+		"[12:00:01 INFO]: Done (3.2s)! For help, type \"help\"",
+	})
+	if len(got) != 1 || !strings.Contains(got[0], "Done") {
+		t.Errorf("kept %q", got)
 	}
 }
 
@@ -385,5 +466,260 @@ func TestDiagnosisOfAFailedInstall(t *testing.T) {
 	}
 	if _, out := e.b.do("GET", "/api/games/survival/diagnosis", nil); len(out) != 0 {
 		t.Errorf("other install failure: %v", out)
+	}
+}
+
+func TestDiagnosisIgnoresWhatPlayersMake(t *testing.T) {
+	e, id := newPlayerGame(t)
+	// Once the server is up, players make it print the words of other causes
+	// in ways no chat filter can list. The memory error is what it died of.
+	e.printed(t, "survival", "[12:00:00 INFO]: Done (3.2s)! For help, type \"help\"\n"+
+		"[12:00:01 INFO]: Steve joined the game\n"+
+		"[12:00:02 INFO]: <Steve> Unable to access jarfile\n"+
+		"[12:00:03 INFO]: * Steve Unable to access jarfile\n"+
+		"[12:00:04 INFO]: [Not Secure] * Steve Address already in use\n"+
+		"[12:00:05 INFO]: Steve issued server command: /Address already in use\n"+
+		"[12:00:06 INFO]: Named entity Wolf['Unable to access jarfile'/12, l='ServerLevel[world]'] died: Wolf was slain\n"+
+		"[12:00:07 INFO]: Alex was slain by Steve using [Address already in use]\n"+
+		"[12:00:08 INFO]: You need to agree to the EULA in order to run the server\n"+
+		"[12:00:09 ERROR]: java.lang.OutOfMemoryError: Java heap space\n")
+	e.core.mu.Lock()
+	e.core.gameExit = map[string]int{id: 1}
+	e.core.mu.Unlock()
+	e.crash(t, "survival")
+	h := e.s.consoles.hub("survival")
+	waitFor(t, func() bool {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		return h.exited
+	})
+
+	code, out := e.b.do("GET", "/api/games/survival/diagnosis", nil)
+	cause, _ := out["cause"].(map[string]any)
+	if code != http.StatusOK || cause["code"] != "diagnosis.oom" {
+		t.Fatalf("diagnosis: %d %v", code, out)
+	}
+}
+
+func TestDiagnosisIgnoresAFailureToStartPrintedByAPlayer(t *testing.T) {
+	e, id := newPlayerGame(t)
+	// A name on an item is in the line, which no chat filter knows. The
+	// server was up by then, so it is not a failure to start.
+	e.printed(t, "survival", "[12:00:00 INFO]: Done (3.2s)! For help, type \"help\"\n"+
+		"[12:00:01 INFO]: Alex was slain by Steve using [Unable to access jarfile]\n")
+	e.core.mu.Lock()
+	e.core.gameExit = map[string]int{id: 1}
+	e.core.mu.Unlock()
+	e.crash(t, "survival")
+	h := e.s.consoles.hub("survival")
+	waitFor(t, func() bool {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		return h.exited
+	})
+
+	code, out := e.b.do("GET", "/api/games/survival/diagnosis", nil)
+	if code != http.StatusOK || len(out) != 0 {
+		t.Fatalf("diagnosis: %d %v", code, out)
+	}
+}
+
+func TestDiagnosisStillReadsAFailedStart(t *testing.T) {
+	e, id := newPlayerGame(t)
+	e.printed(t, "survival", "[12:00:00 ERROR]: Unable to access jarfile server.jar\n")
+	e.core.mu.Lock()
+	e.core.gameExit = map[string]int{id: 1}
+	e.core.mu.Unlock()
+	e.crash(t, "survival")
+	h := e.s.consoles.hub("survival")
+	waitFor(t, func() bool {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		return h.exited
+	})
+
+	code, out := e.b.do("GET", "/api/games/survival/diagnosis", nil)
+	cause, _ := out["cause"].(map[string]any)
+	if code != http.StatusOK || cause["code"] != "diagnosis.missing_file" {
+		t.Fatalf("diagnosis: %d %v", code, out)
+	}
+}
+
+func TestDiagnosisOfAStoppedConsoleKnowsWhenTheGameWasReady(t *testing.T) {
+	e, id := newPlayerGame(t)
+	e.core.emit(id, "[12:00:00 INFO]: Done (3.2s)! For help, type \"help\"\n"+
+		"[12:00:01 INFO]: * Steve Unable to access jarfile\n"+
+		"[12:00:02 INFO]: Alex was slain by Steve using [Address already in use]\n")
+	e.waitState(t, "survival", "running")
+	if code, _ := e.power(t, "survival", "kill"); code >= 300 {
+		t.Fatalf("kill: %d", code)
+	}
+	e.waitState(t, "survival", "stopped")
+
+	// A console read back from the log, as after a panel restart.
+	h := &consoleHub{app: "survival"}
+	e.s.loadStoppedConsole(context.Background(), h)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if !h.ready || h.readyAt != 0 || len(h.lines) != 3 {
+		t.Fatalf("ready %v at %d, %d lines", h.ready, h.readyAt, len(h.lines))
+	}
+	if n := h.beforeReady(3); n != 0 {
+		t.Errorf("%d lines before the game was ready", n)
+	}
+}
+
+func TestConsoleKnowsWhereTheGameBecameReady(t *testing.T) {
+	h := &consoleHub{container: "c1"}
+	before := func(n int) int {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		return h.beforeReady(n)
+	}
+	for range 3 {
+		h.push("c1", "line", "tick")
+	}
+	if n := before(3); n != 3 {
+		t.Errorf("before the game was ready: %d of 3", n)
+	}
+	h.push("c1", "line", "Done")
+	h.markReady("c1")
+	h.push("c1", "line", "tick")
+	h.push("c1", "line", "Done")
+	h.markReady("c1") // the first stays
+	if n := before(6); n != 3 {
+		t.Errorf("of all 6: %d before", n)
+	}
+	if n := before(2); n != 0 {
+		t.Errorf("of the newest 2: %d before", n)
+	}
+	if n := before(4); n != 1 {
+		t.Errorf("of the newest 4: %d before", n)
+	}
+
+	// The lines the ring dropped were before it too.
+	h.replace("c2", func() {})
+	h.push("c2", "line", "Done")
+	h.markReady("c2")
+	for range 3 * consoleBacklog {
+		h.push("c2", "line", "tick")
+	}
+	h.mu.Lock()
+	kept := len(h.lines)
+	h.mu.Unlock()
+	if n := before(kept); n != 0 || kept == 3*consoleBacklog+1 {
+		t.Errorf("after the ready line left the ring: %d of %d lines before it", n, kept)
+	}
+}
+
+// lineOf is a console line size bytes long with its newline, so a log of them
+// can be cut at a place the test knows.
+func lineOf(size int, text string) string { return fmt.Sprintf("%*s\n", size-1, text) }
+
+// diagnosisAfterRestart has the panel forget the server's console, as a restart
+// or an update does, and asks for the diagnosis from what the log gives back.
+func (e *appEnv) diagnosisAfterRestart(t *testing.T, name string) map[string]any {
+	t.Helper()
+	e.s.consoles.forget(name)
+	code, out := e.b.do("GET", "/api/games/"+name+"/diagnosis", nil)
+	if code != http.StatusOK {
+		t.Fatalf("diagnosis: %d %v", code, out)
+	}
+	return out
+}
+
+func TestDiagnosisOfALongStartupFindsItsFailureAfterARestart(t *testing.T) {
+	e := newPowerEnv(t)
+	e.newGame(t, "survival", consoleEggURL, nil)
+	// A modpack prints more than the tail before it gets anywhere. Lines of
+	// 64 bytes make the tail end exactly at a line, so it comes back full.
+	startup := strings.Repeat(lineOf(64, "[12:00:00 INFO]: Loading libraries, please wait..."), consoleTail/64+100)
+	e.crashWith(t, "survival", startup+lineOf(64, "[12:00:09 ERROR]: Unable to access jarfile server.jar"), 1)
+
+	out := e.diagnosisAfterRestart(t, "survival")
+	if cause, _ := out["cause"].(map[string]any); cause["code"] != "diagnosis.missing_file" {
+		t.Fatalf("diagnosis: %v", out)
+	}
+}
+
+func TestDiagnosisOfAFilesAppWithALongLogAfterARestart(t *testing.T) {
+	e := newRuntimeEnv(t)
+	e.newFiles(t, "site", nil)
+	// An app has no line that says it is ready, so all of its output counts.
+	log := strings.Repeat(lineOf(64, "npm warn deprecated inflight@1.0.6: leaks memory"), consoleTail/64+100) +
+		lineOf(64, "Error: Cannot find module 'express'")
+	e.crashWith(t, "site", log, 1)
+
+	out := e.diagnosisAfterRestart(t, "site")
+	if cause, _ := out["cause"].(map[string]any); cause["code"] != "diagnosis.missing_module" {
+		t.Fatalf("diagnosis: %v", out)
+	}
+}
+
+func TestDiagnosisKnowsTheGameWasReadyBeforeTheTailOfItsLog(t *testing.T) {
+	e := newPowerEnv(t)
+	e.newGame(t, "survival", consoleEggURL, nil)
+	// The line that said so is far back, and what a player made is the
+	// newest thing in the log.
+	log := lineOf(80, "[12:00:00 INFO]: Done (3.2s)! For help, type \"help\"") +
+		strings.Repeat(lineOf(50, "[12:10:00 INFO]: Saving chunks"), consoleTail/50+100) +
+		"[12:30:00 INFO]: Alex was slain by Steve using [Unable to access jarfile]\n"
+	e.crashWith(t, "survival", log, 1)
+
+	if out := e.diagnosisAfterRestart(t, "survival"); len(out) != 0 {
+		t.Fatalf("diagnosis: %v", out)
+	}
+}
+
+func TestDiagnosisIsNotFooledByChatThatSaysTheGameIsReady(t *testing.T) {
+	e, id := newPlayerGame(t)
+	// The real line is far back, and the tail has a player's chat with the
+	// same words after the name on an item.
+	log := lineOf(80, "[12:00:00 INFO]: Done (3.2s)! For help, type \"help\"") +
+		strings.Repeat(lineOf(50, "[12:10:00 INFO]: Saving chunks"), consoleTail/50+100) +
+		"[12:30:00 INFO]: Alex was slain by Steve using [Unable to access jarfile]\n" +
+		"[12:30:01 INFO]: <Steve> Done\n"
+	e.printed(t, "survival", log)
+	e.core.mu.Lock()
+	e.core.gameExit = map[string]int{id: 1}
+	e.core.mu.Unlock()
+	e.crash(t, "survival")
+	h := e.s.consoles.hub("survival")
+	waitFor(t, func() bool {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		return h.exited
+	})
+
+	if out := e.diagnosisAfterRestart(t, "survival"); len(out) != 0 {
+		t.Fatalf("diagnosis: %v", out)
+	}
+}
+
+// scanFails is a core that cannot give a console from its start.
+type scanFails struct{ Core }
+
+func (c scanFails) Logs(ctx context.Context, id string, follow bool, tail int64, w io.Writer) error {
+	if !follow && tail == 0 {
+		return &core.Error{Status: http.StatusInternalServerError, Message: "the log could not be read"}
+	}
+	return c.Core.Logs(ctx, id, follow, tail, w)
+}
+
+func TestStoppedConsoleIsShownWhenItsReadyLineCannotBeLookedFor(t *testing.T) {
+	e, id := newPlayerGame(t, func(e *appEnv) { e.s.Core = scanFails{e.s.Core} })
+	e.core.emit(id, "[12:00:00 ERROR]: Unable to access jarfile server.jar\n")
+	e.waitState(t, "survival", "starting")
+	if code, _ := e.power(t, "survival", "kill"); code >= 300 {
+		t.Fatalf("kill: %d", code)
+	}
+	e.waitState(t, "survival", "stopped")
+
+	h := &consoleHub{app: "survival"}
+	e.s.loadStoppedConsole(context.Background(), h)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.lines) != 1 || h.ready {
+		t.Errorf("lines %q, ready %v", h.lines, h.ready)
 	}
 }
