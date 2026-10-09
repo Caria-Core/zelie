@@ -75,6 +75,11 @@ type appJSON struct {
 	Stopped bool `json:"stopped"`
 	// Crashing says why Zelie stopped bringing the app back up.
 	Crashing *msg.Msg `json:"crashing,omitempty"`
+	// StoppedFor says why Zelie stopped the app, when it was not the user.
+	StoppedFor *msg.Msg `json:"stopped_for,omitempty"`
+	// LayerGrace warns that the app is over its disk allowance and says when
+	// it will be stopped.
+	LayerGrace *layerGraceJSON `json:"layer_grace,omitempty"`
 	// VolumeFull says which volume keeps the app from running.
 	VolumeFull *msg.Msg        `json:"volume_full,omitempty"`
 	Latest     *deploymentJSON `json:"latest,omitempty"`
@@ -103,6 +108,9 @@ func (s *Server) appOut(ctx context.Context, a store.App, containers []engine.St
 	}
 	if over := s.overLimit(vols); over != nil {
 		out.VolumeFull = &over.Msg
+	}
+	if out.StoppedFor, out.LayerGrace, err = s.layerNotes(ctx, a); err != nil {
+		return out, err
 	}
 	recent, err := s.Store.Deployments(ctx, a.ID, 1)
 	if err != nil {

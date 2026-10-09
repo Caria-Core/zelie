@@ -9,6 +9,7 @@
 	import { loadClass } from '$lib/load';
 	import { busy, current, deploy, load, restart, start, stop, update } from '$lib/current.svelte';
 	import { messageOf } from '$lib/errors';
+	import { dateTime } from '$lib/format';
 	import { game, gameState, loadGame, power } from '$lib/games.svelte';
 	import { megabytes, type Usage } from '$lib/host.svelte';
 	import AppIcon from '$lib/ui/AppIcon.svelte';
@@ -370,8 +371,19 @@
 			</p>
 		{:else if a.crashing}
 			<p class="rounded-xl border border-danger/30 px-4 py-3 text-sm text-danger">{t('app.crashing', { why: say(a.crashing) })}</p>
+		{:else if a.stopped && a.stopped_for}
+			<p class="rounded-xl border border-danger/30 px-4 py-3 text-sm text-danger">
+				{t('app.stoppedFor', { why: say(a.stopped_for) })}
+				<a href="/a/{a.id}/storage" class="underline underline-offset-2">{t('app.tab.storage')}</a>
+			</p>
 		{:else if a.stopped}
 			<p class="text-sm text-muted">{files ? t('files.stoppedNote') : t('app.stoppedNote')}</p>
+		{/if}
+		{#if !a.stopped && a.layer_grace}
+			<p class="rounded-xl border border-warn/40 bg-warn/5 px-4 py-3 text-sm text-warn">
+				{t('app.layerGrace', { when: dateTime(a.layer_grace.until), why: say(a.layer_grace.why) })}
+				<a href="/a/{a.id}/storage" class="underline underline-offset-2">{t('app.tab.storage')}</a>
+			</p>
 		{/if}
 		{#if a.update && !busy() && !files}
 			<div class="flex flex-wrap items-center justify-between gap-x-6 gap-y-3 rounded-xl border border-line px-4 py-3">

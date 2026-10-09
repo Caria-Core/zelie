@@ -26,6 +26,9 @@ Every app has:
   sealed as it is saved and only the privileged core can open it. Builds get variables as
   BuildKit secrets, which stay out of the image.
 - **Storage.** Volumes that outlive deployments, each with a size limit you can raise.
+  What a container writes outside its volumes counts against those limits together, with
+  5 GB as the least an app may hold, and an app that goes past that is stopped. Apps that
+  are already over when this check first runs get 24 hours' warning first, once.
 - **Limits.** Memory and CPU, set against what the server has and what the other apps
   were given.
 - **Logs**, live in the browser. The console and the deployment log hide the values of

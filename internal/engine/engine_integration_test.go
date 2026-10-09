@@ -586,3 +586,34 @@ func TestShortImageNames(t *testing.T) {
 	run(t, e, Spec{ID: "it-short", Image: "busybox:latest", Args: []string{"sh", "-c", "echo short; sleep 60"}, MemoryBytes: 64 << 20, CPUs: 0.5, Pids: 32})
 	waitForLog(t, "it-short", "short")
 }
+
+// What a container writes outside its volumes is found and measured; what
+// goes into a volume is not part of it.
+func TestLayerSizesCountWhatAContainerWritesOutsideItsVolumes(t *testing.T) {
+	e := connect(t)
+	ctx := context.Background()
+	e.RemoveVolume(ctx, "it-layer-vol")
+	if err := e.CreateVolume("it-layer-vol"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { e.RemoveVolume(context.Background(), "it-layer-vol") })
+	run(t, e, Spec{ID: "it-layer", App: "it-layer-app", Image: testImage, MemoryBytes: 64 << 20, CPUs: 0.5, Pids: 16,
+		Volumes: []VolumeMount{{Name: "it-layer-vol", Target: "/data"}},
+		Args:    []string{"sh", "-c", "dd if=/dev/zero of=/tmp/fill bs=1M count=24 && dd if=/dev/zero of=/data/kept bs=1M count=48 && echo filled && sleep 60"}})
+	waitForLog(t, "it-layer", "filled")
+
+	sizes, err := e.LayerSizes(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, l := range sizes {
+		if l.Container != "it-layer" {
+			continue
+		}
+		if l.App != "it-layer-app" || l.Unmeasured || l.Bytes < 24<<20 || l.Bytes > 40<<20 {
+			t.Errorf("layer of it-layer = %+v, want about 24 MiB for it-layer-app and none of the volume's 48", l)
+		}
+		return
+	}
+	t.Errorf("it-layer is running but LayerSizes lists %+v", sizes)
+}

@@ -87,6 +87,15 @@ By default every container gets:
   anything of Zelie's
 - an output log that is cleared once it reaches 64 MiB, which the console and the log view
   say in the reader's language
+- a disk allowance that Zelie checks by measuring, once a minute, so an app can pass it for
+  a short while. It is the limits of the app's volumes added up, and at least 5 GB, so an
+  app with no volume can still write a little outside them. What a container writes outside
+  its volumes counts with the volumes. An app past the allowance is stopped, a game server
+  the way its stop button stops it, and its page says why. Starting it gives it a new
+  container with empty files. A test run or an install that goes past it is stopped alone
+  and fails, and the app keeps running. Apps already over the first time the check runs on
+  a server get a warning and 24 hours before they are stopped, once; after that an app that
+  goes over is stopped at once
 - a place on its project's network and nowhere else: it can reach the internet and the
   other containers of the same project, but not other projects or services running on
   the host. Nothing outside those networks can open a connection to it either, other

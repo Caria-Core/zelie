@@ -67,6 +67,7 @@ type Core interface {
 	CreateVolume(ctx context.Context, name string) error
 	RemoveVolume(ctx context.Context, name string) error
 	VolumeSizes(ctx context.Context) (sizes map[string]int64, unmeasured []string, err error)
+	LayerSizes(ctx context.Context) ([]engine.LayerSize, error)
 	CreateBackup(ctx context.Context, app, container, kind string) (core.Backup, error)
 	DownloadBackup(ctx context.Context, app, name string, w io.Writer) error
 	RemoveBackup(ctx context.Context, app, name string) error

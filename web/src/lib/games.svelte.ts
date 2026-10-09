@@ -1,5 +1,5 @@
 import { api, ApiError } from './api';
-import { reload as reloadList } from './apps.svelte';
+import { reload as reloadList, type LayerGrace } from './apps.svelte';
 import { say, type Msg } from './i18n';
 import { leaveIfSignedOut } from './session.svelte';
 
@@ -62,6 +62,9 @@ export type Game = {
 	// stopped, starting, running, stopping or crashed.
 	state: string;
 	crashing?: Msg;
+	// Why Zelie stopped the server itself, such as for outgrowing its disk limit.
+	stopped_for?: Msg;
+	layer_grace?: LayerGrace;
 	steam?: GameSteam;
 	// What the Players tab can do: everything, only the online list, or nothing.
 	players?: 'full' | 'list' | '';

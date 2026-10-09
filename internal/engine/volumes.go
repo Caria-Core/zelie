@@ -181,6 +181,12 @@ func (e *Engine) VolumeSizes() (sizes map[string]int64, unmeasured map[string]er
 // A tenant can swap a folder for a link to somewhere else while this runs as
 // root, so the tree is walked with WalkTree, which follows no link.
 func diskUsage(dir string) (int64, error) {
+	return diskUsageCtx(context.Background(), dir)
+}
+
+// diskUsageCtx is diskUsage that gives up when ctx ends, with its error, so a
+// request that was abandoned does not leave the walk of a huge tree running.
+func diskUsageCtx(ctx context.Context, dir string) (int64, error) {
 	root, err := os.OpenRoot(dir)
 	if errors.Is(err, fs.ErrNotExist) {
 		return 0, nil
@@ -193,6 +199,9 @@ func diskUsage(dir string) (int64, error) {
 	seen := map[inode]bool{}
 	var total int64
 	err = WalkTree(root, ".", func(n *TreeNode) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		st := &n.Stat
 		if st.Nlink > 1 && !n.IsDir() {
 			key := inode{uint64(st.Dev), uint64(st.Ino)}

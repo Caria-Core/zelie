@@ -94,6 +94,10 @@ type Server struct {
 	consoles    consoleHubs
 	consoleHist consoleHistory
 	sizes       volumeSizes
+	// stepStops are the test runs and installs stopped for their disk use.
+	stepStops stepStops
+	// layerSeen are the apps whose own files this panel has measured.
+	layerSeen seenApps
 	// Releases returns the latest release; tests replace GitHub.
 	Releases func(ctx context.Context) (Release, error)
 	releases releases
@@ -427,6 +431,7 @@ func (s *Server) Serve(ctx context.Context, socket string) error {
 		s.loops.start(ctx)
 		s.wakeSupervise()
 		s.wakeVolumes()
+		s.wakeLayers()
 		s.wakeBackups()
 		s.wakeUploads()
 		s.syncAllLinks(ctx)

@@ -16,6 +16,10 @@ export type Deployment = {
 	finished_at?: string;
 };
 
+// A warning that an app is over its disk allowance: when it will be stopped
+// if it still is, and why it counts as over.
+export type LayerGrace = { until: string; why: Msg };
+
 export type App = {
 	id: string;
 	kind: 'app' | 'game';
@@ -46,6 +50,9 @@ export type App = {
 	crashing?: Msg;
 	// Which volume has grown past its limit, keeping the app down.
 	volume_full?: Msg;
+	// Why Zelie stopped the app itself, such as for outgrowing its disk limit.
+	stopped_for?: Msg;
+	layer_grace?: LayerGrace;
 	// Set for a database: postgres, mariadb or redis, and its major version.
 	engine?: Engine;
 	engine_version?: string;

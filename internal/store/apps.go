@@ -171,10 +171,18 @@ func (s *Store) SetDetected(ctx context.Context, appID string, d Detected) error
 	return err
 }
 
-// SetStopped records whether the user stopped the app.
+// SetStopped records whether the app is stopped. Starting it again also
+// forgets what the disk check noted about it: the reason it was stopped for,
+// and any deadline, which a new container does not need.
 func (s *Store) SetStopped(ctx context.Context, appID string, stopped bool) error {
-	res, err := s.db.ExecContext(ctx, "UPDATE apps SET stopped = ? WHERE id = ?", stopped, appID)
-	return oneRow(res, err)
+	return s.tx(ctx, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx, "UPDATE apps SET stopped = ? WHERE id = ?", stopped, appID)
+		if err := oneRow(res, err); err != nil || stopped {
+			return err
+		}
+		_, err = tx.ExecContext(ctx, "DELETE FROM app_layers WHERE app_id = ?", appID)
+		return err
+	})
 }
 
 // kind is the app's kind, KindApp when none was set.

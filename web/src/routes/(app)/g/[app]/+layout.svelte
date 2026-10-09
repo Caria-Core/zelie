@@ -5,6 +5,7 @@
 	import { api } from '$lib/api';
 	import { ask } from '$lib/ask.svelte';
 	import { messageOf } from '$lib/errors';
+	import { dateTime } from '$lib/format';
 	import { address, defaultPort, game, gameState, loadGame, power, updateSteam } from '$lib/games.svelte';
 	import { megabytes, type Usage } from '$lib/host.svelte';
 	import { say, t } from '$lib/i18n';
@@ -259,6 +260,17 @@
 		{/if}
 		{#if g.crashing}
 			<p class="rounded-xl border border-danger/30 px-4 py-3 text-sm text-danger">{t('game.crashing', { why: say(g.crashing) })}</p>
+		{:else if g.stopped_for}
+			<p class="rounded-xl border border-danger/30 px-4 py-3 text-sm text-danger">
+				{t('game.stoppedFor', { why: say(g.stopped_for) })}
+				<a href="/g/{g.id}/settings" class="underline underline-offset-2">{t('game.tab.settings')}</a>
+			</p>
+		{/if}
+		{#if g.layer_grace}
+			<p class="rounded-xl border border-warn/40 bg-warn/5 px-4 py-3 text-sm text-warn">
+				{t('game.layerGrace', { when: dateTime(g.layer_grace.until), why: say(g.layer_grace.why) })}
+				<a href="/g/{g.id}/settings" class="underline underline-offset-2">{t('game.tab.settings')}</a>
+			</p>
 		{/if}
 		<!-- The baseline is a shadow, not a border, so the active tab's underline
 		     can sit on it without overflowing and bringing up a scroll bar. -->

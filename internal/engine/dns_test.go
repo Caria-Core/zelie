@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
@@ -9,6 +10,7 @@ import (
 	"strconv"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -475,8 +477,21 @@ func TestDNSServersCanBeStoppedAndStartedAgain(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	d := newDNSServer(nil, nil)
-	d.ctx, d.errs, d.port = ctx, make(chan error, 1), freeLoopbackPort(t)
+	d.ctx, d.errs = ctx, make(chan error, 1)
 	gateway := netip.MustParseAddr("127.0.0.1")
+	// A port found free can be taken by another socket before the first
+	// listen; then another one is tried.
+	for try := 0; ; try++ {
+		d.port = freeLoopbackPort(t)
+		err := d.listen(gateway)
+		if err == nil {
+			d.stop(gateway)
+			break
+		}
+		if !errors.Is(err, syscall.EADDRINUSE) || try == 4 {
+			t.Fatal(err)
+		}
+	}
 
 	before := runtime.NumGoroutine()
 	for range 30 {

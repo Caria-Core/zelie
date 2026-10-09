@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/netip"
 	"os"
@@ -64,6 +65,9 @@ type appCore struct {
 	installs    []core.InstallRequest
 	installExit int  // what the install containers exit with
 	installHang bool // install containers never exit
+	// holdSteps keeps test and install containers running until they are
+	// stopped, and then has them exit with 137, as a killed process does.
+	holdSteps bool
 
 	// Game servers: the specs their containers were made from (those with
 	// a console), what they printed, what was written to them and how they
@@ -94,11 +98,20 @@ type appCore struct {
 	usedPorts []int              // what the machine holds
 	address   core.PublicAddress // what the network cards say
 
-	volumes     map[string]bool
-	sizes       map[string]int64
-	unmeasured  []string                        // volumes VolumeSizes cannot measure
-	mounts      map[string][]engine.VolumeMount // by container
-	overlapping bool                            // two containers had the same volume running
+	volumes    map[string]bool
+	sizes      map[string]int64
+	unmeasured []string // volumes VolumeSizes cannot measure
+	// LayerSizes lists the running containers that belong to an app. A
+	// container holds layerBytes by its id, or else by its app; layers adds
+	// entries of its own, and layerCalls counts the questions.
+	layerBytes      map[string]int64
+	layerUnmeasured map[string]bool
+	layerHidden     map[string]bool // apps whose containers the layer check does not see, as if stopped
+	layers          []engine.LayerSize
+	layersErr       error
+	layerCalls      int
+	mounts          map[string][]engine.VolumeMount // by container
+	overlapping     bool                            // two containers had the same volume running
 
 	bk  coreBackups
 	fs  coreFiles
@@ -498,6 +511,7 @@ func (c *appCore) Wait(ctx context.Context, id string) (int, error) {
 	c.mu.Lock()
 	_, game := c.games[id]
 	hang := c.installHang && strings.Contains(id, "-install-")
+	hold := c.holdSteps && (strings.HasSuffix(id, "-test") || strings.Contains(id, "-install-"))
 	failing := game && c.failWaits > 0
 	if failing {
 		c.failWaits--
@@ -508,6 +522,24 @@ func (c *appCore) Wait(ctx context.Context, id string) (int, error) {
 		c.waitFails = append(c.waitFails, time.Now())
 		c.mu.Unlock()
 		return 0, &core.Error{Status: http.StatusInternalServerError, Message: "context canceled"}
+	}
+	if hold {
+		for {
+			c.mu.Lock()
+			st, ok := c.containers[id]
+			c.mu.Unlock()
+			if !ok {
+				return 0, &core.Error{Status: http.StatusNotFound, Message: "container not found"}
+			}
+			if st.State != "running" {
+				return 137, nil
+			}
+			select {
+			case <-ctx.Done():
+				return 0, ctx.Err()
+			case <-time.After(time.Millisecond):
+			}
+		}
 	}
 	if game {
 		// A server's process ends when it is stopped or exits.
@@ -713,6 +745,29 @@ func (c *appCore) VolumeSizes(context.Context) (map[string]int64, []string, erro
 		}
 	}
 	return out, c.unmeasured, nil
+}
+
+func (c *appCore) LayerSizes(context.Context) ([]engine.LayerSize, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.layerCalls++
+	if c.layersErr != nil {
+		return nil, c.layersErr
+	}
+	var out []engine.LayerSize
+	for _, id := range slices.Sorted(maps.Keys(c.containers)) {
+		st := c.containers[id]
+		if st.State != "running" || st.App == "" || c.layerHidden[st.App] {
+			continue
+		}
+		l := engine.LayerSize{Container: id, App: st.App, Bytes: c.layerBytes[st.App]}
+		if n, ok := c.layerBytes[id]; ok {
+			l.Bytes = n
+		}
+		l.Unmeasured = c.layerUnmeasured[id] || c.layerUnmeasured[st.App]
+		out = append(out, l)
+	}
+	return append(out, c.layers...), nil
 }
 
 func (c *appCore) SecretKey(context.Context) (secret.PublicKey, error) { return c.keys.Public(), nil }

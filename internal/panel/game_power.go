@@ -309,6 +309,7 @@ func (s *Server) startGame(ctx context.Context, app store.App, d store.Deploymen
 		fail(err)
 		return
 	}
+	s.wakeLayers()
 	if pinned != "" {
 		d.Image = pinned
 		// The first start settles which build the server runs. From here on

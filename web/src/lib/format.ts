@@ -7,6 +7,12 @@ export function date(iso: string): string {
 	return day.format(new Date(iso));
 }
 
+const dayAndTime = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+
+export function dateTime(iso: string): string {
+	return dayAndTime.format(new Date(iso));
+}
+
 // ago says how long since iso in the largest unit that fits.
 export function ago(iso: string): string {
 	const s = (Date.now() - new Date(iso).getTime()) / 1000;

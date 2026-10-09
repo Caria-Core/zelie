@@ -47,6 +47,7 @@ type Engine interface {
 	CreateVolume(name string) error
 	RemoveVolume(ctx context.Context, name string) error
 	VolumeSizes() (sizes map[string]int64, unmeasured map[string]error, err error)
+	LayerSizes(ctx context.Context) ([]engine.LayerSize, error)
 	Links(app string) ([]engine.Link, error)
 	SetLinks(ctx context.Context, app string, links []engine.Link) error
 	SetForwards(ctx context.Context, app string, forwards []engine.Forward) error
@@ -106,6 +107,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/containers/{id}/usage", s.usage)
 	mux.HandleFunc("GET /v1/host", s.host)
 	mux.HandleFunc("GET /v1/volumes", s.volumes)
+	mux.HandleFunc("GET /v1/layers", s.layers)
 	mux.HandleFunc("POST /v1/volumes", s.createVolume)
 	mux.HandleFunc("DELETE /v1/volumes/{name}", s.removeVolume)
 	mux.HandleFunc("POST /v1/volumes/{name}/prepare", s.prepareVolume)

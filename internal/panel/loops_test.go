@@ -122,6 +122,9 @@ func armLoops(t *testing.T, e *appEnv) {
 			defer e.s.loops.mu.Unlock()
 			return len(e.s.loops.jobs) == 0
 		})
+		// A job's last round may have queued a deployment, which reads the
+		// intervals when it starts a container.
+		e.s.deploys.wg.Wait()
 		superviseEvery, scheduleEvery, backupEvery, volumeCheckEvery = oldSupervise, oldSchedule, oldBackup, oldVolume
 	})
 }
@@ -132,7 +135,7 @@ func TestNothingRunsOnAnEmptyServer(t *testing.T) {
 	e := newAppEnv(t)
 	ctx := context.Background()
 	rounds := map[string]func(context.Context) bool{
-		"supervise": e.s.superviseOnce, "metrics": e.s.recordMetrics, "image-check": e.s.checkImages, "volumes": e.s.checkVolumes,
+		"supervise": e.s.superviseOnce, "metrics": e.s.recordMetrics, "image-check": e.s.checkImages, "volumes": e.s.checkVolumes, "layers": e.s.checkLayers,
 		"steam": e.s.steamRound, "schedules": e.s.schedulesOnce, "backups": e.s.backupsOnce, "uploads": e.s.uploadsOnce,
 		"external": e.s.retryExternalOnce,
 	}
@@ -177,6 +180,7 @@ func TestRoundsGoOnWhileTheirFeatureIsUsed(t *testing.T) {
 	check("metrics", e.s.recordMetrics, true)
 	check("image check", e.s.checkImages, true)
 	check("volumes", e.s.checkVolumes, true)
+	check("layers", e.s.checkLayers, true)
 
 	// An app has no backup plan until it gets one, and then the clock runs.
 	check("backups", e.s.backupsOnce, false)
@@ -214,6 +218,7 @@ func TestRoundsGoOnWhileTheirFeatureIsUsed(t *testing.T) {
 	check("metrics", e.s.recordMetrics, false)
 	check("image check", e.s.checkImages, true)
 	check("volumes", e.s.checkVolumes, true)
+	check("layers", e.s.checkLayers, false)
 	e.core.mu.Lock()
 	listedAgain := e.core.lists != lists
 	e.core.mu.Unlock()
@@ -374,7 +379,7 @@ func TestRunningAppsWakeTheirWatchers(t *testing.T) {
 	e := newAppEnv(t)
 	pinNginx(e)
 	armLoops(t, e)
-	watchers := []string{"supervise", "metrics", "image-check"}
+	watchers := []string{"supervise", "metrics", "image-check", "layers"}
 	for _, name := range watchers {
 		if e.s.loops.running(name) {
 			t.Fatalf("%s runs on a server with no app", name)
@@ -398,10 +403,12 @@ func TestRunningAppsWakeTheirWatchers(t *testing.T) {
 		t.Fatalf("stop: %d", code)
 	}
 	waitFor(t, func() bool { return !e.s.loops.running("supervise") })
+	waitFor(t, func() bool { return !e.s.loops.running("layers") })
 	if code, _ := e.b.do("POST", "/api/apps/web/start", nil); code != http.StatusCreated {
 		t.Fatalf("start: %d", code)
 	}
 	waitFor(t, func() bool { return e.s.loops.running("supervise") })
+	waitFor(t, func() bool { return e.s.loops.running("layers") })
 }
 
 // A start that fails before the app goes live leaves the version that was

@@ -587,5 +587,23 @@ CREATE TABLE player_log_pos (
 	lines     INTEGER NOT NULL,
 	at        INTEGER NOT NULL
 ) STRICT;
+`, `
+-- What the check of the files containers write outside their volumes keeps.
+-- layer_check holds when the check first ran on this server: the one grace
+-- period for apps that were over their disk limit before it existed starts
+-- there. app_layers is kept per app. deadline is when an app that is over is
+-- stopped after all (null: none), warning the message its page shows until
+-- then, and stopped_for why Zelie stopped it, which stays until the app is
+-- started again. Both messages are JSON.
+CREATE TABLE layer_check (
+	one      INTEGER PRIMARY KEY CHECK (one = 1),
+	first_at INTEGER NOT NULL
+) STRICT;
+CREATE TABLE app_layers (
+	app_id      TEXT PRIMARY KEY REFERENCES apps(id) ON DELETE CASCADE,
+	deadline    INTEGER,
+	warning     TEXT NOT NULL DEFAULT '',
+	stopped_for TEXT NOT NULL DEFAULT ''
+) STRICT;
 `,
 }

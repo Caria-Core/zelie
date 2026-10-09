@@ -566,6 +566,7 @@ func (s *Server) runTests(ctx context.Context, app store.App, image string, depl
 		return fmt.Errorf("start the tests: %w", err)
 	}
 	defer s.Core.Remove(context.WithoutCancel(ctx), id)
+	s.wakeLayers()
 
 	logCtx, stopLogs := context.WithCancel(ctx)
 	logsDone := make(chan struct{})
@@ -581,6 +582,9 @@ func (s *Server) runTests(ctx context.Context, app store.App, image string, depl
 	}
 	stopLogs()
 	<-logsDone
+	if why := s.stepStops.take(id); why != nil {
+		return why
+	}
 	switch {
 	case errors.Is(waitCtx.Err(), context.DeadlineExceeded):
 		return errTestsTimeout.Err("minutes", int(testTimeout/time.Minute))
@@ -648,6 +652,7 @@ func (s *Server) start(ctx context.Context, app store.App, image, container stri
 	if err != nil {
 		return "", err
 	}
+	s.wakeLayers()
 	if pinned == "" {
 		pinned = image
 	}

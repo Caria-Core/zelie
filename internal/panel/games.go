@@ -597,6 +597,11 @@ type gameJSON struct {
 	State string `json:"state"`
 	// Crashing says why Zelie stopped bringing a crashing server back.
 	Crashing *msg.Msg `json:"crashing,omitempty"`
+	// StoppedFor says why Zelie stopped the server, when it was not the user.
+	StoppedFor *msg.Msg `json:"stopped_for,omitempty"`
+	// LayerGrace warns that the server is over its disk allowance and says when
+	// it will be stopped.
+	LayerGrace *layerGraceJSON `json:"layer_grace,omitempty"`
 	// Steam is set for games installed with SteamCMD.
 	Steam *gameSteamJSON `json:"steam,omitempty"`
 }
@@ -642,6 +647,9 @@ func (s *Server) gameOut(ctx context.Context, a store.App) (gameJSON, error) {
 	}
 	vols, err := s.Store.Volumes(ctx, a.ID)
 	if err != nil {
+		return out, err
+	}
+	if out.StoppedFor, out.LayerGrace, err = s.layerNotes(ctx, a); err != nil {
 		return out, err
 	}
 	for _, v := range vols {
@@ -1200,6 +1208,7 @@ func (s *Server) runInstall(ctx context.Context, appID string, id int64, prev st
 		return
 	}
 	defer s.Core.Remove(bg, container)
+	s.wakeLayers()
 	// Recorded like an app's image: which build ran the install.
 	if pinned != "" {
 		d.Image = pinned
@@ -1221,7 +1230,9 @@ func (s *Server) runInstall(ctx context.Context, appID string, id int64, prev st
 	}
 	stopLogs()
 	<-logsDone
-	switch {
+	switch why := s.stepStops.take(container); {
+	case why != nil:
+		fail(why, store.InstallFailed)
 	case errors.Is(waitCtx.Err(), context.DeadlineExceeded):
 		fail(errInstallTime.Err("minutes", int(installTimeout/time.Minute)), store.InstallFailed)
 	case err != nil:

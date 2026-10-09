@@ -49,6 +49,8 @@ type fakeEngine struct {
 	volumeDirs  map[string]string
 	usedVolumes map[string]bool
 
+	layers    []engine.LayerSize // what LayerSizes answers
+	layersErr error
 	// measuring holds the measurements until it is closed, as a walk blocked
 	// in the file system does.
 	measuring chan struct{}
@@ -143,6 +145,17 @@ func (f *fakeEngine) VolumeSizes() (map[string]int64, map[string]error, error) {
 		<-f.measuring
 	}
 	return map[string]int64{"data": 4096}, f.unmeasured, nil
+}
+
+func (f *fakeEngine) LayerSizes(ctx context.Context) ([]engine.LayerSize, error) {
+	if f.measuring != nil {
+		select {
+		case <-f.measuring:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	return f.layers, f.layersErr
 }
 
 func (f *fakeEngine) Links(app string) ([]engine.Link, error) { return f.links[app], nil }
